@@ -10,7 +10,14 @@ use crate::ui::{FocusedElement, PaintContext, PressedElement};
 use crate::win32::*;
 
 /// Compute the required input box height in logical pixels based on content.
-pub fn compute_input_height(hdc: HDC, fonts: &Fonts, chat: &ChatState, chat_w: i32, line_height: i32, scale: f32) -> i32 {
+pub fn compute_input_height(
+    hdc: HDC,
+    fonts: &Fonts,
+    chat: &ChatState,
+    chat_w: i32,
+    line_height: i32,
+    scale: f32,
+) -> i32 {
     if chat.input_buffer.is_empty() {
         return INPUT_MIN_HEIGHT;
     }
@@ -19,30 +26,65 @@ pub fn compute_input_height(hdc: HDC, fonts: &Fonts, chat: &ChatState, chat_w: i
     let h_pad_dev = (SPACE_4 as f32 * scale) as i32;
     let send_btn_dev = (SEND_BTN_SIZE as f32 * scale) as i32;
     let send_btn_margin_dev = (SEND_BTN_MARGIN as f32 * scale) as i32;
-    let text_width = (chat_w - 2 * input_margin_dev - 2 * h_pad_dev - send_btn_dev - send_btn_margin_dev - h_pad_dev / 2).max(100);
+    let text_width = (chat_w
+        - 2 * input_margin_dev
+        - 2 * h_pad_dev
+        - send_btn_dev
+        - send_btn_margin_dev
+        - h_pad_dev / 2)
+        .max(100);
 
     unsafe {
         let old_font = SelectObject(hdc, fonts.normal as HGDIOBJ);
-        let wide = to_wide(&chat.input_buffer);
-        let mut rect = RECT { left: 0, top: 0, right: text_width, bottom: 0 };
-        DrawTextW(
-            hdc,
-            wide.as_ptr(),
-            wide.len() as i32 - 1,
-            &mut rect as LPRECT,
-            DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX,
-        );
+
+        // Count visual lines exactly the way draw_input_box renders them:
+        // each logical line wrapped at the same text width, one line_height per
+        // visual line (DrawTextW's DT_CALCRECT uses the raw font height, which
+        // underestimates the rendered height and made the box too short for
+        // multi-line input, pushing the chat up without showing the new line).
+        let mut visual_lines: i32 = 0;
+        for raw_line in chat.input_buffer.split('\n') {
+            if raw_line.is_empty() {
+                visual_lines += 1;
+                continue;
+            }
+            let wide = to_wide(raw_line);
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: text_width,
+                bottom: 0,
+            };
+            DrawTextW(
+                hdc,
+                wide.as_ptr(),
+                wide.len() as i32 - 1,
+                &mut rect as LPRECT,
+                DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX,
+            );
+            let lines_in_raw = if rect.bottom > 0 {
+                let raw_line_h = rect.bottom;
+                let raw_line_h_logical = (raw_line_h as f32 / scale).ceil() as i32;
+                let line_h_logical = (line_height as f32 / scale).ceil() as i32;
+                ((raw_line_h_logical + line_h_logical - 1) / line_h_logical).max(1)
+            } else {
+                1
+            };
+            visual_lines += lines_in_raw;
+        }
         SelectObject(hdc, old_font as HGDIOBJ);
 
-        let text_height_dev = rect.bottom.max(line_height);
         let v_pad_dev = (INPUT_LINE_PADDING as f32 * scale) as i32;
+        let text_height_dev = visual_lines.max(1) * line_height;
         let total_dev = text_height_dev + 2 * v_pad_dev;
         let total_logical = (total_dev as f32 / scale).round() as i32;
 
         let line_height_logical = (line_height as f32 / scale).round() as i32;
         let max_logical = INPUT_MAX_LINES * line_height_logical + 2 * INPUT_LINE_PADDING;
 
-        total_logical.max(INPUT_MIN_HEIGHT).min(max_logical.max(INPUT_MIN_HEIGHT))
+        total_logical
+            .max(INPUT_MIN_HEIGHT)
+            .min(max_logical.max(INPUT_MIN_HEIGHT))
     }
 }
 
@@ -88,7 +130,11 @@ pub fn draw_input_box(
         };
 
         // Input background
-        let bg_color = if is_disabled { DISABLED_BG } else { INPUT_BG_COLOR };
+        let bg_color = if is_disabled {
+            DISABLED_BG
+        } else {
+            INPUT_BG_COLOR
+        };
         let bg_brush = CreateSolidBrush(bg_color);
         FillRect(hdc, &input_rect, bg_brush);
         DeleteObject(bg_brush as HGDIOBJ);
@@ -101,12 +147,24 @@ pub fn draw_input_box(
         } else {
             INPUT_BORDER_COLOR
         };
-        let border_width = if is_focused { (2.0 * scale).max(2.0) as i32 } else { (1.0 * scale).max(1.0) as i32 };
+        let border_width = if is_focused {
+            (2.0 * scale).max(2.0) as i32
+        } else {
+            (1.0 * scale).max(1.0) as i32
+        };
         let border_pen = CreatePen(PS_SOLID, border_width, border_color);
         let old_pen = SelectObject(hdc, border_pen as HGDIOBJ);
         let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH as i32) as HGDIOBJ);
         let radius = (RADIUS_MD as f32 * scale) as i32;
-        RoundRect(hdc, input_rect.left, input_rect.top, input_rect.right, input_rect.bottom, radius * 2, radius * 2);
+        RoundRect(
+            hdc,
+            input_rect.left,
+            input_rect.top,
+            input_rect.right,
+            input_rect.bottom,
+            radius * 2,
+            radius * 2,
+        );
         SelectObject(hdc, old_pen as HGDIOBJ);
         SelectObject(hdc, old_brush as HGDIOBJ);
         DeleteObject(border_pen as HGDIOBJ);
@@ -118,7 +176,16 @@ pub fn draw_input_box(
             right: input_right - send_btn_margin,
             bottom: input_top + (input_h - send_btn_size) / 2 + send_btn_size,
         };
-        draw_send_button(hdc, fonts, &send_btn_rect, send_enabled, hover_send_btn, pressed_element, focused_element == Some(FocusedElement::SendButton), scale);
+        draw_send_button(
+            hdc,
+            fonts,
+            &send_btn_rect,
+            send_enabled,
+            hover_send_btn,
+            pressed_element,
+            focused_element == Some(FocusedElement::SendButton),
+            scale,
+        );
 
         // Text area
         let h_pad = (SPACE_4 as f32 * scale) as i32;
@@ -129,22 +196,45 @@ pub fn draw_input_box(
         let text_width = text_right - text_left;
 
         let old_font = SelectObject(hdc, fonts.normal as HGDIOBJ);
-        let text_color = if is_disabled { DISABLED_TEXT } else { INPUT_TEXT_COLOR };
+        let text_color = if is_disabled {
+            DISABLED_TEXT
+        } else {
+            INPUT_TEXT_COLOR
+        };
         SetTextColor(hdc, text_color);
 
         let mut tm = TEXTMETRICW {
-            tmHeight: 0, tmAscent: 0, tmDescent: 0, tmInternalLeading: 0,
-            tmExternalLeading: 0, tmAveCharWidth: 0, tmMaxCharWidth: 0,
-            tmWeight: 0, tmOverhang: 0, tmDigitizedAspectX: 0, tmDigitizedAspectY: 0,
-            tmFirstChar: 0, tmLastChar: 0, tmDefaultChar: 0, tmBreakChar: 0,
-            tmItalic: 0, tmUnderlined: 0, tmStruckOut: 0, tmPitchAndFamily: 0, tmCharSet: 0,
+            tmHeight: 0,
+            tmAscent: 0,
+            tmDescent: 0,
+            tmInternalLeading: 0,
+            tmExternalLeading: 0,
+            tmAveCharWidth: 0,
+            tmMaxCharWidth: 0,
+            tmWeight: 0,
+            tmOverhang: 0,
+            tmDigitizedAspectX: 0,
+            tmDigitizedAspectY: 0,
+            tmFirstChar: 0,
+            tmLastChar: 0,
+            tmDefaultChar: 0,
+            tmBreakChar: 0,
+            tmItalic: 0,
+            tmUnderlined: 0,
+            tmStruckOut: 0,
+            tmPitchAndFamily: 0,
+            tmCharSet: 0,
         };
         GetTextMetricsW(hdc, &mut tm);
         let cursor_h = tm.tmHeight.max((10.0 * scale) as i32);
 
         // Wrap input buffer into visual lines
         let buffer = &chat.input_buffer;
-        let raw_lines: Vec<&str> = if buffer.is_empty() { vec![""] } else { buffer.split('\n').collect() };
+        let raw_lines: Vec<&str> = if buffer.is_empty() {
+            vec![""]
+        } else {
+            buffer.split('\n').collect()
+        };
 
         struct WrappedLine {
             text: String,
@@ -225,7 +315,9 @@ pub fn draw_input_box(
                     cursor_wrapped_idx = i;
                     break;
                 }
-                if i + 1 >= wrapped_lines.len() || wrapped_lines[i + 1].raw_line_idx != cursor_raw_line {
+                if i + 1 >= wrapped_lines.len()
+                    || wrapped_lines[i + 1].raw_line_idx != cursor_raw_line
+                {
                     cursor_wrapped_idx = i;
                     break;
                 }
@@ -282,7 +374,9 @@ pub fn draw_input_box(
                 let overlap_start = sel_start.max(seg_start);
                 let overlap_end = sel_end.min(seg_end);
 
-                if overlap_start < overlap_end || (sel_start == sel_end && overlap_start == seg_end && seg_start <= sel_start) {
+                if overlap_start < overlap_end
+                    || (sel_start == sel_end && overlap_start == seg_end && seg_start <= sel_start)
+                {
                     let line_y = text_top + (i - scroll) * line_height;
                     let line_bottom = line_y + cursor_h;
 
@@ -291,7 +385,8 @@ pub fn draw_input_box(
                     let hl_left = if overlap_start <= seg_start {
                         text_left
                     } else {
-                        text_left + measure_text_width(hdc, &buffer[seg_start..overlap_start], fonts)
+                        text_left
+                            + measure_text_width(hdc, &buffer[seg_start..overlap_start], fonts)
                     };
                     let hl_right = if extends_past || overlap_end >= seg_end {
                         text_right
@@ -300,10 +395,20 @@ pub fn draw_input_box(
                     };
 
                     if hl_right > hl_left {
-                        let sel_rect = RECT { left: hl_left, top: line_y, right: hl_right, bottom: line_bottom };
+                        let sel_rect = RECT {
+                            left: hl_left,
+                            top: line_y,
+                            right: hl_right,
+                            bottom: line_bottom,
+                        };
                         FillRect(hdc, &sel_rect, sel_brush);
                     } else if extends_past {
-                        let sel_rect = RECT { left: hl_left, top: line_y, right: hl_left + (4.0 * scale) as i32, bottom: line_bottom };
+                        let sel_rect = RECT {
+                            left: hl_left,
+                            top: line_y,
+                            right: hl_left + (4.0 * scale) as i32,
+                            bottom: line_bottom,
+                        };
                         FillRect(hdc, &sel_rect, sel_brush);
                     }
                 }
@@ -317,7 +422,9 @@ pub fn draw_input_box(
             let cursor_wrapped = cursor_wrapped_idx as i32;
             if cursor_wrapped >= scroll && cursor_wrapped < scroll + visible_lines {
                 let wl = &wrapped_lines[cursor_wrapped_idx];
-                let col_in_segment = cursor_byte.saturating_sub(wl.byte_offset).min(wl.text.len());
+                let col_in_segment = cursor_byte
+                    .saturating_sub(wl.byte_offset)
+                    .min(wl.text.len());
                 let cursor_text = &wl.text[..col_in_segment];
                 let cursor_x = text_left + measure_text_width(hdc, cursor_text, fonts);
                 let cursor_y = text_top + (cursor_wrapped - scroll) * line_height;
@@ -406,7 +513,15 @@ fn draw_send_button(
             let focus_pen = CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);
             let old_fp = SelectObject(hdc, focus_pen as HGDIOBJ);
             let old_fb = SelectObject(hdc, GetStockObject(NULL_BRUSH as i32) as HGDIOBJ);
-            RoundRect(hdc, btn_rect.left - 2, btn_rect.top - 2, btn_rect.right + 2, btn_rect.bottom + 2, (radius + 2) * 2, (radius + 2) * 2);
+            RoundRect(
+                hdc,
+                btn_rect.left - 2,
+                btn_rect.top - 2,
+                btn_rect.right + 2,
+                btn_rect.bottom + 2,
+                (radius + 2) * 2,
+                (radius + 2) * 2,
+            );
             SelectObject(hdc, old_fp as HGDIOBJ);
             SelectObject(hdc, old_fb as HGDIOBJ);
             DeleteObject(focus_pen as HGDIOBJ);
@@ -418,7 +533,11 @@ fn draw_send_button(
         DeleteObject(btn_brush as HGDIOBJ);
 
         // Arrow icon
-        let icon_color = if enabled { SEND_BTN_ICON } else { DISABLED_TEXT };
+        let icon_color = if enabled {
+            SEND_BTN_ICON
+        } else {
+            DISABLED_TEXT
+        };
         let old_font = SelectObject(hdc, fonts.bold as HGDIOBJ);
         SetTextColor(hdc, icon_color);
         let arrow = "\u{27A4}";
@@ -437,7 +556,14 @@ fn draw_send_button(
 }
 
 /// Draw the hint row below the input box.
-pub fn draw_hint_row(hdc: HDC, ctx: &PaintContext, chat_left: i32, chat_right: i32, hint_top: i32, scale: f32) {
+pub fn draw_hint_row(
+    hdc: HDC,
+    ctx: &PaintContext,
+    chat_left: i32,
+    chat_right: i32,
+    hint_top: i32,
+    scale: f32,
+) {
     let hint_h = (HINT_ROW_HEIGHT as f32 * scale) as i32;
     let input_margin = (INPUT_MARGIN as f32 * scale) as i32;
 
