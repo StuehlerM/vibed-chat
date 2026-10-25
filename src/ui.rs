@@ -76,6 +76,7 @@ pub struct PaintContext<'a> {
     pub hover_project_menu: Option<usize>,
     pub hover_settings_btn: bool,
     pub hover_settings_close: bool,
+    pub hover_reconnect: bool,
     pub hover_thinking_toggle: Option<usize>,
     pub hover_settings_toggle: Option<usize>,
     pub pressed_element: Option<PressedElement>,

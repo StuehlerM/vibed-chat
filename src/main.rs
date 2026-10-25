@@ -8,6 +8,7 @@ mod app;
 mod chat;
 mod events;
 mod fonts;
+mod gfx;
 mod input;
 mod interaction;
 mod json;
@@ -19,9 +20,9 @@ mod theme;
 mod ui;
 mod win32;
 
+use app::AppState;
 use std::ptr;
 use win32::*;
-use app::AppState;
 
 fn main() {
     unsafe {
@@ -66,9 +67,7 @@ fn main() {
         app_state.as_mut().connect_acp();
 
         // Add welcome message
-        app_state
-            .as_mut()
-            .sessions[0]
+        app_state.as_mut().sessions[0]
             .chat
             .add_system_message("ACP Chat started. Connecting to agent...");
 

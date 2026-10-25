@@ -4,7 +4,7 @@
 use crate::interaction::session_action_rects;
 use crate::text::{date_group_label, last_message_preview, relative_time, truncate_to_width};
 use crate::theme::*;
-use crate::ui::{PaintContext, PressedElement, FocusedElement};
+use crate::ui::{FocusedElement, PaintContext, PressedElement};
 use crate::win32::*;
 
 pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
@@ -61,20 +61,38 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         } else {
             NEW_CHAT_BTN_BG
         };
-        let btn_brush = CreateSolidBrush(btn_color);
         let radius = (RADIUS_MD as f32 * scale) as i32;
-        let btn_pen = CreatePen(PS_SOLID, 1, btn_color);
-        let old_pen = SelectObject(hdc, btn_pen as HGDIOBJ);
-        let old_brush = SelectObject(hdc, btn_brush as HGDIOBJ);
-        RoundRect(
-            hdc,
-            btn_rect.left,
-            btn_rect.top,
-            btn_rect.right,
-            btn_rect.bottom,
-            radius * 2,
-            radius * 2,
-        );
+        let gfx = crate::gfx::Gfx::new(hdc);
+        match gfx {
+            Some(ref g) => {
+                if ctx.hover_new_chat
+                    && ctx.pressed_element != Some(PressedElement::NewChat)
+                {
+                    g.button_with_ring(btn_rect, radius, btn_color, btn_color);
+                } else {
+                    g.fill_round_rect(btn_rect, radius, btn_color);
+                }
+            }
+            None => unsafe {
+                let btn_brush = CreateSolidBrush(btn_color);
+                let btn_pen = CreatePen(PS_SOLID, 1, btn_color);
+                let old_pen = SelectObject(hdc, btn_pen as HGDIOBJ);
+                let old_brush = SelectObject(hdc, btn_brush as HGDIOBJ);
+                RoundRect(
+                    hdc,
+                    btn_rect.left,
+                    btn_rect.top,
+                    btn_rect.right,
+                    btn_rect.bottom,
+                    radius * 2,
+                    radius * 2,
+                );
+                SelectObject(hdc, old_pen as HGDIOBJ);
+                SelectObject(hdc, old_brush as HGDIOBJ);
+                DeleteObject(btn_pen as HGDIOBJ);
+                DeleteObject(btn_brush as HGDIOBJ);
+            },
+        }
 
         // Focus ring for New Chat button
         if ctx.focused_element == Some(FocusedElement::NewChat) {
@@ -82,16 +100,19 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             let old_fp = SelectObject(hdc, focus_pen as HGDIOBJ);
             let old_fb = SelectObject(hdc, GetStockObject(NULL_BRUSH as i32) as HGDIOBJ);
             let fr = (RADIUS_MD as f32 * scale) as i32;
-            RoundRect(hdc, btn_rect.left - 1, btn_rect.top - 1, btn_rect.right + 1, btn_rect.bottom + 1, (fr + 1) * 2, (fr + 1) * 2);
+            RoundRect(
+                hdc,
+                btn_rect.left - 1,
+                btn_rect.top - 1,
+                btn_rect.right + 1,
+                btn_rect.bottom + 1,
+                (fr + 1) * 2,
+                (fr + 1) * 2,
+            );
             SelectObject(hdc, old_fp as HGDIOBJ);
             SelectObject(hdc, old_fb as HGDIOBJ);
             DeleteObject(focus_pen as HGDIOBJ);
         }
-
-        SelectObject(hdc, old_pen as HGDIOBJ);
-        SelectObject(hdc, old_brush as HGDIOBJ);
-        DeleteObject(btn_pen as HGDIOBJ);
-        DeleteObject(btn_brush as HGDIOBJ);
 
         // Button text
         let old_font = SelectObject(hdc, ctx.fonts.sidebar_medium as HGDIOBJ);
@@ -159,7 +180,12 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             right: sidebar_w,
             bottom: list_bottom,
         };
-        let clip_rgn = CreateRectRgn(list_clip.left, list_clip.top, list_clip.right, list_clip.bottom);
+        let clip_rgn = CreateRectRgn(
+            list_clip.left,
+            list_clip.top,
+            list_clip.right,
+            list_clip.bottom,
+        );
         SelectClipRgn(hdc, clip_rgn);
 
         let accent_bar_w = (SIDEBAR_ACCENT_BAR_W as f32 * scale).max(2.0) as i32;
@@ -274,7 +300,15 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     let focus_pen = CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);
                     let old_fp = SelectObject(hdc, focus_pen as HGDIOBJ);
                     let old_fb = SelectObject(hdc, GetStockObject(NULL_BRUSH as i32) as HGDIOBJ);
-                    RoundRect(hdc, item_rect.left - 1, item_rect.top - 1, item_rect.right + 1, item_rect.bottom + 1, (item_radius + 1) * 2, (item_radius + 1) * 2);
+                    RoundRect(
+                        hdc,
+                        item_rect.left - 1,
+                        item_rect.top - 1,
+                        item_rect.right + 1,
+                        item_rect.bottom + 1,
+                        (item_radius + 1) * 2,
+                        (item_radius + 1) * 2,
+                    );
                     SelectObject(hdc, old_fp as HGDIOBJ);
                     SelectObject(hdc, old_fb as HGDIOBJ);
                     DeleteObject(focus_pen as HGDIOBJ);
@@ -291,7 +325,8 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     session.name.clone()
                 };
 
-                let is_streaming = session.chat.is_waiting_for_agent || session.chat.streaming_message_idx.is_some();
+                let is_streaming = session.chat.is_waiting_for_agent
+                    || session.chat.streaming_message_idx.is_some();
 
                 // Compute action button rects (used when hovering)
                 let (archive_rect, delete_rect) = session_action_rects(
@@ -320,7 +355,11 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     ts_sz.x + (SPACE_2 as f32 * scale) as i32
                 };
 
-                let name_font = if is_active { ctx.fonts.sidebar_medium } else { ctx.fonts.sidebar };
+                let name_font = if is_active {
+                    ctx.fonts.sidebar_medium
+                } else {
+                    ctx.fonts.sidebar
+                };
                 let max_name_w = name_right - name_left - right_reserve;
                 let display_name = truncate_to_width(hdc, &name, max_name_w, name_font);
 
@@ -357,7 +396,12 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     let dot_color = if pulse { ACCENT } else { ACCENT_DIM };
                     let mut name_w = POINT { x: 0, y: 0 };
                     let old_f = SelectObject(hdc, name_font as HGDIOBJ);
-                    GetTextExtentPoint32W(hdc, name_wide.as_ptr(), name_wide.len() as i32 - 1, &mut name_w);
+                    GetTextExtentPoint32W(
+                        hdc,
+                        name_wide.as_ptr(),
+                        name_wide.len() as i32 - 1,
+                        &mut name_w,
+                    );
                     SelectObject(hdc, old_f as HGDIOBJ);
                     let dot_cx = name_left + name_w.x + dot_r + (3.0 * scale) as i32;
                     let dot_cy = name_rect.top + name_rect.height() / 2;
@@ -366,7 +410,13 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                         let dot_pen = CreatePen(PS_SOLID, 1, dot_color);
                         let old_dp = SelectObject(hdc, dot_pen as HGDIOBJ);
                         let old_db = SelectObject(hdc, dot_brush as HGDIOBJ);
-                        Ellipse(hdc, dot_cx - dot_r, dot_cy - dot_r, dot_cx + dot_r, dot_cy + dot_r);
+                        Ellipse(
+                            hdc,
+                            dot_cx - dot_r,
+                            dot_cy - dot_r,
+                            dot_cx + dot_r,
+                            dot_cy + dot_r,
+                        );
                         SelectObject(hdc, old_dp as HGDIOBJ);
                         SelectObject(hdc, old_db as HGDIOBJ);
                         DeleteObject(dot_pen as HGDIOBJ);
@@ -378,7 +428,8 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                 if show_actions {
                     // Archive/unarchive button
                     let is_archive_hover = ctx.hover_session_archive == Some(i);
-                    let is_archive_pressed = ctx.pressed_element == Some(PressedElement::SessionArchive(i));
+                    let is_archive_pressed =
+                        ctx.pressed_element == Some(PressedElement::SessionArchive(i));
                     let archive_color = if is_archive_pressed {
                         ACCENT_PRESSED
                     } else if is_archive_hover {
@@ -407,7 +458,8 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
 
                     // Delete button
                     let is_delete_hover = ctx.hover_session_delete == Some(i);
-                    let is_delete_pressed = ctx.pressed_element == Some(PressedElement::SessionDelete(i));
+                    let is_delete_pressed =
+                        ctx.pressed_element == Some(PressedElement::SessionDelete(i));
                     let delete_color = if is_delete_pressed {
                         ERROR_COLOR
                     } else if is_delete_hover {
@@ -472,13 +524,23 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
 
                 // Line 2: Last message preview
                 let preview = last_message_preview(&session.chat);
-                let preview_color = if is_archived { SESSION_ARCHIVED_TEXT } else { SIDEBAR_PREVIEW_TEXT };
+                let preview_color = if is_archived {
+                    SESSION_ARCHIVED_TEXT
+                } else {
+                    SIDEBAR_PREVIEW_TEXT
+                };
                 if !preview.is_empty() {
                     let old_font = SelectObject(hdc, ctx.fonts.session_preview as HGDIOBJ);
                     SetTextColor(hdc, preview_color);
-                    let preview_display = truncate_to_width(hdc, &preview, name_right - name_left, ctx.fonts.session_preview);
+                    let preview_display = truncate_to_width(
+                        hdc,
+                        &preview,
+                        name_right - name_left,
+                        ctx.fonts.session_preview,
+                    );
                     let preview_wide = to_wide(&preview_display);
-                    let preview_line_top = item_rect.top + name_line_h + (SPACE_1 as f32 * scale) as i32;
+                    let preview_line_top =
+                        item_rect.top + name_line_h + (SPACE_1 as f32 * scale) as i32;
                     let mut preview_rect = RECT {
                         left: name_left,
                         top: preview_line_top,
@@ -495,11 +557,16 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     SelectObject(hdc, old_font as HGDIOBJ);
                 } else {
                     let msg_count = session.chat.messages.len();
-                    let subtitle = if msg_count == 0 { "No messages yet".to_string() } else { format!("{} messages", msg_count) };
+                    let subtitle = if msg_count == 0 {
+                        "No messages yet".to_string()
+                    } else {
+                        format!("{} messages", msg_count)
+                    };
                     let old_font = SelectObject(hdc, ctx.fonts.session_preview as HGDIOBJ);
                     SetTextColor(hdc, preview_color);
                     let sub_wide = to_wide(&subtitle);
-                    let preview_line_top = item_rect.top + name_line_h + (SPACE_1 as f32 * scale) as i32;
+                    let preview_line_top =
+                        item_rect.top + name_line_h + (SPACE_1 as f32 * scale) as i32;
                     let mut sub_rect = RECT {
                         left: name_left,
                         top: preview_line_top,
@@ -551,7 +618,11 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                 right: sb_x + sb_w,
                 bottom: (thumb_y + thumb_h).min(list_bottom),
             };
-            let thumb_color = if ctx.hover_sidebar_scrollbar { SCROLLBAR_THUMB_HOVER } else { SCROLLBAR_THUMB };
+            let thumb_color = if ctx.hover_sidebar_scrollbar {
+                SCROLLBAR_THUMB_HOVER
+            } else {
+                SCROLLBAR_THUMB
+            };
             let thumb_brush = CreateSolidBrush(thumb_color);
             FillRect(hdc, &thumb_rect, thumb_brush);
             DeleteObject(thumb_brush as HGDIOBJ);
@@ -571,36 +642,62 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         } else {
             SETTINGS_BTN_BG
         };
-        let settings_brush = CreateSolidBrush(settings_color);
         let settings_radius = (RADIUS_SM as f32 * scale) as i32;
-        let settings_pen = CreatePen(PS_SOLID, 1, settings_color);
-        let old_pen = SelectObject(hdc, settings_pen as HGDIOBJ);
-        let old_brush = SelectObject(hdc, settings_brush as HGDIOBJ);
-        RoundRect(
-            hdc,
-            settings_btn_rect.left,
-            settings_btn_rect.top,
-            settings_btn_rect.right,
-            settings_btn_rect.bottom,
-            settings_radius * 2,
-            settings_radius * 2,
-        );
+        let gfx = crate::gfx::Gfx::new(hdc);
+        match gfx {
+            Some(ref g) => {
+                if ctx.hover_settings_btn
+                    && ctx.pressed_element != Some(PressedElement::SettingsBtn)
+                {
+                    g.button_with_ring(
+                        settings_btn_rect,
+                        settings_radius,
+                        settings_color,
+                        ACCENT,
+                    );
+                } else {
+                    g.fill_round_rect(settings_btn_rect, settings_radius, settings_color);
+                }
+            }
+            None => unsafe {
+                let settings_brush = CreateSolidBrush(settings_color);
+                let settings_pen = CreatePen(PS_SOLID, 1, settings_color);
+                let old_pen = SelectObject(hdc, settings_pen as HGDIOBJ);
+                let old_brush = SelectObject(hdc, settings_brush as HGDIOBJ);
+                RoundRect(
+                    hdc,
+                    settings_btn_rect.left,
+                    settings_btn_rect.top,
+                    settings_btn_rect.right,
+                    settings_btn_rect.bottom,
+                    settings_radius * 2,
+                    settings_radius * 2,
+                );
+                SelectObject(hdc, old_pen as HGDIOBJ);
+                SelectObject(hdc, old_brush as HGDIOBJ);
+                DeleteObject(settings_pen as HGDIOBJ);
+                DeleteObject(settings_brush as HGDIOBJ);
+            },
+        }
 
         // Focus ring for settings button
         if ctx.focused_element == Some(FocusedElement::SettingsBtn) {
             let focus_pen = CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);
             let old_fp = SelectObject(hdc, focus_pen as HGDIOBJ);
             let old_fb = SelectObject(hdc, GetStockObject(NULL_BRUSH as i32) as HGDIOBJ);
-            RoundRect(hdc, settings_btn_rect.left - 1, settings_btn_rect.top - 1, settings_btn_rect.right + 1, settings_btn_rect.bottom + 1, (settings_radius + 1) * 2, (settings_radius + 1) * 2);
+            RoundRect(
+                hdc,
+                settings_btn_rect.left - 1,
+                settings_btn_rect.top - 1,
+                settings_btn_rect.right + 1,
+                settings_btn_rect.bottom + 1,
+                (settings_radius + 1) * 2,
+                (settings_radius + 1) * 2,
+            );
             SelectObject(hdc, old_fp as HGDIOBJ);
             SelectObject(hdc, old_fb as HGDIOBJ);
             DeleteObject(focus_pen as HGDIOBJ);
         }
-
-        SelectObject(hdc, old_pen as HGDIOBJ);
-        SelectObject(hdc, old_brush as HGDIOBJ);
-        DeleteObject(settings_pen as HGDIOBJ);
-        DeleteObject(settings_brush as HGDIOBJ);
 
         // Settings button text
         let old_font = SelectObject(hdc, ctx.fonts.sidebar as HGDIOBJ);
@@ -622,7 +719,11 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         SelectObject(hdc, old_font as HGDIOBJ);
 
         // Connection status dot
-        let dot_color = if ctx.acp_connected { SUCCESS } else { ERROR_COLOR };
+        let dot_color = if ctx.acp_connected {
+            SUCCESS
+        } else {
+            ERROR_COLOR
+        };
         let dot_x = settings_btn_rect.right - pad - (6.0 * scale) as i32;
         let dot_y = settings_btn_rect.top + settings_btn_rect.height() / 2;
         let dot_r = (4.0 * scale) as i32;

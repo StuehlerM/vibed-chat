@@ -829,3 +829,71 @@ extern "system" {
     pub fn CoTaskMemFree(pv: *mut std::ffi::c_void);
     pub fn OleInitialize(pvReserved: *mut std::ffi::c_void) -> HRESULT;
 }
+
+// ─── GDI+ flat API (system DLL, zero external crates) ────────────────────────
+// Used for anti-aliased rounded rectangles (smooth button corners).
+
+pub type GpToken = *mut c_void;
+pub type GpGraphics = c_void;
+pub type GpBrush = c_void;
+pub type GpPen = c_void;
+pub type GpPath = c_void;
+pub type REAL = f32;
+
+pub const GdiplusStartupOutput: usize = 0;
+
+#[repr(C)]
+pub struct GdiplusStartupInput {
+    pub GdiplusVersion: u32,
+    pub DebugEventCallback: *mut c_void,
+    pub SuppressBackgroundThread: BOOL,
+    pub SuppressExternalCodecs: BOOL,
+}
+
+pub const BrushTypeSolidColor: i32 = 0;
+pub const GdipDashStyleSolid: i32 = 0;
+pub const GdipUnitPixel: i32 = 2;
+pub const GdipCombineModeReplace: i32 = 0;
+pub const GDIPLUS_OK: i32 = 0;
+pub const GdiplusStartupInput_Version: u32 = 1;
+
+/// Convert a 0x00BBGGRR COLORREF-style u32 (as used by `rgb()`) to
+/// GDI+ ARGB (0xAABBGGRR with alpha 255).
+pub fn argb_from_rgb(color: u32) -> u32 {
+    0xFF00_0000 | (color & 0x00FF_FFFF)
+}
+
+pub const SmoothingModeAntiAlias: i32 = 4;
+pub const PathFillModeAlternate: i32 = 0;
+
+#[link(name = "gdiplus")]
+extern "system" {
+    pub fn GdiplusStartup(token: *mut GpToken, input: *const GdiplusStartupInput, output: *mut c_void) -> i32;
+    pub fn GdiplusShutdown(token: GpToken);
+
+    pub fn GdipCreateFromHDC(hdc: HDC, graphics: *mut *mut GpGraphics) -> i32;
+    pub fn GdipDeleteGraphics(graphics: *mut GpGraphics) -> i32;
+    pub fn GdipSetSmoothingMode(graphics: *mut GpGraphics, mode: i32) -> i32;
+
+
+    pub fn GdipCreateSolidBrush(color: u32, brush: *mut *mut GpBrush) -> i32;
+    pub fn GdipDeleteBrush(brush: *mut GpBrush) -> i32;
+
+    pub fn GdipCreatePen1(color: u32, width: REAL, unit: i32, pen: *mut *mut GpPen) -> i32;
+    pub fn GdipDeletePen(pen: *mut GpPen) -> i32;
+
+    pub fn GdipCreatePath(brushMode: i32, path: *mut *mut GpPath) -> i32;
+    pub fn GdipDeletePath(path: *mut GpPath) -> i32;
+    pub fn GdipAddPathArc(
+        path: *mut GpPath,
+        x: REAL,
+        y: REAL,
+        width: REAL,
+        height: REAL,
+        startAngle: REAL,
+        sweepAngle: REAL,
+    ) -> i32;
+    pub fn GdipClosePathFigure(path: *mut GpPath) -> i32;
+    pub fn GdipFillPath(graphics: *mut GpGraphics, brush: *mut GpBrush, path: *mut GpPath) -> i32;
+    pub fn GdipDrawPath(graphics: *mut GpGraphics, pen: *mut GpPen, path: *mut GpPath) -> i32;
+}

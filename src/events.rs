@@ -148,6 +148,7 @@ pub unsafe extern "system" fn wnd_proc(
                     hover_project_menu: state.hover_project_menu,
                     hover_settings_btn: state.hover_settings_btn,
                     hover_settings_close: state.hover_settings_close,
+                    hover_reconnect: state.hover_reconnect,
                     hover_thinking_toggle: state.hover_thinking_toggle,
                     hover_settings_toggle: state.hover_settings_toggle,
                     pressed_element: state.pressed_element,
