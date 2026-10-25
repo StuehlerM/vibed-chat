@@ -29,7 +29,7 @@ pub fn draw_empty_state(hdc: HDC, ctx: &PaintContext, chat_left: i32, chat_right
             DeleteObject(brush as HGDIOBJ);
         }
 
-        // Title — larger
+        // Title - larger
         let old_font = SelectObject(hdc, ctx.fonts.title as HGDIOBJ);
         SetTextColor(hdc, TEXT_PRIMARY);
         let title = to_wide("ACP Chat");

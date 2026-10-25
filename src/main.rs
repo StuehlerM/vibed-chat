@@ -1,4 +1,4 @@
-// ACP Chat — Barebone Windows ACP Client
+// ACP Chat - Barebone Windows ACP Client
 // Entry point: register window class, create window, run message loop.
 
 #![windows_subsystem = "windows"]

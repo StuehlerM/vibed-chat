@@ -7,7 +7,7 @@ use crate::theme::*;
 use crate::ui::{FocusedElement, PressedElement};
 use crate::win32::*;
 
-/// A sidebar list entry — either a project header or a session item.
+/// A sidebar list entry - either a project header or a session item.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SidebarEntry {
     ProjectHeader { project_idx: usize, top: i32, bottom: i32 },
@@ -335,7 +335,7 @@ impl AppState {
             return true;
         }
 
-        // Click in chat area — focus input
+        // Click in chat area - focus input
         {
             let input_box_top = self.input_box_top();
             let input_margin = (INPUT_MARGIN as f32 * scale) as i32;

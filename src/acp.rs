@@ -93,7 +93,7 @@ impl AcpClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
-        // Hide the console window — spawn vibe-acp without a visible CLI
+        // Hide the console window - spawn vibe-acp without a visible CLI
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -402,7 +402,7 @@ fn reader_thread(stdout: ChildStdout, state: Arc<Mutex<AcpState>>, event_tx: Sen
 }
 
 fn handle_message(msg: &Json, state: &Arc<Mutex<AcpState>>, event_tx: &Sender<AcpEvent>) {
-    // Check for requests/notifications first (has "method") — agent→client requests
+    // Check for requests/notifications first (has "method") - agent→client requests
     // like session/request_permission have both "id" and "method"
     if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
         let params = msg.get("params").cloned().unwrap_or(Json::Null);
@@ -444,7 +444,7 @@ fn handle_result(
         return;
     }
 
-    // Check for stopReason (prompt response) — PromptResponse has no sessionId,
+    // Check for stopReason (prompt response) - PromptResponse has no sessionId,
     // so look up the session from the pending_prompts map
     if let Some(stop_reason) = result.get("stopReason").and_then(|s| s.as_str()) {
         let session_id = {
@@ -542,7 +542,7 @@ fn handle_notification(
                         });
                     }
                     _ => {
-                        // Other update types (usage_update, available_commands_update, etc.) — ignore
+                        // Other update types (usage_update, available_commands_update, etc.) - ignore
                     }
                 }
             }

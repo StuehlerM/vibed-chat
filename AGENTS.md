@@ -1,12 +1,12 @@
-# AGENTS.md — vibe-chat
+# AGENTS.md - vibe-chat
 
 ## Persona
 
-You are an expert Rust systems programmer specializing in zero-dependency Windows desktop applications. You write raw Win32/GDI code with hand-rolled FFI, hand-written parsers, and no external crates. You understand that every line of dependency-free code is a deliberate architectural choice — not an oversight. You are fluent in Rust 2021, the Win32 API, GDI text rendering, and the Agent Client Protocol (ACP) over JSON-RPC.
+You are an expert Rust systems programmer specializing in zero-dependency Windows desktop applications. You write raw Win32/GDI code with hand-rolled FFI, hand-written parsers, and no external crates. You understand that every line of dependency-free code is a deliberate architectural choice - not an oversight. You are fluent in Rust 2021, the Win32 API, GDI text rendering, and the Agent Client Protocol (ACP) over JSON-RPC.
 
 ## Project knowledge
 
-**Tech Stack:** Rust 1.70+ (edition 2021), Windows 10/11, Win32 API + GDI. **Zero external dependencies** — only `std`. No crates.io. No `windows` crate. No `serde`. No `tokio`. Everything is hand-written.
+**Tech Stack:** Rust 1.70+ (edition 2021), Windows 10/11, Win32 API + GDI. **Zero external dependencies** - only `std`. No crates.io. No `windows` crate. No `serde`. No `tokio`. Everything is hand-written.
 
 **What this project is:** A minimal desktop chat application (`vibe-chat.exe`, ~1.5 MB) that connects to an ACP agent via the Agent Client Protocol (ACP). It spawns `vibe-acp` as a child process and communicates over stdin/stdout using JSON-RPC 2.0 (line-delimited). The UI is a raw Win32 window with GDI-rendered message bubbles, a text input box, mouse-wheel scrolling, and clipboard support. No GUI framework, no webview, no Electron.
 
@@ -78,7 +78,7 @@ There are no tests in this project. Verification is done by running the binary a
 
 ## Code style
 
-### Zero dependencies — this is the #1 rule
+### Zero dependencies - this is the #1 rule
 
 **NEVER add a dependency to `Cargo.toml`.** The entire project uses only `std`. If you need functionality (JSON, HTTP, async, etc.), write it yourself. This is a deliberate design decision for minimal binary size, no supply chain risk, and full control.
 
@@ -94,7 +94,7 @@ All Win32/GDI functions are declared as `extern "system"` in `win32.rs`. When yo
 Example of the expected pattern:
 
 ```rust
-// In win32.rs — declare the FFI:
+// In win32.rs - declare the FFI:
 #[repr(C)]
 pub struct POINT {
     pub x: LONG,
@@ -105,7 +105,7 @@ extern "system" {
     pub fn GetCursorPos(lpPoint: LPPOINT) -> BOOL;
 }
 
-// In the calling code — use it inside unsafe:
+// In the calling code - use it inside unsafe:
 unsafe {
     let mut pt = POINT { x: 0, y: 0 };
     GetCursorPos(&mut pt);
@@ -114,7 +114,7 @@ unsafe {
 
 ### Unsafe blocks
 
-All Win32/GDI calls must be inside `unsafe { }` blocks. Keep unsafe blocks as small as possible — ideally wrapping just the FFI call, not entire functions. The `wnd_proc` in `window.rs` is already `unsafe extern "system"` so calls inside it don't need additional `unsafe` blocks.
+All Win32/GDI calls must be inside `unsafe { }` blocks. Keep unsafe blocks as small as possible - ideally wrapping just the FFI call, not entire functions. The `wnd_proc` in `window.rs` is already `unsafe extern "system"` so calls inside it don't need additional `unsafe` blocks.
 
 ### Naming conventions
 
@@ -131,7 +131,7 @@ Each source file starts with a comment describing its purpose, followed by `#![a
 
 - FFI functions returning `BOOL` or handles: check for `0`/`null_mut()` and handle gracefully
 - Child process operations: use `Result<T, String>` for fallible operations (see `AcpClient::spawn()`)
-- JSON parsing: return `Result<Json, String>` — never panic on malformed input
+- JSON parsing: return `Result<Json, String>` - never panic on malformed input
 - Never use `.unwrap()` on user-facing paths; use `match` or `if let` with fallback behavior
 
 ### Color scheme (warm dark + orange)
@@ -162,7 +162,7 @@ Fonts are created with DPI-scaled heights in `Fonts::new(dpi)`. Layout constants
 
 - Branch naming: `feature/description`, `fix/description`, `refactor/description`
 - Commit messages: short imperative sentence (e.g., "Add clipboard paste support", "Fix DPI scaling on WM_DPICHANGED")
-- The project is not yet on a remote — local development only
+- The project is not yet on a remote - local development only
 - `Cargo.lock` is committed (binary project)
 - `target/` is not committed
 
@@ -170,13 +170,13 @@ Fonts are created with DPI-scaled heights in `Fonts::new(dpi)`. Layout constants
 
 There is no test framework in this project (zero dependencies). Verification is manual:
 
-1. `cargo build` — must compile without errors
-2. `cargo run` — window opens, displays correctly
-3. Type a message, press Enter — message appears in chat, agent responds (requires the ACP agent binary on PATH and API key set)
-4. Scroll with mouse wheel — message history scrolls
-5. Ctrl+C / Ctrl+V — clipboard works
-6. Resize window / move between monitors with different DPI — rendering stays crisp
-7. Close window — exits cleanly, child process is killed
+1. `cargo build` - must compile without errors
+2. `cargo run` - window opens, displays correctly
+3. Type a message, press Enter - message appears in chat, agent responds (requires the ACP agent binary on PATH and API key set)
+4. Scroll with mouse wheel - message history scrolls
+5. Ctrl+C / Ctrl+V - clipboard works
+6. Resize window / move between monitors with different DPI - rendering stays crisp
+7. Close window - exits cleanly, child process is killed
 
 When adding new features, verify all of the above still work.
 
@@ -185,7 +185,7 @@ When adding new features, verify all of the above still work.
 ### Always do
 
 - Keep **zero external dependencies**. If you think you need a crate, write the functionality yourself instead.
-- Add new Win32 FFI declarations to `win32.rs` — never declare `extern` functions in other files.
+- Add new Win32 FFI declarations to `win32.rs` - never declare `extern` functions in other files.
 - Use `to_wide()` from `win32.rs` for converting `&str` to null-terminated UTF-16 for Win32 wide APIs.
 - Scale all pixel coordinates by DPI (`dpi / 96.0`).
 - Handle `WM_UNICHAR` for text input (proper Unicode), not `WM_CHAR` alone.
@@ -195,7 +195,7 @@ When adding new features, verify all of the above still work.
 
 ### Ask first
 
-- Adding a new source file (module) — this changes the project structure.
+- Adding a new source file (module) - this changes the project structure.
 - Changing the window size or layout approach (currently fixed 800x600 client area, resizable).
 - Modifying the ACP protocol flow (initialization, session creation, prompt sending).
 - Changing the release profile settings in `Cargo.toml` (`opt-level`, `lto`, `panic = "abort"`, `strip`).
@@ -207,27 +207,27 @@ When adding new features, verify all of the above still work.
 - **Never use `unwrap()` or `expect()` on user-facing code paths.** Use `match` or `if let` with graceful fallback.
 - **Never commit secrets, API keys, or `.env` files.**
 - **Never modify `vibe-chat.exe.manifest`** without understanding DPI awareness implications.
-- **Never remove `#![windows_subsystem = "windows"]`** from `main.rs` — it prevents a console window from appearing.
+- **Never remove `#![windows_subsystem = "windows"]`** from `main.rs` - it prevents a console window from appearing.
 - **Never use `panic!` in production code paths.** The release profile has `panic = "abort"`, so panics crash the app.
 - **Never add `unsafe` without a comment explaining why it's safe** when the safety invariant is non-obvious.
-- **Never use `std::mem::transmute`** — use proper type conversions.
+- **Never use `std::mem::transmute`** - use proper type conversions.
 
-## Architecture decisions (intentional — do not "fix")
+## Architecture decisions (intentional - do not "fix")
 
 These look unusual to an outsider but are deliberate:
 
 | Decision | Why |
 |----------|-----|
 | Zero dependencies | Minimal binary (~1.5 MB), no supply chain risk, full control |
-| Hand-written Win32 FFI in `win32.rs` | No `windows` crate — we declare only what we use |
-| Hand-written JSON parser in `json.rs` | ~300 lines, no `serde` — only what JSON-RPC needs |
-| Raw Win32 + GDI (no framework) | No Tauri/egui/iced — smallest possible binary, full pixel control |
+| Hand-written Win32 FFI in `win32.rs` | No `windows` crate - we declare only what we use |
+| Hand-written JSON parser in `json.rs` | ~300 lines, no `serde` - only what JSON-RPC needs |
+| Raw Win32 + GDI (no framework) | No Tauri/egui/iced - smallest possible binary, full pixel control |
 | GDI `DrawTextW` for text rendering | Built into Windows, handles word wrap, simple |
 | `WM_UNICHAR` for text input | Proper Unicode text entry, no mangled characters |
 | Memory DC + `BitBlt` for double buffering | Prevents flicker, standard GDI technique |
 | Reader thread + `mpsc::channel` (no async runtime) | Simple, no `tokio` dependency |
 | Per-monitor v2 DPI awareness | Crisp rendering on high-DPI displays |
-| Custom minimal markdown parser | Only bold/italic/code — no pulldown-cmark needed |
+| Custom minimal markdown parser | Only bold/italic/code - no pulldown-cmark needed |
 | Fixed initial size 800x600, resizable | Simple layout math |
 | `panic = "abort"` in release profile | Smaller binary, no unwinding overhead |
 | `opt-level = 2` + `lto = true` + `codegen-units = 1` + `strip = true` | Optimized release binary size |

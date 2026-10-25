@@ -2,7 +2,7 @@
 
 > **Disclaimer:** This is an independent, unofficial project. It is built for use with [vibe-cli](https://github.com/mistralai/vibe) but is **not** affiliated with, endorsed by, or sponsored by Mistral AI. This project does not contain any official Mistral trademarks or branding.
 
-A minimal zero-dependency Windows desktop chat application that connects to a [vibe-cli](https://github.com/mistralai/vibe) ACP agent. Raw Win32/GDI — no GUI framework, no webview, no Electron. Just a ~1.5 MB binary.
+A minimal zero-dependency Windows desktop chat application that connects to a [vibe-cli](https://github.com/mistralai/vibe) ACP agent. Raw Win32/GDI - no GUI framework, no webview, no Electron. Just a ~1.5 MB binary.
 
 ## Features
 
@@ -45,7 +45,7 @@ cargo run --release
 
 ## Architecture
 
-Zero external dependencies — only `std`. Everything is hand-written:
+Zero external dependencies - only `std`. Everything is hand-written:
 
 | Module | Responsibility |
 |--------|---------------|

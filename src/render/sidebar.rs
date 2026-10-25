@@ -117,7 +117,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         let list_bottom = height - footer_h - pad;
         let avail_height = list_bottom - list_top;
 
-        // Build grouped layout — only include visible sessions (respects show_archived)
+        // Build grouped layout - only include visible sessions (respects show_archived)
         let show_archived = ctx.settings.show_archived;
         let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
         for (i, session) in ctx.sessions.iter().enumerate() {
@@ -225,7 +225,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     bottom: y + item_h,
                 };
 
-                // Item background — archived sessions get a dimmer background
+                // Item background - archived sessions get a dimmer background
                 let item_color = if is_active {
                     SIDEBAR_ITEM_ACTIVE_BG
                 } else if is_pressed {
@@ -350,7 +350,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                 );
                 SelectObject(hdc, old_font as HGDIOBJ);
 
-                // Status dot (streaming) — next to name
+                // Status dot (streaming) - next to name
                 if is_streaming && !show_actions {
                     let dot_r = (3.0 * scale).max(2.0) as i32;
                     let pulse = (ctx.streaming_dots % 30) < 15;

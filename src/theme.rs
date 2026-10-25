@@ -6,13 +6,13 @@ use crate::win32::rgb;
 
 // ── Spacing token scale (8pt base grid, logical px) ──────────
 pub const SPACE_0: i32 = 0;
-pub const SPACE_1: i32 = 4;    // 0.5x — hairline gaps
-pub const SPACE_2: i32 = 8;    // 1x — tight (item gaps, inner padding)
-pub const SPACE_3: i32 = 12;   // 1.5x — compact
-pub const SPACE_4: i32 = 16;   // 2x — default (gutters, section gaps)
-pub const SPACE_5: i32 = 24;   // 3x — loose (panel padding, section spacing)
-pub const SPACE_6: i32 = 32;   // 4x — extra loose (title areas)
-pub const SPACE_8: i32 = 48;   // 6x — footer/header heights
+pub const SPACE_1: i32 = 4;    // 0.5x - hairline gaps
+pub const SPACE_2: i32 = 8;    // 1x - tight (item gaps, inner padding)
+pub const SPACE_3: i32 = 12;   // 1.5x - compact
+pub const SPACE_4: i32 = 16;   // 2x - default (gutters, section gaps)
+pub const SPACE_5: i32 = 24;   // 3x - loose (panel padding, section spacing)
+pub const SPACE_6: i32 = 32;   // 4x - extra loose (title areas)
+pub const SPACE_8: i32 = 48;   // 6x - footer/header heights
 
 // ── Corner radius scale ──────────────────────────────────────
 pub const RADIUS_SM: i32 = 4;   // Small elements (tags, dots)
@@ -79,14 +79,14 @@ pub const LINE_HEIGHT_RATIO: f32 = 1.55;
 //   SURFACE_4  active / pressed states
 //
 // Accent scale (orange gradient):
-//   ACCENT          #FF8205 — primary brand orange
+//   ACCENT          #FF8205 - primary brand orange
 //   ACCENT_HOVER    lighter orange for hover/focus
-//   ACCENT_PRESSED  #FA500F — red-orange for pressed
+//   ACCENT_PRESSED  #FA500F - red-orange for pressed
 //   ACCENT_DIM      dimmed orange (streaming dot off, etc.)
-//   ACCENT_DEEP     #FA500F — user bubble (vivid red-orange)
+//   ACCENT_DEEP     #FA500F - user bubble (vivid red-orange)
 //
 // Text scale:
-//   TEXT_PRIMARY    #FFFAEB — warm cream (off-white)
+//   TEXT_PRIMARY    #FFFAEB - warm cream (off-white)
 //   TEXT_SECONDARY  warm gray for labels, metadata
 //   TEXT_TERTIARY   muted warm gray for hints, timestamps
 //   TEXT_EMPHASIS   brighter cream for bold text
@@ -102,18 +102,18 @@ pub const GRADIENT_RED: u32         = rgb(225, 5, 0);     // #E10500
 pub const CREAM: u32       = rgb(255, 250, 235); // #FFFAEB
 
 // ── Core surface tokens (warm charcoal) ──────────────────────
-pub const SURFACE_0: u32 = rgb(26, 24, 22);   // #1A1816 — app background
-pub const SURFACE_1: u32 = rgb(32, 30, 27);   // #201E1B — panels, headers
-pub const SURFACE_2: u32 = rgb(40, 37, 34);   // #282522 — raised elements
-pub const SURFACE_3: u32 = rgb(50, 46, 42);   // #322E2A — hover
-pub const SURFACE_4: u32 = rgb(60, 55, 50);   // #3C3732 — pressed
+pub const SURFACE_0: u32 = rgb(26, 24, 22);   // #1A1816 - app background
+pub const SURFACE_1: u32 = rgb(32, 30, 27);   // #201E1B - panels, headers
+pub const SURFACE_2: u32 = rgb(40, 37, 34);   // #282522 - raised elements
+pub const SURFACE_3: u32 = rgb(50, 46, 42);   // #322E2A - hover
+pub const SURFACE_4: u32 = rgb(60, 55, 50);   // #3C3732 - pressed
 
 // ── Core accent tokens (orange) ──────────────────────
 pub const ACCENT: u32          = GRADIENT_ORANGE;         // #FF8205
 pub const ACCENT_HOVER: u32    = rgb(255, 155, 40);      // lighter orange
 pub const ACCENT_PRESSED: u32  = GRADIENT_RED_ORANGE;     // #FA500F
 pub const ACCENT_DIM: u32      = rgb(180, 90, 30);       // dimmed orange
-pub const ACCENT_DEEP: u32     = GRADIENT_RED_ORANGE;     // #FA500F — user bubble
+pub const ACCENT_DEEP: u32     = GRADIENT_RED_ORANGE;     // #FA500F - user bubble
 
 // ── Core text tokens (warm cream + grays) ────────────────────
 pub const TEXT_PRIMARY: u32    = CREAM;            // #FFFAEB
@@ -137,7 +137,7 @@ pub const INFO_COLOR: u32      = rgb(140, 160, 180);
 pub const BG_COLOR: u32 = SURFACE_0;
 
 // ── Sidebar ──────────────────────────────────────────────────
-pub const SIDEBAR_BG: u32              = rgb(22, 20, 18); // #161412 — darker than SURFACE_0
+pub const SIDEBAR_BG: u32              = rgb(22, 20, 18); // #161412 - darker than SURFACE_0
 pub const SIDEBAR_TEXT: u32            = TEXT_SECONDARY;
 pub const SIDEBAR_DIVIDER: u32         = BORDER_SUBTLE;
 pub const SIDEBAR_ITEM_HOVER_BG: u32   = SURFACE_3;
@@ -197,7 +197,7 @@ pub const INPUT_HINT_TEXT: u32         = TEXT_TERTIARY;
 pub const BORDER_DISABLED: u32         = rgb(52, 48, 43);
 
 // ── Message bubbles ──────────────────────────────────────────
-pub const USER_BUBBLE_BG: u32          = ACCENT_DEEP;       // #FA500F — vivid red-orange
+pub const USER_BUBBLE_BG: u32          = ACCENT_DEEP;       // #FA500F - vivid red-orange
 pub const USER_BUBBLE_TEXT: u32        = CREAM;     // cream on orange
 pub const AGENT_BUBBLE_BG: u32         = rgb(42, 39, 35);   // warm surface 2 variant
 pub const LABEL_USER: u32              = rgb(255, 175, 100); // warm peachy label on user bubble

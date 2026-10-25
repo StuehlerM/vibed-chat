@@ -777,7 +777,7 @@ pub struct TRACKMOUSEEVENT {
     pub dwHoverTime: DWORD,
 }
 
-// ── dwmapi.dll — dark title bar ──────────────────────────────
+// ── dwmapi.dll - dark title bar ──────────────────────────────
 pub type HRESULT = i32;
 
 pub const DWMWA_USE_IMMERSIVE_DARK_MODE: DWORD = 20;
@@ -794,7 +794,7 @@ extern "system" {
     ) -> HRESULT;
 }
 
-// ── shell32.dll — folder picker (SHBrowseForFolderW) ─────────
+// ── shell32.dll - folder picker (SHBrowseForFolderW) ─────────
 pub type LPITEMIDLIST = *mut std::ffi::c_void;
 pub type LPCITEMIDLIST = *const std::ffi::c_void;
 

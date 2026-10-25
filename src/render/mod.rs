@@ -57,7 +57,7 @@ pub fn paint(hwnd: HWND, ctx: &mut PaintContext) {
         // Draw sidebar
         sidebar::draw_sidebar(hdc_mem, ctx, scale);
 
-        // Draw main chat area (shrinks when settings panel is open — push layout)
+        // Draw main chat area (shrinks when settings panel is open - push layout)
         chat_area::draw_chat_area(hdc_mem, ctx, scale);
 
         // Draw settings panel in the reserved space (push, not overlay)
