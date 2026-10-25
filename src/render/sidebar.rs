@@ -73,7 +73,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     g.fill_round_rect(btn_rect, radius, btn_color);
                 }
             }
-            None => unsafe {
+            None => {
                 let btn_brush = CreateSolidBrush(btn_color);
                 let btn_pen = CreatePen(PS_SOLID, 1, btn_color);
                 let old_pen = SelectObject(hdc, btn_pen as HGDIOBJ);
@@ -659,7 +659,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     g.fill_round_rect(settings_btn_rect, settings_radius, settings_color);
                 }
             }
-            None => unsafe {
+            None => {
                 let settings_brush = CreateSolidBrush(settings_color);
                 let settings_pen = CreatePen(PS_SOLID, 1, settings_color);
                 let old_pen = SelectObject(hdc, settings_pen as HGDIOBJ);

@@ -840,8 +840,6 @@ pub type GpPen = c_void;
 pub type GpPath = c_void;
 pub type REAL = f32;
 
-pub const GdiplusStartupOutput: usize = 0;
-
 #[repr(C)]
 pub struct GdiplusStartupInput {
     pub GdiplusVersion: u32,
@@ -850,12 +848,12 @@ pub struct GdiplusStartupInput {
     pub SuppressExternalCodecs: BOOL,
 }
 
-pub const BrushTypeSolidColor: i32 = 0;
-pub const GdipDashStyleSolid: i32 = 0;
-pub const GdipUnitPixel: i32 = 2;
-pub const GdipCombineModeReplace: i32 = 0;
+pub const BRUSH_TYPE_SOLID_COLOR: i32 = 0;
+pub const GDIP_DASH_STYLE_SOLID: i32 = 0;
+pub const GDIP_UNIT_PIXEL: i32 = 2;
+pub const GDIP_COMBINE_MODE_REPLACE: i32 = 0;
 pub const GDIPLUS_OK: i32 = 0;
-pub const GdiplusStartupInput_Version: u32 = 1;
+pub const GDIPLUS_VERSION_1: u32 = 1;
 
 /// Convert a 0x00BBGGRR COLORREF-style u32 (as used by `rgb()`) to
 /// GDI+ ARGB (0xAABBGGRR with alpha 255).
@@ -863,8 +861,8 @@ pub fn argb_from_rgb(color: u32) -> u32 {
     0xFF00_0000 | (color & 0x00FF_FFFF)
 }
 
-pub const SmoothingModeAntiAlias: i32 = 4;
-pub const PathFillModeAlternate: i32 = 0;
+pub const SMOOTHING_MODE_ANTI_ALIAS: i32 = 4;
+pub const PATH_FILL_MODE_ALTERNATE: i32 = 0;
 
 #[link(name = "gdiplus")]
 extern "system" {

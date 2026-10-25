@@ -328,7 +328,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
                     g.fill_round_rect(btn_rect, btn_radius, btn_color);
                 }
             }
-            None => unsafe {
+            None => {
                 let btn_brush = CreateSolidBrush(btn_color);
                 let btn_pen = CreatePen(PS_SOLID, 1, btn_color);
                 let old_pen = SelectObject(hdc, btn_pen as HGDIOBJ);

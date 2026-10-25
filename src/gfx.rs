@@ -17,7 +17,7 @@ pub fn ensure_gdiplus() -> bool {
         }
         let mut token: GpToken = std::ptr::null_mut();
         let input = GdiplusStartupInput {
-            GdiplusVersion: GdiplusStartupInput_Version,
+            GdiplusVersion: GDIPLUS_VERSION_1,
             DebugEventCallback: std::ptr::null_mut(),
             SuppressBackgroundThread: 0,
             SuppressExternalCodecs: 0,
@@ -49,7 +49,7 @@ impl Gfx {
             if GdipCreateFromHDC(hdc, &mut graphics) != GDIPLUS_OK || graphics.is_null() {
                 return None;
             }
-            GdipSetSmoothingMode(graphics, SmoothingModeAntiAlias);
+            GdipSetSmoothingMode(graphics, SMOOTHING_MODE_ANTI_ALIAS);
             Some(Gfx { graphics })
         }
     }
@@ -73,7 +73,7 @@ impl Gfx {
         if let Some(path) = rounded_rect_path(rect, radius) {
             unsafe {
                 let mut pen: *mut GpPen = std::ptr::null_mut();
-                if GdipCreatePen1(argb_from_rgb(color), width, GdipUnitPixel, &mut pen) == GDIPLUS_OK
+                if GdipCreatePen1(argb_from_rgb(color), width, GDIP_UNIT_PIXEL, &mut pen) == GDIPLUS_OK
                 {
                     GdipDrawPath(self.graphics, pen, path);
                     GdipDeletePen(pen);
@@ -120,7 +120,7 @@ fn rounded_rect_path(rect: RECT, radius: i32) -> Option<*mut GpPath> {
 
     unsafe {
         let mut path: *mut GpPath = std::ptr::null_mut();
-        if GdipCreatePath(PathFillModeAlternate, &mut path) != GDIPLUS_OK || path.is_null() {
+        if GdipCreatePath(PATH_FILL_MODE_ALTERNATE, &mut path) != GDIPLUS_OK || path.is_null() {
             return None;
         }
         // Four arcs: TR, BR, BL, TL (90 degrees each)
