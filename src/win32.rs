@@ -866,13 +866,16 @@ pub const PATH_FILL_MODE_ALTERNATE: i32 = 0;
 
 #[link(name = "gdiplus")]
 extern "system" {
-    pub fn GdiplusStartup(token: *mut GpToken, input: *const GdiplusStartupInput, output: *mut c_void) -> i32;
+    pub fn GdiplusStartup(
+        token: *mut GpToken,
+        input: *const GdiplusStartupInput,
+        output: *mut c_void,
+    ) -> i32;
     pub fn GdiplusShutdown(token: GpToken);
 
     pub fn GdipCreateFromHDC(hdc: HDC, graphics: *mut *mut GpGraphics) -> i32;
     pub fn GdipDeleteGraphics(graphics: *mut GpGraphics) -> i32;
     pub fn GdipSetSmoothingMode(graphics: *mut GpGraphics, mode: i32) -> i32;
-
 
     pub fn GdipCreateSolidBrush(color: u32, brush: *mut *mut GpBrush) -> i32;
     pub fn GdipDeleteBrush(brush: *mut GpBrush) -> i32;

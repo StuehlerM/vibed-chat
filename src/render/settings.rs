@@ -320,9 +320,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
         let gfx = crate::gfx::Gfx::new(hdc);
         match gfx {
             Some(ref g) => {
-                if ctx.hover_reconnect
-                    && ctx.pressed_element != Some(PressedElement::Reconnect)
-                {
+                if ctx.hover_reconnect && ctx.pressed_element != Some(PressedElement::Reconnect) {
                     g.button_with_ring(btn_rect, btn_radius, btn_color, btn_color);
                 } else {
                     g.fill_round_rect(btn_rect, btn_radius, btn_color);
@@ -346,7 +344,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
                 SelectObject(hdc, old_brush as HGDIOBJ);
                 DeleteObject(btn_pen as HGDIOBJ);
                 DeleteObject(btn_brush as HGDIOBJ);
-            },
+            }
         }
 
         // Focus ring for reconnect button

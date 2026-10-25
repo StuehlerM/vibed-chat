@@ -73,7 +73,8 @@ impl Gfx {
         if let Some(path) = rounded_rect_path(rect, radius) {
             unsafe {
                 let mut pen: *mut GpPen = std::ptr::null_mut();
-                if GdipCreatePen1(argb_from_rgb(color), width, GDIP_UNIT_PIXEL, &mut pen) == GDIPLUS_OK
+                if GdipCreatePen1(argb_from_rgb(color), width, GDIP_UNIT_PIXEL, &mut pen)
+                    == GDIPLUS_OK
                 {
                     GdipDrawPath(self.graphics, pen, path);
                     GdipDeletePen(pen);
@@ -125,7 +126,15 @@ fn rounded_rect_path(rect: RECT, radius: i32) -> Option<*mut GpPath> {
         }
         // Four arcs: TR, BR, BL, TL (90 degrees each)
         GdipAddPathArc(path, x + w - 2.0 * r, y, 2.0 * r, 2.0 * r, 270.0, 90.0);
-        GdipAddPathArc(path, x + w - 2.0 * r, y + h - 2.0 * r, 2.0 * r, 2.0 * r, 0.0, 90.0);
+        GdipAddPathArc(
+            path,
+            x + w - 2.0 * r,
+            y + h - 2.0 * r,
+            2.0 * r,
+            2.0 * r,
+            0.0,
+            90.0,
+        );
         GdipAddPathArc(path, x, y + h - 2.0 * r, 2.0 * r, 2.0 * r, 90.0, 90.0);
         GdipAddPathArc(path, x, y, 2.0 * r, 2.0 * r, 180.0, 90.0);
         GdipClosePathFigure(path);

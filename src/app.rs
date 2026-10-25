@@ -400,10 +400,9 @@ impl AppState {
                 AcpEvent::ProcessDied { code } => {
                     self.acp_connected = false;
                     let msg = match code {
-                        Some(c) => format!(
-                            "Agent process exited (code {}). Press F5 to reconnect",
-                            c
-                        ),
+                        Some(c) => {
+                            format!("Agent process exited (code {}). Press F5 to reconnect", c)
+                        }
                         None => "Agent process died. Press F5 to reconnect".to_string(),
                     };
                     self.show_toast(&msg, ToastKind::Error);
@@ -462,7 +461,10 @@ impl AppState {
                 session.chat.start_streaming();
                 acp.send_prompt(&session.acp_session_id, &text);
             } else {
-                self.show_toast("Not connected to agent. Press F5 to reconnect", ToastKind::Error);
+                self.show_toast(
+                    "Not connected to agent. Press F5 to reconnect",
+                    ToastKind::Error,
+                );
             }
         } else {
             self.show_toast("Agent not started. Press F5 to connect", ToastKind::Error);

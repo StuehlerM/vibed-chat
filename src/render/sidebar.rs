@@ -65,9 +65,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         let gfx = crate::gfx::Gfx::new(hdc);
         match gfx {
             Some(ref g) => {
-                if ctx.hover_new_chat
-                    && ctx.pressed_element != Some(PressedElement::NewChat)
-                {
+                if ctx.hover_new_chat && ctx.pressed_element != Some(PressedElement::NewChat) {
                     g.button_with_ring(btn_rect, radius, btn_color, btn_color);
                 } else {
                     g.fill_round_rect(btn_rect, radius, btn_color);
@@ -91,7 +89,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                 SelectObject(hdc, old_brush as HGDIOBJ);
                 DeleteObject(btn_pen as HGDIOBJ);
                 DeleteObject(btn_brush as HGDIOBJ);
-            },
+            }
         }
 
         // Focus ring for New Chat button
@@ -649,12 +647,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                 if ctx.hover_settings_btn
                     && ctx.pressed_element != Some(PressedElement::SettingsBtn)
                 {
-                    g.button_with_ring(
-                        settings_btn_rect,
-                        settings_radius,
-                        settings_color,
-                        ACCENT,
-                    );
+                    g.button_with_ring(settings_btn_rect, settings_radius, settings_color, ACCENT);
                 } else {
                     g.fill_round_rect(settings_btn_rect, settings_radius, settings_color);
                 }
@@ -677,7 +670,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                 SelectObject(hdc, old_brush as HGDIOBJ);
                 DeleteObject(settings_pen as HGDIOBJ);
                 DeleteObject(settings_brush as HGDIOBJ);
-            },
+            }
         }
 
         // Focus ring for settings button
