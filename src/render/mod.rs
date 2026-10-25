@@ -9,6 +9,7 @@ mod input_box;
 mod messages;
 mod settings;
 mod sidebar;
+mod toast;
 
 #[allow(unused_imports)]
 pub use chat_area::draw_chat_area;
@@ -24,6 +25,8 @@ pub use messages::{compute_message_heights, draw_message_scrollbar, draw_message
 pub use settings::draw_settings_panel;
 #[allow(unused_imports)]
 pub use sidebar::draw_sidebar;
+#[allow(unused_imports)]
+pub use toast::{draw_toast, show_toast, TOAST_DURATION_MS};
 
 use crate::theme::*;
 use crate::ui::PaintContext;
@@ -64,6 +67,9 @@ pub fn paint(hwnd: HWND, ctx: &mut PaintContext) {
         if ctx.show_settings {
             settings::draw_settings_panel(hdc_mem, ctx, scale);
         }
+
+        // Draw toast notification (top-right corner, above everything)
+        toast::draw_toast(hdc_mem, ctx, scale);
 
         // Blit to screen
         BitBlt(hdc_screen, 0, 0, width, height, hdc_mem, 0, 0, SRCCOPY);

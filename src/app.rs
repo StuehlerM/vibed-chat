@@ -6,7 +6,7 @@ use crate::chat::{ChatState, Role};
 use crate::fonts::Fonts;
 use crate::session::{Project, Session};
 use crate::theme::Settings;
-use crate::ui::FocusedElement;
+use crate::ui::{FocusedElement, Toast, ToastKind};
 
 /// Shared application state stored in the window's user data.
 pub struct AppState {
@@ -48,6 +48,7 @@ pub struct AppState {
     pub pending_working_dir: String,
     pub session_counter: usize,
     pub default_working_dir: String,
+    pub toast: Option<Toast>,
 }
 
 impl AppState {
@@ -95,6 +96,7 @@ impl AppState {
             pending_working_dir: String::new(),
             session_counter: 0,
             default_working_dir: default_wd,
+            toast: None,
         }
     }
 
@@ -130,7 +132,11 @@ impl AppState {
             project.session_indices.clear();
         }
         for (i, session) in self.sessions.iter().enumerate() {
-            if let Some(pidx) = self.projects.iter().position(|p| p.path == session.working_dir) {
+            if let Some(pidx) = self
+                .projects
+                .iter()
+                .position(|p| p.path == session.working_dir)
+            {
                 self.projects[pidx].session_indices.push(i);
             }
         }
@@ -155,7 +161,8 @@ impl AppState {
             return;
         }
         let path = self.projects[project_idx].path.clone();
-        let sessions_to_remove: Vec<usize> = self.sessions
+        let sessions_to_remove: Vec<usize> = self
+            .sessions
             .iter()
             .enumerate()
             .filter(|(_, s)| s.working_dir == path)
@@ -301,7 +308,7 @@ impl AppState {
                     if let Some(ref acp) = self.acp {
                         acp.request_session(&wd);
                     }
-                    self.add_system_message_to_active("Connected to agent.");
+                    self.show_toast("Connected to agent", ToastKind::Success);
                 }
                 AcpEvent::SessionReady { session_id } => {
                     if self.pending_new_session && !self.sessions.is_empty() {
@@ -309,13 +316,17 @@ impl AppState {
                         self.sessions[idx].acp_session_id = session_id.clone();
                         self.pending_new_session = false;
                         self.pending_working_dir.clear();
-                        self.add_system_message_to_active("Session ready. Type a message to begin.");
+                        self.add_system_message_to_active(
+                            "Session ready. Type a message to begin.",
+                        );
                     } else {
                         self.session_counter += 1;
                         let name = format!("Chat {}", self.session_counter);
                         let wd = self.default_working_dir.clone();
                         let mut session = Session::new(&session_id, &name, &wd);
-                        session.chat.add_system_message("Session ready. Type a message to begin.");
+                        session
+                            .chat
+                            .add_system_message("Session ready. Type a message to begin.");
                         self.sessions.push(session);
                         self.active_session = self.sessions.len() - 1;
                         self.ensure_project(&wd);
@@ -338,22 +349,38 @@ impl AppState {
                         self.sessions[idx].chat.append_thought_chunk(&text);
                     }
                 }
-                AcpEvent::TurnComplete { session_id, stop_reason: _ } => {
+                AcpEvent::TurnComplete {
+                    session_id,
+                    stop_reason: _,
+                } => {
                     if let Some(idx) = self.find_session_by_acp_id(&session_id) {
                         self.sessions[idx].chat.finish_streaming();
                     } else if let Some(chat) = self.active_chat() {
                         chat.finish_streaming();
                     }
                 }
-                AcpEvent::ToolCall { session_id, name, input } => {
+                AcpEvent::ToolCall {
+                    session_id,
+                    name,
+                    input,
+                } => {
                     let msg = format!("[Tool: {}] {}", name, truncate_str(&input, 200));
                     self.add_system_message_to_session(&session_id, &msg);
                 }
-                AcpEvent::ToolResult { session_id, call_id: _, output } => {
+                AcpEvent::ToolResult {
+                    session_id,
+                    call_id: _,
+                    output,
+                } => {
                     let msg = format!("[Result] {}", truncate_str(&output, 200));
                     self.add_system_message_to_session(&session_id, &msg);
                 }
-                AcpEvent::PermissionRequest { id, session_id, method, params: _ } => {
+                AcpEvent::PermissionRequest {
+                    id,
+                    session_id,
+                    method,
+                    params: _,
+                } => {
                     if self.settings.auto_approve {
                         let msg = format!("[Permission: {} (id={}) - auto-approved]", method, id);
                         self.add_system_message_to_session(&session_id, &msg);
@@ -361,27 +388,35 @@ impl AppState {
                             acp.respond_permission(id, true);
                         }
                     } else {
-                        let msg = format!("[Permission requested: {} (id={}) - auto-approve is OFF]", method, id);
+                        let msg = format!(
+                            "[Permission requested: {} (id={}) - auto-approve is OFF]",
+                            method, id
+                        );
                         self.add_system_message_to_session(&session_id, &msg);
                     }
                 }
                 AcpEvent::ProcessDied { code } => {
                     self.acp_connected = false;
                     let msg = match code {
-                        Some(c) => format!("Agent process exited with code {}. Press F5 to reconnect.", c),
-                        None => "Agent process died. Press F5 to reconnect.".to_string(),
+                        Some(c) => format!(
+                            "Agent process exited (code {}). Press F5 to reconnect",
+                            c
+                        ),
+                        None => "Agent process died. Press F5 to reconnect".to_string(),
                     };
-                    self.add_system_message_to_active(&msg);
+                    self.show_toast(&msg, ToastKind::Error);
                 }
                 AcpEvent::Error(msg) => {
-                    self.add_system_message_to_active(&format!("Error: {}", msg));
+                    self.show_toast(&format!("Error: {}", msg), ToastKind::Error);
                 }
             }
         }
     }
 
     fn find_session_by_acp_id(&self, acp_id: &str) -> Option<usize> {
-        self.sessions.iter().position(|s| s.acp_session_id == acp_id)
+        self.sessions
+            .iter()
+            .position(|s| s.acp_session_id == acp_id)
     }
 
     fn add_system_message_to_active(&mut self, text: &str) {
@@ -389,6 +424,16 @@ impl AppState {
             let idx = self.active_session.min(self.sessions.len() - 1);
             self.sessions[idx].chat.add_system_message(text);
         }
+    }
+
+    /// Show a transient toast (replaces any previous one) in the top-right corner.
+    fn show_toast(&mut self, text: &str, kind: ToastKind) {
+        self.toast = Some(Toast {
+            text: text.to_string(),
+            kind,
+            shown_at: std::time::Instant::now(),
+            duration_ms: crate::render::TOAST_DURATION_MS,
+        });
     }
 
     fn add_system_message_to_session(&mut self, acp_session_id: &str, text: &str) {
@@ -415,10 +460,10 @@ impl AppState {
                 session.chat.start_streaming();
                 acp.send_prompt(&session.acp_session_id, &text);
             } else {
-                session.chat.add_system_message("Not connected to agent. Press F5 to reconnect.");
+                self.show_toast("Not connected to agent. Press F5 to reconnect", ToastKind::Error);
             }
         } else {
-            session.chat.add_system_message("Agent not started. Press F5 to connect.");
+            self.show_toast("Agent not started. Press F5 to connect", ToastKind::Error);
         }
     }
 
@@ -430,10 +475,10 @@ impl AppState {
         match AcpClient::spawn() {
             Ok(client) => {
                 self.acp = Some(client);
-                self.add_system_message_to_active("Connecting to agent...");
+                self.show_toast("Connecting to agent...", ToastKind::Info);
             }
             Err(e) => {
-                self.add_system_message_to_active(&format!("Failed to start agent: {}", e));
+                self.show_toast(&format!("Failed to start agent: {}", e), ToastKind::Error);
             }
         }
     }
