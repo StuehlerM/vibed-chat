@@ -864,37 +864,49 @@ pub fn argb_from_rgb(color: u32) -> u32 {
 pub const SMOOTHING_MODE_ANTI_ALIAS: i32 = 4;
 pub const PATH_FILL_MODE_ALTERNATE: i32 = 0;
 
-#[link(name = "gdiplus")]
+// GDI+ is loaded dynamically at runtime (LoadLibrary/GetProcAddress) instead of
+// linking against gdiplus.lib: some toolchains ship an incomplete import library,
+// which left GdipCreateSolidBrush unresolved on Windows CI.
+pub type GdipCreateFromHDCFn =
+    unsafe extern "system" fn(hdc: HDC, graphics: *mut *mut GpGraphics) -> i32;
+pub type GdipDeleteGraphicsFn = unsafe extern "system" fn(graphics: *mut GpGraphics) -> i32;
+pub type GdipSetSmoothingModeFn =
+    unsafe extern "system" fn(graphics: *mut GpGraphics, mode: i32) -> i32;
+pub type GdipCreateSolidBrushFn =
+    unsafe extern "system" fn(color: u32, brush: *mut *mut GpBrush) -> i32;
+pub type GdipDeleteBrushFn = unsafe extern "system" fn(brush: *mut GpBrush) -> i32;
+pub type GdipCreatePen1Fn =
+    unsafe extern "system" fn(color: u32, width: REAL, unit: i32, pen: *mut *mut GpPen) -> i32;
+pub type GdipDeletePenFn = unsafe extern "system" fn(pen: *mut GpPen) -> i32;
+pub type GdipCreatePathFn =
+    unsafe extern "system" fn(brushMode: i32, path: *mut *mut GpPath) -> i32;
+pub type GdipDeletePathFn = unsafe extern "system" fn(path: *mut GpPath) -> i32;
+pub type GdipAddPathArcFn = unsafe extern "system" fn(
+    path: *mut GpPath,
+    x: REAL,
+    y: REAL,
+    width: REAL,
+    height: REAL,
+    startAngle: REAL,
+    sweepAngle: REAL,
+) -> i32;
+pub type GdipClosePathFigureFn = unsafe extern "system" fn(path: *mut GpPath) -> i32;
+pub type GdipFillPathFn = unsafe extern "system" fn(
+    graphics: *mut GpGraphics,
+    brush: *mut GpBrush,
+    path: *mut GpPath,
+) -> i32;
+pub type GdipDrawPathFn =
+    unsafe extern "system" fn(graphics: *mut GpGraphics, pen: *mut GpPen, path: *mut GpPath) -> i32;
+pub type GdiplusStartupFn = unsafe extern "system" fn(
+    token: *mut GpToken,
+    input: *const GdiplusStartupInput,
+    output: *mut c_void,
+) -> i32;
+pub type GdiplusShutdownFn = unsafe extern "system" fn(token: GpToken);
+
+#[link(name = "kernel32")]
 extern "system" {
-    pub fn GdiplusStartup(
-        token: *mut GpToken,
-        input: *const GdiplusStartupInput,
-        output: *mut c_void,
-    ) -> i32;
-    pub fn GdiplusShutdown(token: GpToken);
-
-    pub fn GdipCreateFromHDC(hdc: HDC, graphics: *mut *mut GpGraphics) -> i32;
-    pub fn GdipDeleteGraphics(graphics: *mut GpGraphics) -> i32;
-    pub fn GdipSetSmoothingMode(graphics: *mut GpGraphics, mode: i32) -> i32;
-
-    pub fn GdipCreateSolidBrush(color: u32, brush: *mut *mut GpBrush) -> i32;
-    pub fn GdipDeleteBrush(brush: *mut GpBrush) -> i32;
-
-    pub fn GdipCreatePen1(color: u32, width: REAL, unit: i32, pen: *mut *mut GpPen) -> i32;
-    pub fn GdipDeletePen(pen: *mut GpPen) -> i32;
-
-    pub fn GdipCreatePath(brushMode: i32, path: *mut *mut GpPath) -> i32;
-    pub fn GdipDeletePath(path: *mut GpPath) -> i32;
-    pub fn GdipAddPathArc(
-        path: *mut GpPath,
-        x: REAL,
-        y: REAL,
-        width: REAL,
-        height: REAL,
-        startAngle: REAL,
-        sweepAngle: REAL,
-    ) -> i32;
-    pub fn GdipClosePathFigure(path: *mut GpPath) -> i32;
-    pub fn GdipFillPath(graphics: *mut GpGraphics, brush: *mut GpBrush, path: *mut GpPath) -> i32;
-    pub fn GdipDrawPath(graphics: *mut GpGraphics, pen: *mut GpPen, path: *mut GpPath) -> i32;
+    pub fn LoadLibraryA(lpLibFileName: LPCSTR) -> HMODULE;
+    pub fn GetProcAddress(hModule: HMODULE, lpProcName: LPCSTR) -> *mut c_void;
 }
