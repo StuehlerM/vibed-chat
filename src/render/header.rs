@@ -6,7 +6,13 @@ use crate::theme::*;
 use crate::ui::PaintContext;
 use crate::win32::*;
 
-pub fn draw_session_header(hdc: HDC, ctx: &PaintContext, chat_left: i32, chat_right: i32, scale: f32) {
+pub fn draw_session_header(
+    hdc: HDC,
+    ctx: &PaintContext,
+    chat_left: i32,
+    chat_right: i32,
+    scale: f32,
+) {
     let header_h = (SESSION_HEADER_HEIGHT as f32 * scale) as i32;
     let header_rect = RECT {
         left: chat_left,
@@ -34,7 +40,13 @@ pub fn draw_session_header(hdc: HDC, ctx: &PaintContext, chat_left: i32, chat_ri
 
         // Thin gradient accent stripe at top of header
         let stripe_h = (2.0 * scale).max(1.0) as i32;
-        let stripe_colors = [GRADIENT_YELLOW, GRADIENT_AMBER, GRADIENT_ORANGE, GRADIENT_RED_ORANGE, GRADIENT_RED];
+        let stripe_colors = [
+            GRADIENT_YELLOW,
+            GRADIENT_AMBER,
+            GRADIENT_ORANGE,
+            GRADIENT_RED_ORANGE,
+            GRADIENT_RED,
+        ];
         let seg_w = (chat_right - chat_left) / 5;
         for (i, &color) in stripe_colors.iter().enumerate() {
             let seg_rect = RECT {
@@ -116,12 +128,21 @@ pub fn draw_session_header(hdc: HDC, ctx: &PaintContext, chat_left: i32, chat_ri
         let dot_cy = header_h / 2;
         let old_font2 = SelectObject(hdc, ctx.fonts.caption as HGDIOBJ);
         let mut sz = POINT { x: 0, y: 0 };
-        GetTextExtentPoint32W(hdc, status_wide.as_ptr(), status_wide.len() as i32 - 1, &mut sz);
+        GetTextExtentPoint32W(
+            hdc,
+            status_wide.as_ptr(),
+            status_wide.len() as i32 - 1,
+            &mut sz,
+        );
         SelectObject(hdc, old_font2 as HGDIOBJ);
         let dot_x = dot_cx - sz.x - dot_r - (6.0 * scale) as i32;
         let dot_color = if pulse_dot {
             let pulse = (ctx.streaming_dots % 30) < 15;
-            if pulse { status_color } else { (status_color & 0x00FFFFFF) | 0x00404040 }
+            if pulse {
+                status_color
+            } else {
+                (status_color & 0x00FFFFFF) | 0x00404040
+            }
         } else {
             status_color
         };
@@ -129,7 +150,13 @@ pub fn draw_session_header(hdc: HDC, ctx: &PaintContext, chat_left: i32, chat_ri
         let dot_pen = CreatePen(PS_SOLID, 1, dot_color);
         let old_pen = SelectObject(hdc, dot_pen as HGDIOBJ);
         let old_brush = SelectObject(hdc, dot_brush as HGDIOBJ);
-        Ellipse(hdc, dot_x - dot_r, dot_cy - dot_r, dot_x + dot_r, dot_cy + dot_r);
+        Ellipse(
+            hdc,
+            dot_x - dot_r,
+            dot_cy - dot_r,
+            dot_x + dot_r,
+            dot_cy + dot_r,
+        );
         SelectObject(hdc, old_pen as HGDIOBJ);
         SelectObject(hdc, old_brush as HGDIOBJ);
         DeleteObject(dot_pen as HGDIOBJ);

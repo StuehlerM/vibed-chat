@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}-
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Verify release binary exists
+        shell: pwsh
+        run: |
+          $exe = "target\release\vibe-chat.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Error "Release binary not found at $exe"
+            exit 1
+          }
+          $size = (Get-Item $exe).Length
+          Write-Host "Release binary: $exe ($([math]::Round($size / 1MB, 2)) MB)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibe-chat-windows
+          path: target\release\vibe-chat.exe
+          retention-days: 30
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target\release\vibe-chat.exe
+          generate_release_notes: true
+          name: ${{ github.ref_name }}

@@ -377,7 +377,11 @@ impl ChatState {
     pub fn delete_selection(&mut self) -> bool {
         if let Some(start) = self.selection_start {
             let end = self.cursor_pos;
-            let (lo, hi) = if start < end { (start, end) } else { (end, start) };
+            let (lo, hi) = if start < end {
+                (start, end)
+            } else {
+                (end, start)
+            };
             if lo < hi {
                 self.input_buffer.replace_range(lo..hi, "");
                 self.cursor_pos = lo;
@@ -392,23 +396,35 @@ impl ChatState {
     pub fn selection_range(&self) -> Option<(usize, usize)> {
         self.selection_start.map(|s| {
             let e = self.cursor_pos;
-            if s < e { (s, e) } else { (e, s) }
+            if s < e {
+                (s, e)
+            } else {
+                (e, s)
+            }
         })
     }
 
     pub fn scroll_up(&mut self, delta: i32, viewport_height: i32) {
         self.scroll_offset -= delta;
         let max_scroll = (self.total_content_height - viewport_height).max(0);
-        if self.scroll_offset > max_scroll { self.scroll_offset = max_scroll; }
-        if self.scroll_offset < 0 { self.scroll_offset = 0; }
+        if self.scroll_offset > max_scroll {
+            self.scroll_offset = max_scroll;
+        }
+        if self.scroll_offset < 0 {
+            self.scroll_offset = 0;
+        }
         self.is_at_bottom = self.scroll_offset >= max_scroll;
     }
 
     pub fn scroll_down(&mut self, delta: i32, viewport_height: i32) {
         self.scroll_offset += delta;
         let max_scroll = (self.total_content_height - viewport_height).max(0);
-        if self.scroll_offset > max_scroll { self.scroll_offset = max_scroll; }
-        if self.scroll_offset < 0 { self.scroll_offset = 0; }
+        if self.scroll_offset > max_scroll {
+            self.scroll_offset = max_scroll;
+        }
+        if self.scroll_offset < 0 {
+            self.scroll_offset = 0;
+        }
         self.is_at_bottom = self.scroll_offset >= max_scroll;
     }
 
@@ -420,17 +436,24 @@ impl ChatState {
 
     pub fn compute_message_height(msg: &Message, content_width: i32, line_height: i32) -> i32 {
         use crate::theme::{MESSAGE_INNER_PADDING, MESSAGE_PADDING, MESSAGE_SPACING};
-        let usable_width = (content_width - 2 * MESSAGE_PADDING - 2 * MESSAGE_INNER_PADDING).max(50);
+        let usable_width =
+            (content_width - 2 * MESSAGE_PADDING - 2 * MESSAGE_INNER_PADDING).max(50);
         let chars_per_line = (usable_width / 7).max(10);
         let mut total_lines = 0i32;
         for run in &msg.runs {
             for line in run.text.split('\n') {
                 let char_count = line.chars().count() as i32;
-                let lines_needed = if char_count == 0 { 1 } else { (char_count + chars_per_line - 1) / chars_per_line };
+                let lines_needed = if char_count == 0 {
+                    1
+                } else {
+                    (char_count + chars_per_line - 1) / chars_per_line
+                };
                 total_lines += lines_needed.max(1);
             }
         }
-        if total_lines == 0 { total_lines = 1; }
+        if total_lines == 0 {
+            total_lines = 1;
+        }
         total_lines * line_height + 2 * MESSAGE_INNER_PADDING + MESSAGE_SPACING
     }
 
@@ -451,7 +474,9 @@ impl ChatState {
                 result.push((i, y));
             }
             y += msg.height;
-            if y > viewport_height { break; }
+            if y > viewport_height {
+                break;
+            }
         }
         result
     }
