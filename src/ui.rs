@@ -39,8 +39,25 @@ pub enum FocusedElement {
     Reconnect,
 }
 
+/// Transient toast notification (e.g. agent connection status).
+#[derive(Clone)]
+pub struct Toast {
+    pub text: String,
+    pub kind: ToastKind,
+    pub shown_at: std::time::Instant,
+    pub duration_ms: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    Info,
+    Success,
+    Error,
+}
+
 /// Bundles all data needed for a paint pass.
 pub struct PaintContext<'a> {
+    pub toast: Option<Toast>,
     pub projects: &'a [Project],
     pub sessions: &'a mut Vec<Session>,
     pub active_session: usize,
@@ -59,6 +76,7 @@ pub struct PaintContext<'a> {
     pub hover_project_menu: Option<usize>,
     pub hover_settings_btn: bool,
     pub hover_settings_close: bool,
+    pub hover_reconnect: bool,
     pub hover_thinking_toggle: Option<usize>,
     pub hover_settings_toggle: Option<usize>,
     pub pressed_element: Option<PressedElement>,

@@ -5,9 +5,9 @@ use crate::json::{self, Json};
 use crate::win32::CREATE_NO_WINDOW;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 #[cfg(windows)]
@@ -21,11 +21,22 @@ pub enum AcpEvent {
     /// A chunk of the agent's thinking/reasoning (collapsible in UI)
     ThoughtChunk { session_id: String, text: String },
     /// The agent's turn is complete
-    TurnComplete { session_id: String, stop_reason: String },
+    TurnComplete {
+        session_id: String,
+        stop_reason: String,
+    },
     /// A tool call was made
-    ToolCall { session_id: String, name: String, input: String },
+    ToolCall {
+        session_id: String,
+        name: String,
+        input: String,
+    },
     /// A tool result came back
-    ToolResult { session_id: String, call_id: String, output: String },
+    ToolResult {
+        session_id: String,
+        call_id: String,
+        output: String,
+    },
     /// Permission request from the agent
     PermissionRequest {
         id: Json,
@@ -176,7 +187,9 @@ impl AcpClient {
 
     /// Request creation of a new session (call after initialize succeeds).
     pub fn request_session(&self, cwd: &str) {
-        let _ = self.cmd_tx.send(AcpCommand::NewSessionInternal { cwd: cwd.to_string() });
+        let _ = self.cmd_tx.send(AcpCommand::NewSessionInternal {
+            cwd: cwd.to_string(),
+        });
     }
 
     pub fn respond_permission(&self, id: Json, approved: bool) {
@@ -343,10 +356,7 @@ fn writer_thread(
                         "result",
                         Json::object(vec![(
                             "outcome",
-                            Json::object(vec![(
-                                "outcome",
-                                Json::String(outcome.to_string()),
-                            )]),
+                            Json::object(vec![("outcome", Json::String(outcome.to_string()))]),
                         )]),
                     ),
                 ]);
@@ -372,7 +382,12 @@ fn send_jsonrpc(stdin: &mut ChildStdin, msg: &Json) -> bool {
 
 // ── Reader thread ────────────────────────────────────────────
 
-fn reader_thread(stdout: ChildStdout, state: Arc<Mutex<AcpState>>, event_tx: Sender<AcpEvent>, died_sent: Arc<AtomicBool>) {
+fn reader_thread(
+    stdout: ChildStdout,
+    state: Arc<Mutex<AcpState>>,
+    event_tx: Sender<AcpEvent>,
+    died_sent: Arc<AtomicBool>,
+) {
     let reader = BufReader::new(stdout);
     for line in reader.lines() {
         let line = match line {
@@ -577,7 +592,11 @@ fn handle_notification(
 
 // ── Monitor thread ───────────────────────────────────────────
 
-fn monitor_thread(child_arc: Arc<Mutex<Option<Child>>>, event_tx: Sender<AcpEvent>, died_sent: Arc<AtomicBool>) {
+fn monitor_thread(
+    child_arc: Arc<Mutex<Option<Child>>>,
+    event_tx: Sender<AcpEvent>,
+    died_sent: Arc<AtomicBool>,
+) {
     loop {
         thread::sleep(std::time::Duration::from_millis(500));
         let mut child_lock = child_arc.lock().unwrap();

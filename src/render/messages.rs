@@ -88,7 +88,13 @@ fn draw_message(
         let thinking_text_height = if has_thinking && !msg.thinking_collapsed {
             let mut th = 0i32;
             for run in &msg.thinking_runs {
-                let style_font = if run.style.code { fonts.code } else if run.style.bold { fonts.bold } else { fonts.normal };
+                let style_font = if run.style.code {
+                    fonts.code
+                } else if run.style.bold {
+                    fonts.bold
+                } else {
+                    fonts.normal
+                };
                 SelectObject(hdc, style_font as HGDIOBJ);
                 for line_text in run.text.split('\n') {
                     if line_text.is_empty() {
@@ -99,7 +105,9 @@ fn draw_message(
                     th += wrapped.len() as i32 * line_height;
                 }
             }
-            if th == 0 { th = line_height; }
+            if th == 0 {
+                th = line_height;
+            }
             th
         } else {
             0
@@ -110,7 +118,13 @@ fn draw_message(
         let mut lines: Vec<(String, Style, i32)> = Vec::new();
 
         for run in &msg.runs {
-            let style_font = if run.style.code { fonts.code } else if run.style.bold { fonts.bold } else { fonts.normal };
+            let style_font = if run.style.code {
+                fonts.code
+            } else if run.style.bold {
+                fonts.bold
+            } else {
+                fonts.normal
+            };
             SelectObject(hdc, style_font as HGDIOBJ);
             for line_text in run.text.split('\n') {
                 if line_text.is_empty() {
@@ -131,7 +145,12 @@ fn draw_message(
 
         // Calculate bubble dimensions
         let thinking_section_h = if has_thinking {
-            thinking_header_h + if msg.thinking_collapsed { 0 } else { thinking_text_height + bubble_padding }
+            thinking_header_h
+                + if msg.thinking_collapsed {
+                    0
+                } else {
+                    thinking_text_height + bubble_padding
+                }
         } else {
             0
         };
@@ -139,7 +158,11 @@ fn draw_message(
         let bubble_height = if msg.role == Role::System {
             total_text_height + 2 * bubble_padding
         } else {
-            total_text_height + 2 * bubble_padding + label_height + (SPACE_1 as f32 * scale) as i32 + thinking_section_h
+            total_text_height
+                + 2 * bubble_padding
+                + label_height
+                + (SPACE_1 as f32 * scale) as i32
+                + thinking_section_h
         };
         let msg_padding = (MESSAGE_PADDING as f32 * scale) as i32;
         let bubble_width = if msg.role == Role::System {
@@ -177,7 +200,15 @@ fn draw_message(
             let pen = CreatePen(PS_SOLID, 1, bubble_color);
             let old_pen = SelectObject(hdc, pen as HGDIOBJ);
             let old_brush = SelectObject(hdc, brush as HGDIOBJ);
-            RoundRect(hdc, bubble_rect.left, bubble_rect.top, bubble_rect.right, bubble_rect.bottom, radius * 2, radius * 2);
+            RoundRect(
+                hdc,
+                bubble_rect.left,
+                bubble_rect.top,
+                bubble_rect.right,
+                bubble_rect.bottom,
+                radius * 2,
+                radius * 2,
+            );
             SelectObject(hdc, old_pen as HGDIOBJ);
             SelectObject(hdc, old_brush as HGDIOBJ);
             DeleteObject(pen as HGDIOBJ);
@@ -201,20 +232,34 @@ fn draw_message(
                 right: bubble_left + bubble_width - bubble_padding,
                 bottom: content_y + label_height,
             };
-            DrawTextW(hdc, label_wide.as_ptr(), label_wide.len() as i32 - 1, &mut label_rect as LPRECT, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOCLIP);
+            DrawTextW(
+                hdc,
+                label_wide.as_ptr(),
+                label_wide.len() as i32 - 1,
+                &mut label_rect as LPRECT,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOCLIP,
+            );
             SelectObject(hdc, label_font as HGDIOBJ);
             content_y += label_height + (SPACE_1 as f32 * scale) as i32;
         }
 
         // Draw thinking section (agent messages only)
         if has_thinking && msg.role == Role::Agent {
-            let arrow = if msg.thinking_collapsed { "\u{25B6}" } else { "\u{25BC}" };
+            let arrow = if msg.thinking_collapsed {
+                "\u{25B6}"
+            } else {
+                "\u{25BC}"
+            };
             let header_text = if msg.thinking_collapsed {
                 format!("{} Thinking...", arrow)
             } else {
                 format!("{} Thinking", arrow)
             };
-            let header_color = if hover_thinking { ACCENT } else { THINKING_TEXT_COLOR };
+            let header_color = if hover_thinking {
+                ACCENT
+            } else {
+                THINKING_TEXT_COLOR
+            };
 
             let header_font = SelectObject(hdc, fonts.label as HGDIOBJ);
             SetTextColor(hdc, header_color);
@@ -225,7 +270,13 @@ fn draw_message(
                 right: bubble_left + bubble_width - bubble_padding,
                 bottom: content_y + thinking_header_h,
             };
-            DrawTextW(hdc, header_wide.as_ptr(), header_wide.len() as i32 - 1, &mut header_rect as LPRECT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+            DrawTextW(
+                hdc,
+                header_wide.as_ptr(),
+                header_wide.len() as i32 - 1,
+                &mut header_rect as LPRECT,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
+            );
             SelectObject(hdc, header_font as HGDIOBJ);
             content_y += thinking_header_h;
 
@@ -243,7 +294,13 @@ fn draw_message(
 
                 let mut think_y = content_y + bubble_padding / 2;
                 for run in &msg.thinking_runs {
-                    let style_font = if run.style.code { fonts.code } else if run.style.bold { fonts.bold } else { fonts.italic };
+                    let style_font = if run.style.code {
+                        fonts.code
+                    } else if run.style.bold {
+                        fonts.bold
+                    } else {
+                        fonts.italic
+                    };
                     SelectObject(hdc, style_font as HGDIOBJ);
                     SetTextColor(hdc, THINKING_TEXT_COLOR);
                     for line_text in run.text.split('\n') {
@@ -254,7 +311,13 @@ fn draw_message(
                         let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
                         for (w_text, w_style, _) in &wrapped {
                             if !w_text.is_empty() {
-                                let w_font = if w_style.code { fonts.code } else if w_style.italic { fonts.italic } else { fonts.normal };
+                                let w_font = if w_style.code {
+                                    fonts.code
+                                } else if w_style.italic {
+                                    fonts.italic
+                                } else {
+                                    fonts.normal
+                                };
                                 SelectObject(hdc, w_font as HGDIOBJ);
                                 let wide = to_wide(w_text);
                                 let mut tr = RECT {
@@ -263,7 +326,13 @@ fn draw_message(
                                     right: bubble_left + bubble_width - bubble_padding,
                                     bottom: think_y + line_height,
                                 };
-                                DrawTextW(hdc, wide.as_ptr(), wide.len() as i32 - 1, &mut tr as LPRECT, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOCLIP);
+                                DrawTextW(
+                                    hdc,
+                                    wide.as_ptr(),
+                                    wide.len() as i32 - 1,
+                                    &mut tr as LPRECT,
+                                    DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOCLIP,
+                                );
                             }
                             think_y += line_height;
                         }
@@ -300,7 +369,13 @@ fn draw_message(
                 right: bubble_left + bubble_width - bubble_padding,
                 bottom: text_y + line_height,
             };
-            DrawTextW(hdc, wide.as_ptr(), wide.len() as i32 - 1, &mut text_rect as LPRECT, draw_format);
+            DrawTextW(
+                hdc,
+                wide.as_ptr(),
+                wide.len() as i32 - 1,
+                &mut text_rect as LPRECT,
+                draw_format,
+            );
             SelectObject(hdc, style_font as HGDIOBJ);
             text_y += line_height;
         }
@@ -334,7 +409,13 @@ pub fn compute_message_heights(
             // Main text height
             let mut total_text_height = 0i32;
             for run in &msg.runs {
-                let style_font = if run.style.code { fonts.code } else if run.style.bold { fonts.bold } else { fonts.normal };
+                let style_font = if run.style.code {
+                    fonts.code
+                } else if run.style.bold {
+                    fonts.bold
+                } else {
+                    fonts.normal
+                };
                 SelectObject(hdc, style_font as HGDIOBJ);
                 for line_text in run.text.split('\n') {
                     if line_text.is_empty() {
@@ -357,7 +438,13 @@ pub fn compute_message_heights(
                 if !msg.thinking_collapsed {
                     let mut th = 0i32;
                     for run in &msg.thinking_runs {
-                        let style_font = if run.style.code { fonts.code } else if run.style.bold { fonts.bold } else { fonts.normal };
+                        let style_font = if run.style.code {
+                            fonts.code
+                        } else if run.style.bold {
+                            fonts.bold
+                        } else {
+                            fonts.normal
+                        };
                         SelectObject(hdc, style_font as HGDIOBJ);
                         for line_text in run.text.split('\n') {
                             if line_text.is_empty() {
@@ -368,7 +455,9 @@ pub fn compute_message_heights(
                             th += wrapped.len() as i32 * line_height;
                         }
                     }
-                    if th == 0 { th = line_height; }
+                    if th == 0 {
+                        th = line_height;
+                    }
                     thinking_section_h += th + bubble_padding;
                     msg.thinking_height = th + bubble_padding;
                 } else {
@@ -379,7 +468,11 @@ pub fn compute_message_heights(
             let bubble_height = if msg.role == Role::System {
                 total_text_height + 2 * bubble_padding
             } else {
-                total_text_height + 2 * bubble_padding + label_height + (SPACE_1 as f32 * scale) as i32 + thinking_section_h
+                total_text_height
+                    + 2 * bubble_padding
+                    + label_height
+                    + (SPACE_1 as f32 * scale) as i32
+                    + thinking_section_h
             };
 
             msg.height = bubble_height + spacing;
@@ -393,7 +486,15 @@ pub fn compute_message_heights(
 }
 
 /// Draw a thin scrollbar on the right edge of the chat area.
-pub fn draw_message_scrollbar(hdc: HDC, ctx: &PaintContext, _chat_left: i32, chat_right: i32, area_bottom: i32, area_top: i32, scale: f32) {
+pub fn draw_message_scrollbar(
+    hdc: HDC,
+    ctx: &PaintContext,
+    _chat_left: i32,
+    chat_right: i32,
+    area_bottom: i32,
+    area_top: i32,
+    scale: f32,
+) {
     let idx = ctx.active_session.min(ctx.sessions.len().saturating_sub(1));
     let chat = &ctx.sessions[idx].chat;
     let total = chat.total_content_height;
@@ -418,7 +519,11 @@ pub fn draw_message_scrollbar(hdc: HDC, ctx: &PaintContext, _chat_left: i32, cha
         let max_scroll = (total - viewport).max(0);
         let thumb_ratio = viewport as f32 / total as f32;
         let thumb_h = ((viewport as f32 * thumb_ratio).max(12.0 * scale)) as i32;
-        let scroll_ratio = if max_scroll > 0 { chat.scroll_offset as f32 / max_scroll as f32 } else { 0.0 };
+        let scroll_ratio = if max_scroll > 0 {
+            chat.scroll_offset as f32 / max_scroll as f32
+        } else {
+            0.0
+        };
         let thumb_y = area_top + (scroll_ratio * (viewport - thumb_h) as f32) as i32;
         let thumb_rect = RECT {
             left: sb_x,
@@ -426,7 +531,11 @@ pub fn draw_message_scrollbar(hdc: HDC, ctx: &PaintContext, _chat_left: i32, cha
             right: chat_right,
             bottom: (thumb_y + thumb_h).min(area_bottom),
         };
-        let thumb_color = if ctx.hover_scrollbar { SCROLLBAR_THUMB_HOVER } else { SCROLLBAR_THUMB };
+        let thumb_color = if ctx.hover_scrollbar {
+            SCROLLBAR_THUMB_HOVER
+        } else {
+            SCROLLBAR_THUMB
+        };
         let thumb_brush = CreateSolidBrush(thumb_color);
         FillRect(hdc, &thumb_rect, thumb_brush);
         DeleteObject(thumb_brush as HGDIOBJ);

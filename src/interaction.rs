@@ -10,9 +10,21 @@ use crate::win32::*;
 /// A sidebar list entry - either a project header or a session item.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SidebarEntry {
-    ProjectHeader { project_idx: usize, top: i32, bottom: i32 },
-    SessionItem { session_idx: usize, project_idx: usize, top: i32, bottom: i32 },
-    NewProjectBtn { top: i32, bottom: i32 },
+    ProjectHeader {
+        project_idx: usize,
+        top: i32,
+        bottom: i32,
+    },
+    SessionItem {
+        session_idx: usize,
+        project_idx: usize,
+        top: i32,
+        bottom: i32,
+    },
+    NewProjectBtn {
+        top: i32,
+        bottom: i32,
+    },
 }
 
 impl AppState {
@@ -24,6 +36,7 @@ impl AppState {
         self.hover_project_menu = None;
         self.hover_settings_btn = false;
         self.hover_settings_close = false;
+        self.hover_reconnect = false;
         self.hover_thinking_toggle = None;
         self.hover_settings_toggle = None;
         self.hover_scrollbar = false;
@@ -67,13 +80,21 @@ impl AppState {
         let next = match pos {
             Some(p) => {
                 if shift {
-                    if p == 0 { order.len() - 1 } else { p - 1 }
+                    if p == 0 {
+                        order.len() - 1
+                    } else {
+                        p - 1
+                    }
                 } else {
                     (p + 1) % order.len()
                 }
             }
             None => {
-                if shift { order.len() - 1 } else { 0 }
+                if shift {
+                    order.len() - 1
+                } else {
+                    0
+                }
             }
         };
 
@@ -108,7 +129,10 @@ impl AppState {
         let mut entries = Vec::new();
         let mut total_h = 0i32;
 
-        entries.push(SidebarEntry::NewProjectBtn { top: new_proj_top, bottom: new_proj_bottom });
+        entries.push(SidebarEntry::NewProjectBtn {
+            top: new_proj_top,
+            bottom: new_proj_bottom,
+        });
         total_h += new_proj_h + group_gap;
 
         for (pidx, project) in self.projects.iter().enumerate() {
@@ -278,12 +302,26 @@ impl AppState {
                     scale,
                 );
 
-                if point_in_rect(x, y, archive_rect.0, archive_rect.1, archive_rect.2, archive_rect.3) {
+                if point_in_rect(
+                    x,
+                    y,
+                    archive_rect.0,
+                    archive_rect.1,
+                    archive_rect.2,
+                    archive_rect.3,
+                ) {
                     self.pressed_element = Some(PressedElement::SessionArchive(session_idx));
                     self.toggle_archive_session(session_idx);
                     return true;
                 }
-                if point_in_rect(x, y, delete_rect.0, delete_rect.1, delete_rect.2, delete_rect.3) {
+                if point_in_rect(
+                    x,
+                    y,
+                    delete_rect.0,
+                    delete_rect.1,
+                    delete_rect.2,
+                    delete_rect.3,
+                ) {
                     self.pressed_element = Some(PressedElement::SessionDelete(session_idx));
                     self.delete_session(session_idx);
                     return true;
@@ -300,7 +338,8 @@ impl AppState {
             // Settings button
             let settings_btn_top = self.client_height - footer_h + pad / 2;
             let settings_btn_bottom = self.client_height - pad / 2;
-            if x >= pad && x <= sidebar_w - pad && y >= settings_btn_top && y <= settings_btn_bottom {
+            if x >= pad && x <= sidebar_w - pad && y >= settings_btn_top && y <= settings_btn_bottom
+            {
                 self.pressed_element = Some(PressedElement::SettingsBtn);
                 self.show_settings = !self.show_settings;
                 return true;
@@ -347,16 +386,22 @@ impl AppState {
             };
             let input_left = chat_left + input_margin;
             let input_right = chat_right - input_margin;
-            let idx = self.active_session.min(self.sessions.len().saturating_sub(1));
+            let idx = self
+                .active_session
+                .min(self.sessions.len().saturating_sub(1));
             let input_h = (self.sessions[idx].chat.input_height as f32 * scale) as i32;
             let input_bottom = input_box_top + input_h;
 
-            if x >= input_left && x <= input_right && y >= input_box_top && y <= input_bottom
-                && !self.sessions.is_empty() {
-                    let idx = self.active_session.min(self.sessions.len() - 1);
-                    self.sessions[idx].chat.input_focused = true;
-                    self.focused_element = Some(FocusedElement::Input);
-                }
+            if x >= input_left
+                && x <= input_right
+                && y >= input_box_top
+                && y <= input_bottom
+                && !self.sessions.is_empty()
+            {
+                let idx = self.active_session.min(self.sessions.len() - 1);
+                self.sessions[idx].chat.input_focused = true;
+                self.focused_element = Some(FocusedElement::Input);
+            }
         }
         false
     }
@@ -377,6 +422,7 @@ impl AppState {
         self.hover_project_menu = None;
         self.hover_settings_btn = false;
         self.hover_settings_close = false;
+        self.hover_reconnect = false;
         self.hover_thinking_toggle = None;
         self.hover_settings_toggle = None;
         self.hover_scrollbar = false;
@@ -405,7 +451,12 @@ impl AppState {
             let reconnect_y = self.reconnect_button_y();
             let btn_h = (36.0 * scale) as i32;
             let panel_left = self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32;
-            if x >= panel_left && x <= self.client_width && y >= reconnect_y && y <= reconnect_y + btn_h {
+            if x >= panel_left
+                && x <= self.client_width
+                && y >= reconnect_y
+                && y <= reconnect_y + btn_h
+            {
+                self.hover_reconnect = true;
                 return;
             }
         }
@@ -428,7 +479,8 @@ impl AppState {
 
             if total_list_height > avail_height {
                 let sb_w = (4.0 * scale).max(3.0) as i32;
-                if x >= sidebar_w - sb_w - 1 && x <= sidebar_w && y >= list_top && y <= list_bottom {
+                if x >= sidebar_w - sb_w - 1 && x <= sidebar_w && y >= list_top && y <= list_bottom
+                {
                     self.hover_sidebar_scrollbar = true;
                     return;
                 }
@@ -454,12 +506,26 @@ impl AppState {
                     scale,
                 );
 
-                if point_in_rect(x, y, archive_rect.0, archive_rect.1, archive_rect.2, archive_rect.3) {
+                if point_in_rect(
+                    x,
+                    y,
+                    archive_rect.0,
+                    archive_rect.1,
+                    archive_rect.2,
+                    archive_rect.3,
+                ) {
                     self.hover_session_archive = Some(session_idx);
                     self.hover_sidebar_item = Some(session_idx);
                     return;
                 }
-                if point_in_rect(x, y, delete_rect.0, delete_rect.1, delete_rect.2, delete_rect.3) {
+                if point_in_rect(
+                    x,
+                    y,
+                    delete_rect.0,
+                    delete_rect.1,
+                    delete_rect.2,
+                    delete_rect.3,
+                ) {
                     self.hover_session_delete = Some(session_idx);
                     self.hover_sidebar_item = Some(session_idx);
                     return;
@@ -475,21 +541,26 @@ impl AppState {
             // Settings button hover
             let settings_btn_top = self.client_height - footer_h + pad / 2;
             let settings_btn_bottom = self.client_height - pad / 2;
-            if x >= pad && x <= sidebar_w - pad && y >= settings_btn_top && y <= settings_btn_bottom {
+            if x >= pad && x <= sidebar_w - pad && y >= settings_btn_top && y <= settings_btn_bottom
+            {
                 self.hover_settings_btn = true;
             }
         } else {
             // Send button hover
             if let Some((btn_left, btn_top, btn_right, btn_bottom)) = self.send_btn_rect() {
-                if x >= btn_left && x <= btn_right && y >= btn_top && y <= btn_bottom
-                    && !self.sessions.is_empty() {
-                        let idx = self.active_session.min(self.sessions.len() - 1);
-                        let chat = &self.sessions[idx].chat;
-                        if !chat.input_buffer.trim().is_empty() && !chat.is_waiting_for_agent {
-                            self.hover_send_btn = true;
-                            return;
-                        }
+                if x >= btn_left
+                    && x <= btn_right
+                    && y >= btn_top
+                    && y <= btn_bottom
+                    && !self.sessions.is_empty()
+                {
+                    let idx = self.active_session.min(self.sessions.len() - 1);
+                    let chat = &self.sessions[idx].chat;
+                    if !chat.input_buffer.trim().is_empty() && !chat.is_waiting_for_agent {
+                        self.hover_send_btn = true;
+                        return;
                     }
+                }
             }
 
             // Session header hover
@@ -512,7 +583,12 @@ impl AppState {
                 let viewport_bottom = self.messages_viewport_bottom();
                 let viewport = viewport_bottom - viewport_top;
                 let total = self.sessions[idx].chat.total_content_height;
-                if total > viewport && x >= chat_right - sb_w && x <= chat_right && y >= viewport_top && y <= viewport_bottom {
+                if total > viewport
+                    && x >= chat_right - sb_w
+                    && x <= chat_right
+                    && y >= viewport_top
+                    && y <= viewport_bottom
+                {
                     self.hover_scrollbar = true;
                     return;
                 }
@@ -549,16 +625,23 @@ impl AppState {
                     let msg = &self.sessions[idx].chat.messages[msg_idx];
                     if msg.role == Role::Agent && !msg.thinking.is_empty() {
                         let text_width = max_bubble_width - 2 * bubble_padding;
-                        
+
                         let bubble_width = (text_width + 2 * bubble_padding).min(max_bubble_width);
                         let bubble_left = chat_left + msg_padding;
                         let adjusted_y = y_top + viewport_top;
-                        let toggle_top = adjusted_y + bubble_padding + label_height + (SPACE_1 as f32 * scale) as i32;
+                        let toggle_top = adjusted_y
+                            + bubble_padding
+                            + label_height
+                            + (SPACE_1 as f32 * scale) as i32;
                         let toggle_bottom = toggle_top + thinking_header_h;
                         let toggle_left = bubble_left + bubble_padding;
                         let toggle_right = bubble_left + bubble_width - bubble_padding;
 
-                        if x >= toggle_left && x <= toggle_right && y >= toggle_top && y <= toggle_bottom {
+                        if x >= toggle_left
+                            && x <= toggle_right
+                            && y >= toggle_top
+                            && y <= toggle_bottom
+                        {
                             self.hover_thinking_toggle = Some(msg_idx);
                             return;
                         }
@@ -649,7 +732,10 @@ impl AppState {
         let extra_gap = (SPACE_3 as f32 * scale) as i32;
         let info_row_h = (24.0 * scale) as i32;
 
-        let mut ty = spad + (SPACE_6 as f32 * scale) as i32 + (SPACE_1 as f32 * scale) as i32 + (SPACE_4 as f32 * scale) as i32;
+        let mut ty = spad
+            + (SPACE_6 as f32 * scale) as i32
+            + (SPACE_1 as f32 * scale) as i32
+            + (SPACE_4 as f32 * scale) as i32;
         // Appearance: section + 2 toggles
         ty += section_h;
         ty += row_h + gap;
@@ -677,7 +763,9 @@ impl AppState {
     }
 
     fn scrollbar_at(&self, x: i32, y: i32) -> bool {
-        if self.sessions.is_empty() { return false; }
+        if self.sessions.is_empty() {
+            return false;
+        }
         let scale = self.dpi as f32 / 96.0;
         let chat_right = if self.show_settings {
             self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32
@@ -690,25 +778,33 @@ impl AppState {
         let viewport_bottom = self.messages_viewport_bottom();
         let viewport = viewport_bottom - viewport_top;
         let total = self.sessions[idx].chat.total_content_height;
-        if total <= viewport { return false; }
+        if total <= viewport {
+            return false;
+        }
         x >= chat_right - sb_w && x <= chat_right && y >= viewport_top && y <= viewport_bottom
     }
 
     fn jump_to_scrollbar_position(&mut self, _x: i32, y: i32) -> bool {
-        if self.sessions.is_empty() { return false; }
+        if self.sessions.is_empty() {
+            return false;
+        }
         let scale = self.dpi as f32 / 96.0;
         let idx = self.active_session.min(self.sessions.len() - 1);
         let viewport_top = self.messages_viewport_top();
         let viewport_bottom = self.messages_viewport_bottom();
         let viewport = viewport_bottom - viewport_top;
         let total = self.sessions[idx].chat.total_content_height;
-        if total <= viewport { return false; }
+        if total <= viewport {
+            return false;
+        }
 
         let max_scroll = (total - viewport).max(0);
         let thumb_ratio = viewport as f32 / total as f32;
         let thumb_h = ((viewport as f32 * thumb_ratio).max(12.0 * scale)) as i32;
         let track_h = viewport - thumb_h;
-        if track_h <= 0 { return false; }
+        if track_h <= 0 {
+            return false;
+        }
 
         let click_offset = (y - viewport_top - thumb_h / 2).max(0).min(track_h);
         let click_ratio = click_offset as f32 / track_h as f32;
@@ -729,7 +825,10 @@ impl AppState {
         let gap = (SPACE_1 as f32 * scale) as i32;
         let extra_gap = (SPACE_3 as f32 * scale) as i32;
 
-        let mut ty = spad + (SPACE_6 as f32 * scale) as i32 + (SPACE_1 as f32 * scale) as i32 + (SPACE_4 as f32 * scale) as i32;
+        let mut ty = spad
+            + (SPACE_6 as f32 * scale) as i32
+            + (SPACE_1 as f32 * scale) as i32
+            + (SPACE_4 as f32 * scale) as i32;
 
         // Appearance section
         ty += section_h;
@@ -752,10 +851,18 @@ impl AppState {
         let t3_bottom = ty + row_h;
 
         if x >= panel_left + spad && x <= self.client_width - spad {
-            if y >= t0_top && y <= t0_bottom { return Some(0); }
-            if y >= t1_top && y <= t1_bottom { return Some(1); }
-            if y >= t2_top && y <= t2_bottom { return Some(2); }
-            if y >= t3_top && y <= t3_bottom { return Some(3); }
+            if y >= t0_top && y <= t0_bottom {
+                return Some(0);
+            }
+            if y >= t1_top && y <= t1_bottom {
+                return Some(1);
+            }
+            if y >= t2_top && y <= t2_bottom {
+                return Some(2);
+            }
+            if y >= t3_top && y <= t3_bottom {
+                return Some(3);
+            }
         }
         None
     }
@@ -798,7 +905,8 @@ impl AppState {
                 let bubble_width = (text_width + 2 * bubble_padding).min(max_bubble_width);
                 let bubble_left = chat_left + msg_padding;
                 let adjusted_y = y_top + viewport_top;
-                let toggle_top = adjusted_y + bubble_padding + label_height + (SPACE_1 as f32 * scale) as i32;
+                let toggle_top =
+                    adjusted_y + bubble_padding + label_height + (SPACE_1 as f32 * scale) as i32;
                 let toggle_bottom = toggle_top + thinking_header_h;
                 let toggle_left = bubble_left + bubble_padding;
                 let toggle_right = bubble_left + bubble_width - bubble_padding;

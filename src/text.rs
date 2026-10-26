@@ -42,7 +42,12 @@ pub fn truncate_to_width(hdc: HDC, text: &str, max_width: i32, font: HFONT) -> S
         let ellipsis = "...";
         let ell_wide = to_wide(ellipsis);
         let mut ell_size = POINT { x: 0, y: 0 };
-        GetTextExtentPoint32W(hdc, ell_wide.as_ptr(), ell_wide.len() as i32 - 1, &mut ell_size);
+        GetTextExtentPoint32W(
+            hdc,
+            ell_wide.as_ptr(),
+            ell_wide.len() as i32 - 1,
+            &mut ell_size,
+        );
 
         let chars: Vec<char> = text.chars().collect();
         let mut lo = 0;
@@ -52,7 +57,12 @@ pub fn truncate_to_width(hdc: HDC, text: &str, max_width: i32, font: HFONT) -> S
             let candidate: String = chars[..mid].iter().collect::<String>() + ellipsis;
             let cand_wide = to_wide(&candidate);
             let mut cand_size = POINT { x: 0, y: 0 };
-            GetTextExtentPoint32W(hdc, cand_wide.as_ptr(), cand_wide.len() as i32 - 1, &mut cand_size);
+            GetTextExtentPoint32W(
+                hdc,
+                cand_wide.as_ptr(),
+                cand_wide.len() as i32 - 1,
+                &mut cand_size,
+            );
             if cand_size.x <= max_width {
                 lo = mid;
             } else {
@@ -70,8 +80,20 @@ pub fn truncate_to_width(hdc: HDC, text: &str, max_width: i32, font: HFONT) -> S
 
 // ── Word wrapping ────────────────────────────────────────────
 
-pub fn wrap_text(hdc: HDC, text: &str, max_width: i32, style: &Style, fonts: &Fonts) -> Vec<(String, Style, i32)> {
-    let font = if style.code { fonts.code } else if style.bold { fonts.bold } else { fonts.normal };
+pub fn wrap_text(
+    hdc: HDC,
+    text: &str,
+    max_width: i32,
+    style: &Style,
+    fonts: &Fonts,
+) -> Vec<(String, Style, i32)> {
+    let font = if style.code {
+        fonts.code
+    } else if style.bold {
+        fonts.bold
+    } else {
+        fonts.normal
+    };
     let old_font = unsafe { SelectObject(hdc, font as HGDIOBJ) };
 
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -85,10 +107,16 @@ pub fn wrap_text(hdc: HDC, text: &str, max_width: i32, style: &Style, fonts: &Fo
     let mut current_width = 0i32;
 
     for word in words {
-        let test_line = if current_line.is_empty() { word.to_string() } else { format!("{} {}", current_line, word) };
+        let test_line = if current_line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{} {}", current_line, word)
+        };
         let wide = to_wide(&test_line);
         let mut size = POINT { x: 0, y: 0 };
-        unsafe { GetTextExtentPoint32W(hdc, wide.as_ptr(), wide.len() as i32 - 1, &mut size); }
+        unsafe {
+            GetTextExtentPoint32W(hdc, wide.as_ptr(), wide.len() as i32 - 1, &mut size);
+        }
 
         if size.x <= max_width || current_line.is_empty() {
             current_line = test_line;
@@ -97,7 +125,14 @@ pub fn wrap_text(hdc: HDC, text: &str, max_width: i32, style: &Style, fonts: &Fo
             lines.push((current_line.clone(), *style, current_width));
             current_line = word.to_string();
             let word_wide = to_wide(word);
-            unsafe { GetTextExtentPoint32W(hdc, word_wide.as_ptr(), word_wide.len() as i32 - 1, &mut size); }
+            unsafe {
+                GetTextExtentPoint32W(
+                    hdc,
+                    word_wide.as_ptr(),
+                    word_wide.len() as i32 - 1,
+                    &mut size,
+                );
+            }
             current_width = size.x;
         }
     }
@@ -158,8 +193,9 @@ pub fn date_group_label(created_at: &std::time::Instant) -> String {
         if cy == yy && cm == ym && cd == yd {
             "Yesterday".to_string()
         } else {
-            let month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            let month_names = [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ];
             let m_idx = (cm.saturating_sub(1)) as usize % 12;
             format!("{} {}", month_names[m_idx], cd)
         }

@@ -494,19 +494,35 @@ fn draw_send_button(
         };
 
         let radius = (btn_rect.height() / 2).max((RADIUS_MD as f32 * scale) as i32);
-        let btn_brush = CreateSolidBrush(btn_color);
-        let btn_pen = CreatePen(PS_SOLID, 1, btn_color);
-        let old_pen = SelectObject(hdc, btn_pen as HGDIOBJ);
-        let old_brush = SelectObject(hdc, btn_brush as HGDIOBJ);
-        RoundRect(
-            hdc,
-            btn_rect.left,
-            btn_rect.top,
-            btn_rect.right,
-            btn_rect.bottom,
-            radius * 2,
-            radius * 2,
-        );
+        let gfx = crate::gfx::Gfx::new(hdc);
+        match gfx {
+            Some(ref g) => {
+                if hover && enabled && !is_pressed {
+                    g.button_with_ring(*btn_rect, radius, btn_color, btn_color);
+                } else {
+                    g.fill_round_rect(*btn_rect, radius, btn_color);
+                }
+            }
+            None => {
+                let btn_brush = CreateSolidBrush(btn_color);
+                let btn_pen = CreatePen(PS_SOLID, 1, btn_color);
+                let old_pen = SelectObject(hdc, btn_pen as HGDIOBJ);
+                let old_brush = SelectObject(hdc, btn_brush as HGDIOBJ);
+                RoundRect(
+                    hdc,
+                    btn_rect.left,
+                    btn_rect.top,
+                    btn_rect.right,
+                    btn_rect.bottom,
+                    radius * 2,
+                    radius * 2,
+                );
+                SelectObject(hdc, old_pen as HGDIOBJ);
+                SelectObject(hdc, old_brush as HGDIOBJ);
+                DeleteObject(btn_pen as HGDIOBJ);
+                DeleteObject(btn_brush as HGDIOBJ);
+            }
+        }
 
         // Focus ring
         if focused {
@@ -526,11 +542,6 @@ fn draw_send_button(
             SelectObject(hdc, old_fb as HGDIOBJ);
             DeleteObject(focus_pen as HGDIOBJ);
         }
-
-        SelectObject(hdc, old_pen as HGDIOBJ);
-        SelectObject(hdc, old_brush as HGDIOBJ);
-        DeleteObject(btn_pen as HGDIOBJ);
-        DeleteObject(btn_brush as HGDIOBJ);
 
         // Arrow icon
         let icon_color = if enabled {

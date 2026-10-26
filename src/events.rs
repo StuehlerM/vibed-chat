@@ -82,7 +82,11 @@ pub unsafe extern "system" fn wnd_proc(
                     // Cursor blink
                     let now = std::time::Instant::now();
                     let blink_ms = (*app_state).caret_blink_ms as u128;
-                    if now.duration_since((*app_state).last_cursor_blink).as_millis() > blink_ms {
+                    if now
+                        .duration_since((*app_state).last_cursor_blink)
+                        .as_millis()
+                        > blink_ms
+                    {
                         (*app_state).cursor_visible = !(*app_state).cursor_visible;
                         (*app_state).last_cursor_blink = now;
                     }
@@ -112,7 +116,12 @@ pub unsafe extern "system" fn wnd_proc(
                 let mut ps = PAINTSTRUCT {
                     hdc: std::ptr::null_mut(),
                     fErase: 0,
-                    rcPaint: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+                    rcPaint: RECT {
+                        left: 0,
+                        top: 0,
+                        right: 0,
+                        bottom: 0,
+                    },
                     fRestore: 0,
                     fIncUpdate: 0,
                     rgbReserved: [0; 32],
@@ -120,6 +129,7 @@ pub unsafe extern "system" fn wnd_proc(
                 BeginPaint(hwnd, &mut ps);
 
                 let mut ctx = PaintContext {
+                    toast: state.toast.clone(),
                     projects: &state.projects,
                     sessions: &mut state.sessions,
                     active_session: state.active_session,
@@ -138,6 +148,7 @@ pub unsafe extern "system" fn wnd_proc(
                     hover_project_menu: state.hover_project_menu,
                     hover_settings_btn: state.hover_settings_btn,
                     hover_settings_close: state.hover_settings_close,
+                    hover_reconnect: state.hover_reconnect,
                     hover_thinking_toggle: state.hover_thinking_toggle,
                     hover_settings_toggle: state.hover_settings_toggle,
                     pressed_element: state.pressed_element,
@@ -173,7 +184,9 @@ pub unsafe extern "system" fn wnd_proc(
                 }
 
                 // Ctrl+N to open folder picker and create a new chat
-                if wparam as u8 == VK_N as u8 && (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0 {
+                if wparam as u8 == VK_N as u8
+                    && (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0
+                {
                     if let Some(path) = crate::interaction::pick_folder_dialog() {
                         state.new_chat_in_dir(&path);
                     }
@@ -202,7 +215,10 @@ pub unsafe extern "system" fn wnd_proc(
                     if !state.sessions.is_empty() {
                         let idx = state.active_session.min(state.sessions.len() - 1);
                         let session_name = state.sessions[idx].name.clone();
-                        let msg = to_wide(&format!("Delete session \"{}\"? This cannot be undone.", session_name));
+                        let msg = to_wide(&format!(
+                            "Delete session \"{}\"? This cannot be undone.",
+                            session_name
+                        ));
                         let title = to_wide("Delete Session");
                         let result = MessageBoxW(
                             hwnd,
@@ -405,9 +421,11 @@ pub unsafe extern "system" fn wnd_proc(
                     let avail_height = list_bottom - list_top;
                     let max_scroll = (total_list_height - avail_height).max(0);
                     if scroll_amount > 0 {
-                        state.sidebar_scroll_offset = (state.sidebar_scroll_offset - scroll_amount).max(0);
+                        state.sidebar_scroll_offset =
+                            (state.sidebar_scroll_offset - scroll_amount).max(0);
                     } else {
-                        state.sidebar_scroll_offset = (state.sidebar_scroll_offset + (-scroll_amount)).min(max_scroll);
+                        state.sidebar_scroll_offset =
+                            (state.sidebar_scroll_offset + (-scroll_amount)).min(max_scroll);
                     }
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                     return 0;
@@ -438,16 +456,16 @@ pub unsafe extern "system" fn wnd_proc(
                 let x = (lparam & 0xFFFF) as i16 as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
 
-                if x < sidebar_w && (
-                    state.hover_new_chat
-                    || state.hover_new_project
-                    || state.hover_project.is_some()
-                    || state.hover_sidebar_item.is_some()
-                    || state.hover_settings_btn
-                    || state.hover_sidebar_scrollbar
-                    || state.hover_session_archive.is_some()
-                    || state.hover_session_delete.is_some()
-                ) {
+                if x < sidebar_w
+                    && (state.hover_new_chat
+                        || state.hover_new_project
+                        || state.hover_project.is_some()
+                        || state.hover_sidebar_item.is_some()
+                        || state.hover_settings_btn
+                        || state.hover_sidebar_scrollbar
+                        || state.hover_session_archive.is_some()
+                        || state.hover_session_delete.is_some())
+                {
                     let hcursor = LoadCursorW(std::ptr::null_mut(), IDC_HAND);
                     SetCursor(hcursor);
                     return 1;
@@ -541,7 +559,12 @@ pub fn create_window(
         let class_name = to_wide(WINDOW_CLASS_NAME);
         let title = to_wide(WINDOW_TITLE);
 
-        let mut rect = RECT { left: 0, top: 0, right: width, bottom: height };
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        };
         AdjustWindowRectEx(&mut rect, WS_OVERLAPPEDWINDOW, 0, 0);
 
         let hwnd = CreateWindowExW(
@@ -586,7 +609,12 @@ pub fn create_window(
         (*app_state).dpi = dpi;
         (*app_state).init_fonts();
 
-        let mut client_rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut client_rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         GetClientRect(hwnd, &mut client_rect);
         (*app_state).client_width = client_rect.width();
         (*app_state).client_height = client_rect.height();

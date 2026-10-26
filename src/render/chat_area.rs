@@ -21,11 +21,26 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
     unsafe {
         let old_font = SelectObject(hdc, ctx.fonts.normal as HGDIOBJ);
         let mut tm = TEXTMETRICW {
-            tmHeight: 0, tmAscent: 0, tmDescent: 0, tmInternalLeading: 0,
-            tmExternalLeading: 0, tmAveCharWidth: 0, tmMaxCharWidth: 0,
-            tmWeight: 0, tmOverhang: 0, tmDigitizedAspectX: 0, tmDigitizedAspectY: 0,
-            tmFirstChar: 0, tmLastChar: 0, tmDefaultChar: 0, tmBreakChar: 0,
-            tmItalic: 0, tmUnderlined: 0, tmStruckOut: 0, tmPitchAndFamily: 0, tmCharSet: 0,
+            tmHeight: 0,
+            tmAscent: 0,
+            tmDescent: 0,
+            tmInternalLeading: 0,
+            tmExternalLeading: 0,
+            tmAveCharWidth: 0,
+            tmMaxCharWidth: 0,
+            tmWeight: 0,
+            tmOverhang: 0,
+            tmDigitizedAspectX: 0,
+            tmDigitizedAspectY: 0,
+            tmFirstChar: 0,
+            tmLastChar: 0,
+            tmDefaultChar: 0,
+            tmBreakChar: 0,
+            tmItalic: 0,
+            tmUnderlined: 0,
+            tmStruckOut: 0,
+            tmPitchAndFamily: 0,
+            tmCharSet: 0,
         };
         GetTextMetricsW(hdc, &mut tm);
         let line_height = (tm.tmHeight as f32 * LINE_HEIGHT_RATIO) as i32;
@@ -39,7 +54,14 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
 
         // Compute dynamic input height based on content
         let idx = ctx.active_session.min(ctx.sessions.len().saturating_sub(1));
-        let logical_input_h = compute_input_height(hdc, ctx.fonts, &ctx.sessions[idx].chat, chat_w, line_height, scale);
+        let logical_input_h = compute_input_height(
+            hdc,
+            ctx.fonts,
+            &ctx.sessions[idx].chat,
+            chat_w,
+            line_height,
+            scale,
+        );
         ctx.sessions[idx].chat.input_height = logical_input_h;
         let input_h = (logical_input_h as f32 * scale) as i32;
 
@@ -67,13 +89,35 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
 
         // Clip messages to area between session header and input
         {
-            let clip_rgn = CreateRectRgn(chat_left, messages_area_top, chat_right, messages_area_bottom);
+            let clip_rgn = CreateRectRgn(
+                chat_left,
+                messages_area_top,
+                chat_right,
+                messages_area_bottom,
+            );
             SelectClipRgn(hdc, clip_rgn);
 
             if ctx.sessions[idx].chat.messages.is_empty() {
-                draw_empty_state(hdc, ctx, chat_left, chat_right, messages_area_bottom, messages_area_top, scale);
+                draw_empty_state(
+                    hdc,
+                    ctx,
+                    chat_left,
+                    chat_right,
+                    messages_area_bottom,
+                    messages_area_top,
+                    scale,
+                );
             } else {
-                draw_messages(hdc, ctx, chat_left, chat_right, messages_area_bottom, messages_area_top, line_height, scale);
+                draw_messages(
+                    hdc,
+                    ctx,
+                    chat_left,
+                    chat_right,
+                    messages_area_bottom,
+                    messages_area_top,
+                    line_height,
+                    scale,
+                );
             }
 
             SelectClipRgn(hdc, std::ptr::null_mut());
@@ -81,10 +125,33 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         }
 
         // Draw message scrollbar
-        draw_message_scrollbar(hdc, ctx, chat_left, chat_right, messages_area_bottom, messages_area_top, scale);
+        draw_message_scrollbar(
+            hdc,
+            ctx,
+            chat_left,
+            chat_right,
+            messages_area_bottom,
+            messages_area_top,
+            scale,
+        );
 
         // Draw input box with send button
-        draw_input_box(hdc, ctx.sessions, ctx.active_session, ctx.fonts, chat_left, chat_right, input_box_top, input_h, line_height, scale, ctx.cursor_visible, ctx.focused_element, ctx.hover_send_btn, ctx.pressed_element);
+        draw_input_box(
+            hdc,
+            ctx.sessions,
+            ctx.active_session,
+            ctx.fonts,
+            chat_left,
+            chat_right,
+            input_box_top,
+            input_h,
+            line_height,
+            scale,
+            ctx.cursor_visible,
+            ctx.focused_element,
+            ctx.hover_send_btn,
+            ctx.pressed_element,
+        );
 
         // Draw hint row below input
         draw_hint_row(hdc, ctx, chat_left, chat_right, hint_row_top, scale);
