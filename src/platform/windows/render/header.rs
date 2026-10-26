@@ -1,10 +1,10 @@
 // Session header bar: session name on the left, connection status on the right.
 #![allow(dead_code)]
 
-use crate::text::truncate_to_width;
+use crate::platform::windows::ffi::*;
+use crate::platform::windows::paint::PaintContext;
+use crate::platform::windows::text::truncate_to_width;
 use crate::theme::*;
-use crate::ui::PaintContext;
-use crate::win32::*;
 
 pub fn draw_session_header(
     hdc: HDC,

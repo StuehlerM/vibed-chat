@@ -2,12 +2,12 @@
 #![allow(dead_code)]
 
 use crate::chat::{ChatState, Message, Role};
-use crate::fonts::{select_font_for_style, Fonts};
 use crate::markdown::Style;
-use crate::text::wrap_text;
+use crate::platform::windows::ffi::*;
+use crate::platform::windows::fonts::{select_font_for_style, Fonts};
+use crate::platform::windows::paint::PaintContext;
+use crate::platform::windows::text::wrap_text;
 use crate::theme::*;
-use crate::ui::PaintContext;
-use crate::win32::*;
 
 #[allow(clippy::too_many_arguments)]
 pub fn draw_messages(

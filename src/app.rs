@@ -1,12 +1,35 @@
 // Application state: projects, sessions, ACP coordination, settings, fonts, DPI.
+// This module is platform-independent. Platform-specific resources (fonts)
+// are stored as opaque handles managed by the platform backend.
 #![allow(dead_code)]
 
 use crate::acp::{AcpClient, AcpEvent};
 use crate::chat::{ChatState, Role};
-use crate::fonts::Fonts;
 use crate::session::{Project, Session};
 use crate::theme::Settings;
 use crate::ui::{FocusedElement, Toast, ToastKind};
+
+/// Opaque handle to platform-specific font resources.
+/// On Windows this wraps GDI HFONT handles; on other platforms it will
+/// wrap the native font handles. The core app never inspects the contents.
+pub struct FontsHandle {
+    inner: Box<dyn std::any::Any + Send>,
+}
+
+impl FontsHandle {
+    pub fn new<T: Send + 'static>(fonts: T) -> Self {
+        Self {
+            inner: Box::new(fonts),
+        }
+    }
+
+    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+        self.inner.downcast_ref()
+    }
+}
+
+/// Duration (ms) for which a toast notification stays visible.
+pub const TOAST_DURATION_MS: u64 = 4000;
 
 /// Shared application state stored in the window's user data.
 pub struct AppState {
@@ -15,7 +38,7 @@ pub struct AppState {
     pub active_session: usize,
     pub show_settings: bool,
     pub settings: Settings,
-    pub fonts: Option<Fonts>,
+    pub fonts: Option<FontsHandle>,
     pub dpi: u32,
     pub acp: Option<AcpClient>,
     pub acp_connected: bool,
@@ -53,8 +76,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        let caret_blink = unsafe { crate::win32::GetCaretBlinkTime() };
+    pub fn new(caret_blink_ms: u32) -> Self {
         let default_wd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
@@ -73,7 +95,11 @@ impl AppState {
             should_quit: false,
             last_cursor_blink: std::time::Instant::now(),
             cursor_visible: true,
-            caret_blink_ms: if caret_blink == 0 { 500 } else { caret_blink },
+            caret_blink_ms: if caret_blink_ms == 0 {
+                500
+            } else {
+                caret_blink_ms
+            },
             hover_sidebar_item: None,
             hover_new_chat: false,
             hover_new_project: false,
@@ -102,14 +128,6 @@ impl AppState {
         }
     }
 
-    pub fn init_fonts(&mut self) {
-        self.fonts = Some(Fonts::new(self.dpi));
-    }
-
-    pub fn scale_fonts(&mut self) {
-        self.init_fonts();
-    }
-
     pub fn active_chat(&mut self) -> Option<&mut ChatState> {
         if self.sessions.is_empty() {
             return None;
@@ -118,7 +136,7 @@ impl AppState {
         Some(&mut self.sessions[idx].chat)
     }
 
-    // ── Project management ───────────────────────────────────
+    // ── Project management ──────────────────────────────────────────────────
 
     pub fn ensure_project(&mut self, path: &str) -> usize {
         if let Some(idx) = self.projects.iter().position(|p| p.path == path) {
@@ -182,7 +200,7 @@ impl AppState {
         self.rebuild_project_indices();
     }
 
-    // ── Session management ───────────────────────────────────
+    // ── Session management ──────────────────────────────────────────────────
 
     pub fn create_local_session(&mut self, working_dir: &str) {
         self.session_counter += 1;
@@ -211,7 +229,6 @@ impl AppState {
     pub fn toggle_archive_session(&mut self, idx: usize) {
         if let Some(session) = self.sessions.get_mut(idx) {
             session.archived = !session.archived;
-            // If we just archived the active session, switch to the nearest non-archived
             if session.archived && self.active_session == idx {
                 self.active_session = self.nearest_visible_session(idx);
             }
@@ -223,13 +240,11 @@ impl AppState {
         if idx >= self.sessions.len() {
             return false;
         }
-        // Don't delete the session that's currently streaming
         if self.sessions[idx].chat.is_waiting_for_agent {
             return false;
         }
         self.sessions.remove(idx);
         self.rebuild_project_indices();
-        // Adjust active_session index
         if self.sessions.is_empty() {
             self.active_session = 0;
             self.create_local_session_default();
@@ -244,16 +259,13 @@ impl AppState {
     /// Find the nearest non-archived session to the given index.
     fn nearest_visible_session(&self, from_idx: usize) -> usize {
         let show_archived = self.settings.show_archived;
-        // Search outward from from_idx
         for dist in 0..self.sessions.len() {
-            // Try below
             if from_idx + dist < self.sessions.len() {
                 let s = &self.sessions[from_idx + dist];
                 if !s.archived || show_archived {
                     return from_idx + dist;
                 }
             }
-            // Try above
             if dist > 0 && from_idx >= dist {
                 let s = &self.sessions[from_idx - dist];
                 if !s.archived || show_archived {
@@ -433,7 +445,7 @@ impl AppState {
             text: text.to_string(),
             kind,
             shown_at: std::time::Instant::now(),
-            duration_ms: crate::render::TOAST_DURATION_MS,
+            duration_ms: TOAST_DURATION_MS,
         });
     }
 

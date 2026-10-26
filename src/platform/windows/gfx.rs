@@ -3,7 +3,7 @@
 // toolchain import-library gaps; if loading fails, callers fall back to GDI.
 #![allow(dead_code)]
 
-use crate::win32::*;
+use crate::platform::windows::ffi::*;
 use std::ffi::c_void;
 
 /// Function pointers into gdiplus.dll, resolved once at startup.

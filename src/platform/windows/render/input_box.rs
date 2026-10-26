@@ -2,12 +2,13 @@
 #![allow(dead_code)]
 
 use crate::chat::ChatState;
-use crate::fonts::Fonts;
+use crate::platform::windows::ffi::*;
+use crate::platform::windows::fonts::Fonts;
+use crate::platform::windows::paint::PaintContext;
+use crate::platform::windows::text::measure_text_width;
 use crate::session::Session;
-use crate::text::measure_text_width;
 use crate::theme::*;
-use crate::ui::{FocusedElement, PaintContext, PressedElement};
-use crate::win32::*;
+use crate::ui::{FocusedElement, PressedElement};
 
 /// Compute the required input box height in logical pixels based on content.
 pub fn compute_input_height(
@@ -494,7 +495,7 @@ fn draw_send_button(
         };
 
         let radius = (btn_rect.height() / 2).max((RADIUS_MD as f32 * scale) as i32);
-        let gfx = crate::gfx::Gfx::new(hdc);
+        let gfx = crate::platform::windows::gfx::Gfx::new(hdc);
         match gfx {
             Some(ref g) => {
                 if hover && enabled && !is_pressed {

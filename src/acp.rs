@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 
 use crate::json::{self, Json};
-use crate::win32::CREATE_NO_WINDOW;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -104,9 +103,12 @@ impl AcpClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
-        // Hide the console window - spawn vibe-acp without a visible CLI
+        // Hide the console window on Windows - spawn vibe-acp without a visible CLI
         #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        {
+            use crate::platform::windows::ffi::CREATE_NO_WINDOW;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
 
         let mut child = cmd
             .spawn()

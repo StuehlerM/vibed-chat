@@ -1,8 +1,13 @@
 // Theme: colors, spacing tokens, typography scale, layout constants, and Settings.
 // All pixel values are in logical pixels (scaled by DPI at render time).
+// This module is fully platform-independent - colors are stored as 0x00BBGGRR (COLORREF).
 #![allow(dead_code)]
 
-use crate::win32::rgb;
+/// Pack RGB into a COLORREF-style u32 (0x00BBGGRR), matching Win32 convention.
+/// Platform backends convert this to their native color format as needed.
+pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
+    (b as u32) << 16 | (g as u32) << 8 | (r as u32)
+}
 
 // ── Spacing token scale (8pt base grid, logical px) ──────────
 pub const SPACE_0: i32 = 0;
