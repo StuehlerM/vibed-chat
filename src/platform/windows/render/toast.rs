@@ -1,9 +1,10 @@
 // Toast notification: transient popup in the top-right corner (agent connection status).
 #![allow(dead_code)]
 
+use crate::platform::windows::ffi::*;
+use crate::platform::windows::paint::PaintContext;
 use crate::theme::*;
-use crate::ui::{PaintContext, Toast, ToastKind};
-use crate::win32::*;
+use crate::ui::{Toast, ToastKind};
 
 /// How long a toast stays visible.
 pub const TOAST_DURATION_MS: u64 = 4000;

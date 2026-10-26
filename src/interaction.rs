@@ -1,11 +1,13 @@
 // User interaction: mouse click handling, hover tracking, keyboard focus cycling, layout computation.
+// This module is platform-independent - it operates on abstract coordinates and
+// app state. Platform-specific dialogs (folder picker, etc.) are delegated to
+// the platform backend trait.
 #![allow(dead_code)]
 
 use crate::app::AppState;
 use crate::chat::Role;
 use crate::theme::*;
 use crate::ui::{FocusedElement, PressedElement};
-use crate::win32::*;
 
 /// A sidebar list entry - either a project header or a session item.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -919,44 +921,6 @@ impl AppState {
             }
         }
         false
-    }
-}
-
-// ── Folder picker dialog ─────────────────────────────────────
-
-/// Open a folder picker dialog and return the selected path, or None if cancelled.
-pub fn pick_folder_dialog() -> Option<String> {
-    unsafe {
-        let _ = OleInitialize(std::ptr::null_mut());
-
-        let title = to_wide("Select a project folder");
-        let mut display_name: Vec<u16> = vec![0; 260];
-
-        let mut bi = BROWSEINFOW {
-            hwndOwner: std::ptr::null_mut(),
-            pidlRoot: std::ptr::null(),
-            pszDisplayName: display_name.as_mut_ptr(),
-            lpszTitle: title.as_ptr(),
-            ulFlags: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_NONEWFOLDERBUTTON,
-            lpfn: None,
-            lParam: 0,
-            iImage: 0,
-        };
-
-        let pidl = SHBrowseForFolderW(&mut bi);
-        if pidl.is_null() {
-            return None;
-        }
-
-        let mut path_buf: Vec<u16> = vec![0; 260];
-        let ok = SHGetPathFromIDListW(pidl, path_buf.as_mut_ptr());
-        CoTaskMemFree(pidl as *mut std::ffi::c_void);
-
-        if ok == 0 {
-            return None;
-        }
-
-        Some(from_wide(path_buf.as_ptr()))
     }
 }
 

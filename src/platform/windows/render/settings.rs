@@ -1,9 +1,10 @@
 // Settings panel rendering: toggle switches, info rows, reconnect button.
 #![allow(dead_code)]
 
+use crate::platform::windows::ffi::*;
+use crate::platform::windows::paint::PaintContext;
 use crate::theme::*;
-use crate::ui::{FocusedElement, PaintContext, PressedElement};
-use crate::win32::*;
+use crate::ui::{FocusedElement, PressedElement};
 
 pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
     let panel_w = ctx.settings_w();
@@ -317,7 +318,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             NEW_CHAT_BTN_BG
         };
         let btn_radius = (RADIUS_MD as f32 * scale) as i32;
-        let gfx = crate::gfx::Gfx::new(hdc);
+        let gfx = crate::platform::windows::gfx::Gfx::new(hdc);
         match gfx {
             Some(ref g) => {
                 if ctx.hover_reconnect && ctx.pressed_element != Some(PressedElement::Reconnect) {

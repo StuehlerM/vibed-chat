@@ -1,40 +1,40 @@
-// ACP Chat - Barebone Windows ACP Client
-// Entry point: register window class, create window, run message loop.
+// vibe-chat - Cross-platform ACP Chat Client
+// Entry point: dispatches to the platform backend.
 
-#![windows_subsystem = "windows"]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod acp;
 mod app;
 mod chat;
-mod events;
-mod fonts;
-mod gfx;
 mod input;
 mod interaction;
 mod json;
 mod markdown;
-mod render;
+mod platform;
 mod session;
 mod text;
 mod theme;
 mod ui;
-mod win32;
-
-use app::AppState;
-use std::ptr;
-use win32::*;
 
 fn main() {
+    platform::run();
+}
+
+/// Application entry point called by the platform backend after initialization.
+/// On Windows this is called from platform::windows::run().
+#[cfg(windows)]
+pub fn app_entry() {
+    use crate::app::{AppState, FontsHandle};
+    use crate::platform::windows::{ffi::*, fonts::Fonts, window};
+    use std::ptr;
+
     unsafe {
-        // Set DPI awareness
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let _ = SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
 
-        // Get module handle
         let hinstance = GetModuleHandleW(ptr::null());
 
-        // Register window class
-        if !events::register_class(hinstance) {
+        if !window::register_class(hinstance) {
             MessageBoxW(
                 ptr::null_mut(),
                 to_wide("Failed to register window class").as_ptr(),
@@ -44,14 +44,12 @@ fn main() {
             return;
         }
 
-        // Create application state
-        let mut app_state = Box::new(AppState::new());
+        let caret_blink = GetCaretBlinkTime();
+        let mut app_state = Box::new(AppState::new(caret_blink));
 
-        // Create a placeholder session in the default working directory
         app_state.as_mut().create_local_session_default();
 
-        // Create window (larger default for sidebar layout)
-        let hwnd = events::create_window(hinstance, &mut *app_state, 1100, 700);
+        let hwnd = window::create_window(hinstance, &mut *app_state, 1100, 700);
 
         if hwnd.is_null() {
             MessageBoxW(
@@ -63,15 +61,16 @@ fn main() {
             return;
         }
 
-        // Auto-connect to agent
+        // Initialize fonts and store them in the platform-agnostic handle
+        let fonts = Fonts::new(app_state.dpi);
+        app_state.fonts = Some(FontsHandle::new(fonts));
+
         app_state.as_mut().connect_acp();
 
-        // Add welcome message
         app_state.as_mut().sessions[0]
             .chat
             .add_system_message("ACP Chat started. Connecting to agent...");
 
-        // Message loop
         let mut msg = MSG {
             hwnd: ptr::null_mut(),
             message: 0,
@@ -85,14 +84,12 @@ fn main() {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
 
-            // Check if we should quit
             let state_ptr = GetWindowLongPtrW(msg.hwnd, -21) as *mut AppState;
             if !state_ptr.is_null() && (*state_ptr).should_quit {
                 break;
             }
         }
 
-        // Cleanup
         if let Some(a) = app_state.acp.take() {
             a.shutdown();
         }

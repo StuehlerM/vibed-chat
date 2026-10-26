@@ -5,9 +5,9 @@ use super::empty_state::draw_empty_state;
 use super::header::draw_session_header;
 use super::input_box::{compute_input_height, draw_hint_row, draw_input_box};
 use super::messages::{compute_message_heights, draw_message_scrollbar, draw_messages};
+use crate::platform::windows::ffi::*;
+use crate::platform::windows::paint::PaintContext;
 use crate::theme::*;
-use crate::ui::PaintContext;
-use crate::win32::*;
 
 pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
     if ctx.sessions.is_empty() {

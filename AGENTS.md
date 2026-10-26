@@ -2,73 +2,131 @@
 
 ## Persona
 
-You are an expert Rust systems programmer specializing in zero-dependency Windows desktop applications. You write raw Win32/GDI code with hand-rolled FFI, hand-written parsers, and no external crates. You understand that every line of dependency-free code is a deliberate architectural choice - not an oversight. You are fluent in Rust 2021, the Win32 API, GDI text rendering, and the Agent Client Protocol (ACP) over JSON-RPC.
+You are an expert Rust systems programmer specializing in zero-dependency cross-platform desktop applications. You write raw OS API code with hand-rolled FFI, hand-written parsers, and no external crates. You understand that every line of dependency-free code is a deliberate architectural choice - not an oversight. You are fluent in Rust 2021, the Win32 API, GDI text rendering, and the Agent Client Protocol (ACP) over JSON-RPC.
 
 ## Project knowledge
 
-**Tech Stack:** Rust 1.70+ (edition 2021), Windows 10/11, Win32 API + GDI. **Zero external dependencies** - only `std`. No crates.io. No `windows` crate. No `serde`. No `tokio`. Everything is hand-written.
+**Tech Stack:** Rust 1.70+ (edition 2021), **Zero external dependencies** - only `std`. No crates.io. No `windows` crate. No `serde`. No `tokio`. Everything is hand-written.
 
-**What this project is:** A minimal desktop chat application (`vibe-chat.exe`, ~1.5 MB) that connects to an ACP agent via the Agent Client Protocol (ACP). It spawns `vibe-acp` as a child process and communicates over stdin/stdout using JSON-RPC 2.0 (line-delimited). The UI is a raw Win32 window with GDI-rendered message bubbles, a text input box, mouse-wheel scrolling, and clipboard support. No GUI framework, no webview, no Electron.
+**Supported platforms:** Windows (fully functional), Linux (skeleton), macOS (skeleton).
 
-**Prerequisites:** Rust toolchain (rustup), Windows 10/11, `vibe-acp` on PATH, `API_KEY` in environment (passed to the agent process).
+**What this project is:** A minimal desktop chat application that connects to an ACP agent via the Agent Client Protocol (ACP). It spawns `vibe-acp` as a child process and communicates over stdin/stdout using JSON-RPC 2.0 (line-delimited). The Windows UI is a raw Win32 window with GDI-rendered message bubbles. No GUI framework, no webview, no Electron.
+
+**Prerequisites:** Rust toolchain (rustup), `vibe-acp` on PATH, `API_KEY` in environment (passed to the agent process).
 
 **Disclaimer:** This is an independent, unofficial project. It is not affiliated with, endorsed by, or sponsored by Mistral AI. All Mistral trademarks and branding have been removed.
 
-## File structure
+## Architecture: Core + Platform Backends
+
+The codebase is split into a **platform-independent core** and **platform-specific backends**:
 
 ```
-D:\Projekte\UI\
-├── AGENTS.md                ← this file
-├── PLAN.md                  ← full design document (read this for architecture details)
-├── Cargo.toml               ← zero dependencies, release profile tuned for size
-├── Cargo.lock
-├── vibe-chat.exe.manifest   ← DPI awareness (per-monitor v2), UTF-8 codepage
-└── src\
-    ├── main.rs              ← entry point, DPI setup, window creation, message loop
-    ├── win32.rs             ← all Win32/GDI FFI declarations (types, constants, extern fns)
-    ├── json.rs              ← hand-written JSON parser + serializer (~300 lines)
-    ├── window.rs            ← window class, WndProc, all WM_* message handling, AppState
-    ├── render.rs            ← GDI double-buffered painting, text layout, word wrap, DPI scaling
-    ├── input.rs             ← keyboard input (WM_UNICHAR/WM_KEYDOWN), text editing, clipboard
-    ├── chat.rs              ← chat state: messages, scroll, input buffer, streaming
-    ├── acp.rs               ← ACP client: spawn vibe-acp, JSON-RPC over stdio, reader/writer threads
-    └── markdown.rs          ← minimal markdown parser → styled text runs (bold, italic, code)
+src/
+├── main.rs                  ← thin entry point, calls platform::run()
+├── platform/
+│   ├── mod.rs               ← cfg-gated backend selection
+│   ├── backend.rs           ← traits: Platform, Clipboard, Dialogs
+│   ├── windows/             ← Windows backend (fully functional)
+│   │   ├── mod.rs           ← WindowsPlatform impl, run() entry
+│   │   ├── ffi.rs           ← all Win32/GDI FFI declarations
+│   │   ├── window.rs        ← WndProc, message loop, window creation
+│   │   ├── render/          ← GDI painting (sidebar, messages, input, etc.)
+│   │   ├── fonts.rs         ← GDI font management
+│   │   ├── gfx.rs           ← GDI+ anti-aliased shapes
+│   │   ├── paint.rs         ← PaintContext (render data bundle)
+│   │   ├── text.rs          ← GDI text measurement/wrapping
+│   │   ├── clipboard.rs     ← Win32 clipboard
+│   │   └── dialogs.rs       ← Win32 dialogs (folder picker, confirm, error)
+│   ├── linux/
+│   │   └── mod.rs           ← Linux skeleton (stub, not yet implemented)
+│   └── macos/
+│       └── mod.rs           ← macOS skeleton (stub, not yet implemented)
+├── app.rs                   ← AppState: sessions, projects, ACP coordination
+├── chat.rs                  ← ChatState: messages, scroll, input buffer
+├── session.rs               ← Session + Project data models
+├── acp.rs                   ← ACP client (spawn, JSON-RPC, threads)
+├── json.rs                  ← hand-written JSON parser + serializer
+├── markdown.rs              ← minimal markdown → styled runs
+├── theme.rs                 ← colors, spacing, layout constants, Settings
+├── input.rs                 ← platform-independent key mapping + text editing
+├── interaction.rs           ← mouse/hover/focus/layout (platform-independent)
+├── text.rs                  ← date helpers, previews (platform-independent)
+└── ui.rs                    ← UI enums: PressedElement, FocusedElement, Toast
 ```
 
-### Module responsibilities
+### Platform abstraction
+
+The core talks to the OS through traits in `platform/backend.rs`:
+
+- **`Platform`** — provides `PlatformInfo` (caret blink, font names), `Clipboard`, `Dialogs`
+- **`Clipboard`** — `set_text()`, `get_text()`
+- **`Dialogs`** — `pick_folder()`, `confirm()`, `show_error()`
+
+Each platform backend implements these traits. The core never calls OS APIs directly.
+
+### Module responsibilities (core)
 
 | File | Responsibility |
 |------|---------------|
-| `main.rs` | Entry point. Sets DPI awareness, registers window class, creates window, runs message loop. Coordinates ACP client lifecycle. |
-| `win32.rs` | All `extern "system"` FFI declarations for Win32/GDI functions used. Type aliases (`HWND`, `HDC`, `WPARAM`, etc.), constants (`WM_*`, `DT_*`, `VK_*`), struct definitions (`WNDCLASSW`, `MSG`, `RECT`, `LOGFONTW`, etc.). Also `to_wide()` helper and `rgb()` macro. |
-| `json.rs` | Minimal JSON value enum (`Null`, `Bool`, `Number(f64)`, `String`, `Array`, `Object`). Recursive descent parser. Serializer with string escaping. Helpers: `get(key)`, `as_str()`, `as_array()`, `as_i64()`, `as_bool()`. Only what JSON-RPC needs. |
-| `window.rs` | `AppState` struct (chat, fonts, dpi, acp client, dimensions, cursor blink). `wnd_proc` handles all Windows messages: `WM_PAINT`, `WM_KEYDOWN`, `WM_UNICHAR`, `WM_CHAR`, `WM_SIZE`, `WM_MOUSEWHEEL`, `WM_DPICHANGED`, `WM_TIMER`, `WM_CLOSE`, `WM_DESTROY`. `register_class()`, `create_window()`. Polls ACP events on timer. |
-| `render.rs` | Double-buffered painting (memory DC + bitmap, `BitBlt` to screen). Draws message list (visible messages only, based on scroll offset), input box at bottom, status bar. Word wrapping via `GetTextExtentPoint32W`. DPI-aware: multiplies pixel coordinates by `dpi / 96`. Dark theme color scheme. Font management (`Fonts` struct with normal/bold/italic/code/label). |
-| `input.rs` | `handle_keydown()` for control keys (Enter, Backspace, arrows, Ctrl+A/C/V, Escape, F5). `handle_unichar()` for Unicode text input. `handle_char()` fallback. Returns `InputResult` enum (`Submit`, `Cancel`, `Cleared`, `Repaint`, `None`). |
-| `chat.rs` | `ChatState` struct: `Vec<Message>`, scroll offset, input buffer, cursor position, selection, streaming state. `Message` struct with role, text, styled runs, computed height. Scroll clamping, auto-scroll to bottom, message history cap (500). Text editing operations (insert, backspace, cursor movement, selection). |
-| `acp.rs` | `AcpClient` spawns `vibe-acp` as child process with piped stdin/stdout. Three threads: writer (sends JSON-RPC commands), reader (parses JSON-RPC responses/notifications), monitor (detects process exit). `AcpEvent` enum for UI updates. `AcpCommand` enum for UI requests. Handles `initialize`, `session/new`, `session/prompt`, `session/cancel`, `session/request_permission`. |
-| `markdown.rs` | Minimal markdown parser: `**bold**`, `*italic*`, `` `code` ``, ` ``` ` code blocks. Outputs `Vec<StyledRun>` (text + `Style` flags: bold, italic, code, color). Used by `render.rs` for styled text drawing. |
+| `main.rs` | Entry point. Dispatches to `platform::run()`. On Windows, `app_entry()` is called by the backend. |
+| `platform/mod.rs` | Selects the backend module via `cfg(windows)`, `cfg(target_os = "linux")`, `cfg(target_os = "macos")`. |
+| `platform/backend.rs` | Trait definitions (`Platform`, `Clipboard`, `Dialogs`) and `run_platform()` dispatcher. |
+| `json.rs` | Minimal JSON value enum. Recursive descent parser. Serializer. Only what JSON-RPC needs. |
+| `app.rs` | `AppState` struct: projects, sessions, ACP client, DPI, hover/focus state, toasts. Fonts stored as opaque `FontsHandle`. |
+| `chat.rs` | `ChatState` struct: messages, scroll, input buffer, cursor, selection, streaming. Text editing operations. |
+| `session.rs` | `Session` (chat conversation) and `Project` (working directory grouping) data models. |
+| `acp.rs` | `AcpClient` spawns `vibe-acp` as child process with piped stdin/stdout. Three threads: writer, reader, monitor. |
+| `markdown.rs` | Minimal markdown parser: `**bold**`, `*italic*`, `` `code` ``, ` ``` ` code blocks. Outputs `Vec<StyledRun>`. |
+| `theme.rs` | Colors (as `rgb()` COLORREF u32), spacing tokens, typography scale, layout constants, `Settings`. Fully platform-independent. |
+| `input.rs` | Platform-independent key mapping (`Key` enum, `Modifiers`), text editing delegation to `ChatState`, clipboard delegation to platform trait. |
+| `interaction.rs` | Mouse click handling, hover tracking, keyboard focus cycling, sidebar layout computation. Pure coordinate math. |
+| `text.rs` | Date/time helpers (unix_to_civil, date_group_label, relative_time), message previews. No graphics dependency. |
+| `ui.rs` | `PressedElement`, `FocusedElement`, `Toast`, `ToastKind` enums. Shared between core and backends. |
+
+### Module responsibilities (Windows backend)
+
+| File | Responsibility |
+|------|---------------|
+| `platform/windows/ffi.rs` | All `extern "system"` FFI declarations for Win32/GDI. Type aliases, constants, struct definitions. `to_wide()`, `from_wide()`, `rgb()`, `argb_from_rgb()`. |
+| `platform/windows/window.rs` | `wnd_proc` handles all Windows messages. `register_class()`, `create_window()`. Translates Win32 key codes to platform-independent `Key` enum. |
+| `platform/windows/render/mod.rs` | Double-buffered painting entry point. Creates memory DC, draws all regions, BitBlts to screen. |
+| `platform/windows/render/sidebar.rs` | Sidebar rendering: session list, date grouping, new chat button, settings button. |
+| `platform/windows/render/messages.rs` | Message bubbles, thinking sections, text layout, scrollbar. |
+| `platform/windows/render/input_box.rs` | Input box with cursor, selection, placeholder, send button, hint row. |
+| `platform/windows/render/header.rs` | Session header bar with name and connection status. |
+| `platform/windows/render/settings.rs` | Settings panel with toggle switches, info rows, reconnect button. |
+| `platform/windows/render/empty_state.rs` | Empty state with gradient stripe. |
+| `platform/windows/render/toast.rs` | Toast notification popup. |
+| `platform/windows/paint.rs` | `PaintContext` struct: bundles all data needed for a GDI paint pass. |
+| `platform/windows/fonts.rs` | `Fonts` struct with GDI HFONT handles. `create_font()`, `select_font_for_style()`. |
+| `platform/windows/gfx.rs` | GDI+ helpers loaded dynamically via LoadLibrary. Anti-aliased rounded rectangles. |
+| `platform/windows/text.rs` | GDI text measurement (`GetTextExtentPoint32W`), word wrapping, truncation. |
+| `platform/windows/clipboard.rs` | Win32 clipboard (`OpenClipboard`, `SetClipboardData`, `GetClipboardData`). |
+| `platform/windows/dialogs.rs` | Win32 dialogs (`SHBrowseForFolderW`, `MessageBoxW`). |
 
 ## Commands
 
 ```bash
-# Build (debug)
+# Build (debug, current platform)
 cargo build
 
 # Run (debug)
 cargo run
 
-# Build release (optimized, ~1.5 MB binary, LTO, stripped)
+# Build release (optimized, LTO, stripped)
 cargo build --release
 
-# Output binary
-target\release\vibe-chat.exe
+# Check compilation for Windows from any platform
+cargo check --target x86_64-pc-windows-msvc
 
-# Check for compile errors without building
+# Check compilation for current platform
 cargo check
 
-# Format code (if rustfmt is available)
+# Format code
 cargo fmt
+
+# Check formatting
+cargo fmt --check
 
 # Lint (if clippy is available)
 cargo clippy
@@ -82,45 +140,33 @@ There are no tests in this project. Verification is done by running the binary a
 
 **NEVER add a dependency to `Cargo.toml`.** The entire project uses only `std`. If you need functionality (JSON, HTTP, async, etc.), write it yourself. This is a deliberate design decision for minimal binary size, no supply chain risk, and full control.
 
+### Platform separation rules
+
+1. **Core modules** (`app.rs`, `chat.rs`, `session.rs`, `acp.rs`, `json.rs`, `markdown.rs`, `theme.rs`, `input.rs`, `interaction.rs`, `text.rs`, `ui.rs`) must **never** import from `platform::` or use any OS-specific APIs.
+2. **Platform backends** (`platform/windows/`, `platform/linux/`, `platform/macos/`) implement the traits in `platform/backend.rs` and can use OS-specific APIs freely.
+3. **Colors** in `theme.rs` are stored as `rgb()` COLORREF u32 values. Each backend converts to its native format.
+4. **Fonts** in the core are stored as opaque `FontsHandle` (type-erased). The backend downcasts to its native font type.
+5. **Clipboard and dialogs** are accessed through the `Clipboard` and `Dialogs` traits, not directly.
+6. **Key input** uses the platform-independent `Key` enum and `Modifiers` struct from `input.rs`. Backends translate native key events.
+
 ### Win32 FFI conventions
 
-All Win32/GDI functions are declared as `extern "system"` in `win32.rs`. When you need a new Win32 function:
+All Win32/GDI functions are declared as `extern "system"` in `platform/windows/ffi.rs`. When you need a new Win32 function:
 
 1. Add the type aliases if missing (e.g., `pub type HBRUSH = *mut c_void;`)
 2. Add the constant if missing (e.g., `pub const WS_VISIBLE: DWORD = 0x1000_0000;`)
 3. Add the struct definition if missing (e.g., `#[repr(C)] pub struct RECT { ... }`)
 4. Add the `extern "system"` declaration in the appropriate `extern "system" { ... }` block, linking against the correct DLL (`"user32"`, `"gdi32"`, `"kernel32"`, `"shell32"`, `"shcore"`)
 
-Example of the expected pattern:
-
-```rust
-// In win32.rs - declare the FFI:
-#[repr(C)]
-pub struct POINT {
-    pub x: LONG,
-    pub y: LONG,
-}
-
-extern "system" {
-    pub fn GetCursorPos(lpPoint: LPPOINT) -> BOOL;
-}
-
-// In the calling code - use it inside unsafe:
-unsafe {
-    let mut pt = POINT { x: 0, y: 0 };
-    GetCursorPos(&mut pt);
-}
-```
-
 ### Unsafe blocks
 
-All Win32/GDI calls must be inside `unsafe { }` blocks. Keep unsafe blocks as small as possible - ideally wrapping just the FFI call, not entire functions. The `wnd_proc` in `window.rs` is already `unsafe extern "system"` so calls inside it don't need additional `unsafe` blocks.
+All Win32/GDI calls must be inside `unsafe { }` blocks. Keep unsafe blocks as small as possible - ideally wrapping just the FFI call, not entire functions. The `wnd_proc` in `platform/windows/window.rs` is already `unsafe extern "system"` so calls inside it don't need additional `unsafe` blocks.
 
 ### Naming conventions
 
 - Win32 types use `SCREAMING_SNAKE_CASE` (matching the C API): `HWND`, `HDC`, `WPARAM`, `LPARAM`, `RECT`, `MSG`
 - Win32 constants use `SCREAMING_SNAKE_CASE`: `WM_PAINT`, `DT_LEFT`, `VK_RETURN`, `CS_HREDRAW`
-- Rust types/functions use `snake_case`: `create_window`, `ChatState`, `handle_keydown`
+- Rust types/functions use `snake_case`: `create_window`, `ChatState`, `handle_key`
 - Struct fields use `snake_case`: `client_width`, `scroll_offset`, `input_buffer`
 
 ### Module-level attributes
@@ -136,16 +182,14 @@ Each source file starts with a comment describing its purpose, followed by `#![a
 
 ### Color scheme (warm dark + orange)
 
-Colors are defined as `const` in `render.rs` using the `rgb()` helper:
+Colors are defined as `const` in `theme.rs` using the `rgb()` helper (defined in `theme.rs` itself, platform-independent):
 
 ```rust
 pub const BG_COLOR: u32 = rgb(20, 18, 16);
 pub const USER_BUBBLE_BG: u32 = rgb(200, 85, 0);
-pub const AGENT_BUBBLE_BG: u32 = rgb(38, 35, 31);
-pub const ACCENT_COLOR: u32 = rgb(255, 140, 60);
 ```
 
-When adding new colors, use the `rgb(r, g, b)` macro from `win32.rs` and keep the warm dark + orange aesthetic: warm near-black backgrounds with vivid orange accents.
+The `rgb()` function packs into COLORREF format (0x00BBGGRR). Platform backends convert as needed (e.g., `argb_from_rgb()` in `ffi.rs` for GDI+).
 
 ### DPI awareness
 
@@ -156,13 +200,10 @@ let scale = dpi as f32 / 96.0;
 let scaled_value = (base_value as f32 * scale) as i32;
 ```
 
-Fonts are created with DPI-scaled heights in `Fonts::new(dpi)`. Layout constants like `INPUT_HEIGHT` and `MESSAGE_PADDING` are in logical pixels and scaled at render time.
-
 ## Git workflow
 
-- Branch naming: `feature/description`, `fix/description`, `refactor/description`
+- Branch naming: `feature/description`, `fix/description`, `refactor/description`, or `vibe/<slug>-02a0b6` for agent tasks
 - Commit messages: short imperative sentence (e.g., "Add clipboard paste support", "Fix DPI scaling on WM_DPICHANGED")
-- The project is not yet on a remote - local development only
 - `Cargo.lock` is committed (binary project)
 - `target/` is not committed
 
@@ -170,13 +211,14 @@ Fonts are created with DPI-scaled heights in `Fonts::new(dpi)`. Layout constants
 
 There is no test framework in this project (zero dependencies). Verification is manual:
 
-1. `cargo build` - must compile without errors
-2. `cargo run` - window opens, displays correctly
-3. Type a message, press Enter - message appears in chat, agent responds (requires the ACP agent binary on PATH and API key set)
-4. Scroll with mouse wheel - message history scrolls
-5. Ctrl+C / Ctrl+V - clipboard works
-6. Resize window / move between monitors with different DPI - rendering stays crisp
-7. Close window - exits cleanly, child process is killed
+1. `cargo check` - must compile without errors on the current platform
+2. `cargo check --target x86_64-pc-windows-msvc` - must compile for Windows
+3. `cargo run` - window opens, displays correctly (Windows only for now)
+4. Type a message, press Enter - message appears in chat, agent responds (requires the ACP agent binary on PATH and API key set)
+5. Scroll with mouse wheel - message history scrolls
+6. Ctrl+C / Ctrl+V - clipboard works
+7. Resize window / move between monitors with different DPI - rendering stays crisp
+8. Close window - exits cleanly, child process is killed
 
 When adding new features, verify all of the above still work.
 
@@ -185,21 +227,23 @@ When adding new features, verify all of the above still work.
 ### Always do
 
 - Keep **zero external dependencies**. If you think you need a crate, write the functionality yourself instead.
-- Add new Win32 FFI declarations to `win32.rs` - never declare `extern` functions in other files.
-- Use `to_wide()` from `win32.rs` for converting `&str` to null-terminated UTF-16 for Win32 wide APIs.
+- Keep core modules free of platform-specific imports. Core must compile on all platforms.
+- Add new Win32 FFI declarations to `platform/windows/ffi.rs` - never declare `extern` functions in other files.
+- Use `to_wide()` from `platform/windows/ffi.rs` for converting `&str` to null-terminated UTF-16 for Win32 wide APIs.
 - Scale all pixel coordinates by DPI (`dpi / 96.0`).
 - Handle `WM_UNICHAR` for text input (proper Unicode), not `WM_CHAR` alone.
 - Use `#![allow(dead_code)]` at the top of new source files (not all declarations are used yet).
-- Read `PLAN.md` for the full architecture before making structural changes.
-- Keep the warm dark + orange color scheme (warm dark + orange) consistent.
+- Keep the warm dark + orange color scheme consistent.
+- Access clipboard and dialogs through the platform traits, not directly.
 
 ### Ask first
 
 - Adding a new source file (module) - this changes the project structure.
-- Changing the window size or layout approach (currently fixed 800x600 client area, resizable).
+- Changing the window size or layout approach.
 - Modifying the ACP protocol flow (initialization, session creation, prompt sending).
-- Changing the release profile settings in `Cargo.toml` (`opt-level`, `lto`, `panic = "abort"`, `strip`).
+- Changing the release profile settings in `Cargo.toml`.
 - Adding new keyboard shortcuts or changing existing key bindings.
+- Implementing a Linux or macOS backend (major undertaking).
 
 ### Never do
 
@@ -207,50 +251,63 @@ When adding new features, verify all of the above still work.
 - **Never use `unwrap()` or `expect()` on user-facing code paths.** Use `match` or `if let` with graceful fallback.
 - **Never commit secrets, API keys, or `.env` files.**
 - **Never modify `vibe-chat.exe.manifest`** without understanding DPI awareness implications.
-- **Never remove `#![windows_subsystem = "windows"]`** from `main.rs` - it prevents a console window from appearing.
+- **Never remove `#![windows_subsystem = "windows"]`** from `main.rs` (use `#![cfg_attr(windows, windows_subsystem = "windows")]`).
 - **Never use `panic!` in production code paths.** The release profile has `panic = "abort"`, so panics crash the app.
 - **Never add `unsafe` without a comment explaining why it's safe** when the safety invariant is non-obvious.
 - **Never use `std::mem::transmute`** - use proper type conversions.
+- **Never import platform-specific code from core modules.** Core modules must compile on all platforms.
 
 ## Architecture decisions (intentional - do not "fix")
 
-These look unusual to an outsider but are deliberate:
-
 | Decision | Why |
 |----------|-----|
-| Zero dependencies | Minimal binary (~1.5 MB), no supply chain risk, full control |
-| Hand-written Win32 FFI in `win32.rs` | No `windows` crate - we declare only what we use |
-| Hand-written JSON parser in `json.rs` | ~300 lines, no `serde` - only what JSON-RPC needs |
-| Raw Win32 + GDI (no framework) | No Tauri/egui/iced - smallest possible binary, full pixel control |
+| Zero dependencies | Minimal binary, no supply chain risk, full control |
+| Core + platform backend split | Clean separation, easy to add new platforms |
+| Hand-written Win32 FFI in `platform/windows/ffi.rs` | No `windows` crate - we declare only what we use |
+| Hand-written JSON parser in `json.rs` | No `serde` - only what JSON-RPC needs |
+| Raw Win32 + GDI (no framework) on Windows | No Tauri/egui/iced - smallest possible binary, full pixel control |
 | GDI `DrawTextW` for text rendering | Built into Windows, handles word wrap, simple |
 | `WM_UNICHAR` for text input | Proper Unicode text entry, no mangled characters |
 | Memory DC + `BitBlt` for double buffering | Prevents flicker, standard GDI technique |
 | Reader thread + `mpsc::channel` (no async runtime) | Simple, no `tokio` dependency |
 | Per-monitor v2 DPI awareness | Crisp rendering on high-DPI displays |
 | Custom minimal markdown parser | Only bold/italic/code - no pulldown-cmark needed |
-| Fixed initial size 800x600, resizable | Simple layout math |
+| Fixed initial size 1100x700, resizable | Simple layout math |
 | `panic = "abort"` in release profile | Smaller binary, no unwinding overhead |
 | `opt-level = 2` + `lto = true` + `codegen-units = 1` + `strip = true` | Optimized release binary size |
+| Platform traits for clipboard/dialogs | Core never calls OS APIs directly |
+| Opaque `FontsHandle` in core | Core doesn't know about GDI HFONT or platform font types |
+| `Key` enum for keyboard input | Core doesn't know about Win32 VK_* codes |
 
 ## ACP protocol flow
 
 ```
 UI (window.rs)          acp.rs                    vibe-acp (child process)
   │                       │                           │
-  ├── spawn ─────────────►│── std::process::Command ─►│
-  │                       │◄── stdout reader thread ──│
+  ├── spawn ──────────────▶│── std::process::Command ──▶│
+  │                       │◀── stdout reader thread ───│
   │                       │                           │
-  ├── initialize() ──────►│── JSON-RPC ──────────────►│
-  │                       │◄── response ──────────────│
+  ├── initialize() ───────▶│── JSON-RPC ───────────────▶│
+  │                       │◀── response ───────────────│
   │                       │                           │
-  ├── session/new() ─────►│── JSON-RPC ──────────────►│
-  │                       │◄── response ──────────────│
+  ├── session/new() ──────▶│── JSON-RPC ───────────────▶│
+  │                       │◀── response ───────────────│
   │                       │                           │
-  ├── session/prompt() ──►│── JSON-RPC ──────────────►│
-  │                       │◄── session/update ────────│  (streaming text chunks)
-  │◄── display chunk ────│                           │
-  │                       │◄── prompt response ───────│  (stop reason)
-  │◄── turn complete ────│                           │
+  ├── session/prompt() ───▶│── JSON-RPC ───────────────▶│
+  │                       │◀── session/update ─────────│  (streaming text chunks)
+  │◀── display chunk ─────│                           │
+  │                       │◀── prompt response ────────│  (stop reason)
+  │◀── turn complete ─────│                           │
 ```
 
 The ACP client uses three threads: a writer thread (sends JSON-RPC commands to the child's stdin), a reader thread (reads JSON-RPC from the child's stdout), and a monitor thread (polls `try_wait()` to detect process exit). Communication between threads uses `std::sync::mpsc::channel`.
+
+## Adding a new platform (Linux/macOS)
+
+The skeletons are already in place at `src/platform/linux/mod.rs` and `src/platform/macos/mod.rs`. To implement a backend:
+
+1. Implement the `Platform`, `Clipboard`, and `Dialogs` traits in the backend module.
+2. Implement a `run()` function that creates a window, runs an event loop, and renders the UI.
+3. Create platform-specific render/text/fonts modules (analogous to `platform/windows/`).
+4. The core app logic (`AppState`, `ChatState`, `AcpClient`, etc.) should work unchanged.
+5. The rendering approach should match the zero-dependency philosophy: raw OS APIs (X11/Wayland + Cairo on Linux, AppKit/CoreGraphics on macOS), no GUI framework crates.

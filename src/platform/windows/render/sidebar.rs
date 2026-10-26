@@ -2,10 +2,12 @@
 #![allow(dead_code)]
 
 use crate::interaction::session_action_rects;
-use crate::text::{date_group_label, last_message_preview, relative_time, truncate_to_width};
+use crate::platform::windows::ffi::*;
+use crate::platform::windows::paint::PaintContext;
+use crate::platform::windows::text::truncate_to_width;
+use crate::text::{date_group_label, last_message_preview, relative_time};
 use crate::theme::*;
-use crate::ui::{FocusedElement, PaintContext, PressedElement};
-use crate::win32::*;
+use crate::ui::{FocusedElement, PressedElement};
 
 pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
     let sidebar_w = ctx.sidebar_w();
@@ -62,7 +64,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             NEW_CHAT_BTN_BG
         };
         let radius = (RADIUS_MD as f32 * scale) as i32;
-        let gfx = crate::gfx::Gfx::new(hdc);
+        let gfx = crate::platform::windows::gfx::Gfx::new(hdc);
         match gfx {
             Some(ref g) => {
                 if ctx.hover_new_chat && ctx.pressed_element != Some(PressedElement::NewChat) {
@@ -641,7 +643,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             SETTINGS_BTN_BG
         };
         let settings_radius = (RADIUS_SM as f32 * scale) as i32;
-        let gfx = crate::gfx::Gfx::new(hdc);
+        let gfx = crate::platform::windows::gfx::Gfx::new(hdc);
         match gfx {
             Some(ref g) => {
                 if ctx.hover_settings_btn

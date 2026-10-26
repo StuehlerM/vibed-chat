@@ -1,8 +1,13 @@
 // Font management: creation, selection, and cleanup of GDI fonts.
 #![allow(dead_code)]
 
+use crate::platform::windows::ffi::*;
 use crate::theme::*;
-use crate::win32::*;
+
+// Fonts holds GDI HFONT handles. These are only accessed on the UI thread,
+// so it's safe to send them between threads (they're never actually used
+// from another thread).
+unsafe impl Send for Fonts {}
 
 pub struct Fonts {
     pub normal: HFONT,

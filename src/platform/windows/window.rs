@@ -1,12 +1,15 @@
 // Window events: WndProc message handling, window class registration, window creation.
 #![allow(dead_code)]
 
-use crate::app::AppState;
-use crate::input::{self, InputResult};
-use crate::render;
+use crate::app::{AppState, FontsHandle};
+use crate::input::{self, InputResult, Key, Modifiers};
+use crate::platform::windows::ffi::*;
+use crate::platform::windows::fonts::Fonts;
+use crate::platform::windows::paint::PaintContext;
+use crate::platform::windows::render;
+use crate::platform::windows::{clipboard::WinClipboard, dialogs::WinDialogs};
 use crate::theme::*;
-use crate::ui::{FocusedElement, PaintContext};
-use crate::win32::*;
+use crate::ui::FocusedElement;
 
 pub const WINDOW_CLASS_NAME: &str = "AcpChatWindow";
 pub const WINDOW_TITLE: &str = "ACP Chat";
@@ -49,7 +52,8 @@ pub unsafe extern "system" fn wnd_proc(
             if !app_state.is_null() {
                 let new_dpi = (wparam & 0xFFFF) as u32;
                 (*app_state).dpi = new_dpi;
-                (*app_state).scale_fonts();
+                let fonts = Fonts::new(new_dpi);
+                (*app_state).fonts = Some(FontsHandle::new(fonts));
 
                 let rect = lparam as *const RECT;
                 SetWindowPos(
@@ -105,10 +109,11 @@ pub unsafe extern "system" fn wnd_proc(
                 let state = &mut *app_state;
 
                 if state.fonts.is_none() {
-                    state.init_fonts();
+                    let fonts = Fonts::new(state.dpi);
+                    state.fonts = Some(FontsHandle::new(fonts));
                 }
 
-                let fonts_ref = match state.fonts.as_ref() {
+                let fonts_ref = match state.fonts.as_ref().and_then(|f| f.downcast_ref::<Fonts>()) {
                     Some(f) => f,
                     None => return 0,
                 };
@@ -187,7 +192,11 @@ pub unsafe extern "system" fn wnd_proc(
                 if wparam as u8 == VK_N as u8
                     && (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0
                 {
-                    if let Some(path) = crate::interaction::pick_folder_dialog() {
+                    let dialogs = WinDialogs;
+                    if let Some(path) = crate::platform::backend::Dialogs::pick_folder(
+                        &dialogs,
+                        "Select a project folder",
+                    ) {
                         state.new_chat_in_dir(&path);
                     }
                     InvalidateRect(hwnd, std::ptr::null(), 0);
@@ -215,18 +224,16 @@ pub unsafe extern "system" fn wnd_proc(
                     if !state.sessions.is_empty() {
                         let idx = state.active_session.min(state.sessions.len() - 1);
                         let session_name = state.sessions[idx].name.clone();
-                        let msg = to_wide(&format!(
-                            "Delete session \"{}\"? This cannot be undone.",
-                            session_name
-                        ));
-                        let title = to_wide("Delete Session");
-                        let result = MessageBoxW(
-                            hwnd,
-                            msg.as_ptr(),
-                            title.as_ptr(),
-                            MB_YESNO | MB_ICONWARNING,
+                        let dialogs = WinDialogs;
+                        let confirmed = crate::platform::backend::Dialogs::confirm(
+                            &dialogs,
+                            "Delete Session",
+                            &format!(
+                                "Delete session \"{}\"? This cannot be undone.",
+                                session_name
+                            ),
                         );
-                        if result == IDYES as i32 {
+                        if confirmed {
                             state.delete_session(idx);
                         }
                     }
@@ -270,7 +277,29 @@ pub unsafe extern "system" fn wnd_proc(
                 }
 
                 if let Some(chat) = state.active_chat() {
-                    let result = input::handle_keydown(chat, wparam, lparam);
+                    let key = wparam_to_key(wparam as u8);
+                    let mods = Modifiers {
+                        ctrl: (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0,
+                        shift: (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0,
+                    };
+                    let clipboard = WinClipboard;
+                    let result = match key {
+                        Some(Key::Char(b'C')) if mods.ctrl => {
+                            input::copy_selection(chat, &clipboard);
+                            InputResult::None
+                        }
+                        Some(Key::Char(b'V')) if mods.ctrl => {
+                            input::paste_from_clipboard(chat, &clipboard);
+                            InputResult::Repaint
+                        }
+                        Some(Key::Char(b'X')) if mods.ctrl => {
+                            input::copy_selection(chat, &clipboard);
+                            chat.delete_selection();
+                            InputResult::Repaint
+                        }
+                        Some(k) => input::handle_key(chat, k, mods),
+                        None => InputResult::None,
+                    };
                     match result {
                         InputResult::Submit(text) => {
                             state.send_message(text);
@@ -299,7 +328,9 @@ pub unsafe extern "system" fn wnd_proc(
                 }
                 if !state.sessions.is_empty() {
                     if let Some(chat) = state.active_chat() {
-                        let _ = input::handle_unichar(chat, wparam, lparam);
+                        if let Some(c) = char::from_u32(wparam as u32) {
+                            let _ = input::handle_char_input(chat, c);
+                        }
                     }
                 }
                 InvalidateRect(hwnd, std::ptr::null(), 0);
@@ -312,7 +343,11 @@ pub unsafe extern "system" fn wnd_proc(
                 let state = &mut *app_state;
                 if !state.sessions.is_empty() {
                     if let Some(chat) = state.active_chat() {
-                        let _ = input::handle_char(chat, wparam);
+                        if let Some(c) = char::from_u32(wparam as u32) {
+                            if c >= ' ' && c != '\u{7F}' {
+                                let _ = input::handle_char_input(chat, c);
+                            }
+                        }
                     }
                 }
                 InvalidateRect(hwnd, std::ptr::null(), 0);
@@ -526,6 +561,27 @@ fn get_app_state(hwnd: HWND) -> *mut AppState {
     unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState }
 }
 
+/// Translate a Win32 virtual key code to the platform-independent Key enum.
+fn wparam_to_key(vk: u8) -> Option<Key> {
+    match vk {
+        VK_RETURN => Some(Key::Return),
+        VK_BACK => Some(Key::Backspace),
+        VK_DELETE => Some(Key::Delete),
+        VK_LEFT => Some(Key::Left),
+        VK_RIGHT => Some(Key::Right),
+        VK_UP => Some(Key::Up),
+        VK_DOWN => Some(Key::Down),
+        VK_HOME => Some(Key::Home),
+        VK_END => Some(Key::End),
+        VK_ESCAPE => Some(Key::Escape),
+        VK_TAB => Some(Key::Tab),
+        VK_F5 => Some(Key::F5),
+        c if c.is_ascii_alphabetic() => Some(Key::Char(c.to_ascii_uppercase())),
+        c if c.is_ascii_digit() => Some(Key::Char(c)),
+        _ => None,
+    }
+}
+
 // ── Window creation ──────────────────────────────────────────
 
 pub fn register_class(hinstance: HINSTANCE) -> bool {
@@ -607,7 +663,8 @@ pub fn create_window(
 
         let dpi = GetDpiForWindow(hwnd);
         (*app_state).dpi = dpi;
-        (*app_state).init_fonts();
+        let fonts = Fonts::new(dpi);
+        (*app_state).fonts = Some(FontsHandle::new(fonts));
 
         let mut client_rect = RECT {
             left: 0,

@@ -28,9 +28,9 @@ pub use sidebar::draw_sidebar;
 #[allow(unused_imports)]
 pub use toast::{draw_toast, show_toast, TOAST_DURATION_MS};
 
+use crate::platform::windows::ffi::*;
+use crate::platform::windows::paint::PaintContext;
 use crate::theme::*;
-use crate::ui::PaintContext;
-use crate::win32::*;
 
 /// Paint the entire window using double buffering.
 pub fn paint(hwnd: HWND, ctx: &mut PaintContext) {

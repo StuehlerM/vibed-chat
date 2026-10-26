@@ -1,9 +1,9 @@
 // Empty state rendering: shown when a chat has no messages.
 #![allow(dead_code)]
 
+use crate::platform::windows::ffi::*;
+use crate::platform::windows::paint::PaintContext;
 use crate::theme::*;
-use crate::ui::PaintContext;
-use crate::win32::*;
 
 pub fn draw_empty_state(
     hdc: HDC,
