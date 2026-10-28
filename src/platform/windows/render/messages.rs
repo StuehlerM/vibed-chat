@@ -9,6 +9,28 @@ use crate::platform::windows::paint::PaintContext;
 use crate::platform::windows::text::wrap_text;
 use crate::theme::*;
 
+/// Wrap a set of styled runs into drawable lines, selecting the right font
+/// per run. Empty source lines produce an empty placeholder line.
+fn wrap_runs(
+    hdc: HDC,
+    runs: &[crate::markdown::StyledRun],
+    text_width: i32,
+    fonts: &Fonts,
+) -> Vec<(String, Style, i32)> {
+    let mut out = Vec::new();
+    for run in runs {
+        let _old = select_font_for_style(hdc, &run.style, fonts);
+        for line_text in run.text.split('\n') {
+            if line_text.is_empty() {
+                out.push((String::new(), run.style.clone(), 0));
+                continue;
+            }
+            out.extend(wrap_text(hdc, line_text, text_width, &run.style, fonts));
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn draw_messages(
     hdc: HDC,
@@ -97,25 +119,8 @@ fn draw_message(
         // Calculate thinking section height
         let has_thinking = !msg.thinking.is_empty();
         let thinking_text_height = if has_thinking && !msg.thinking_collapsed {
-            let mut th = 0i32;
-            for run in &msg.thinking_runs {
-                let style_font = if run.style.code {
-                    fonts.code
-                } else if run.style.bold {
-                    fonts.bold
-                } else {
-                    fonts.normal
-                };
-                SelectObject(hdc, style_font as HGDIOBJ);
-                for line_text in run.text.split('\n') {
-                    if line_text.is_empty() {
-                        th += line_height;
-                        continue;
-                    }
-                    let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
-                    th += wrapped.len() as i32 * line_height;
-                }
-            }
+            let wrapped = wrap_runs(hdc, &msg.thinking_runs, text_width, fonts);
+            let mut th = wrapped.len() as i32 * line_height;
             if th == 0 {
                 th = line_height;
             }
@@ -125,31 +130,8 @@ fn draw_message(
         };
 
         // Calculate main text height
-        let mut total_text_height = 0i32;
-        let mut lines: Vec<(String, Style, i32)> = Vec::new();
-
-        for run in &msg.runs {
-            let style_font = if run.style.code {
-                fonts.code
-            } else if run.style.bold {
-                fonts.bold
-            } else {
-                fonts.normal
-            };
-            SelectObject(hdc, style_font as HGDIOBJ);
-            for line_text in run.text.split('\n') {
-                if line_text.is_empty() {
-                    total_text_height += line_height;
-                    lines.push((String::new(), run.style.clone(), 0));
-                    continue;
-                }
-                let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
-                for w in wrapped {
-                    total_text_height += line_height;
-                    lines.push(w);
-                }
-            }
-        }
+        let lines = wrap_runs(hdc, &msg.runs, text_width, fonts);
+        let mut total_text_height = lines.len() as i32 * line_height;
         if total_text_height == 0 {
             total_text_height = line_height;
         }
@@ -305,14 +287,7 @@ fn draw_message(
 
                 let mut think_y = content_y + bubble_padding / 2;
                 for run in &msg.thinking_runs {
-                    let style_font = if run.style.code {
-                        fonts.code
-                    } else if run.style.bold {
-                        fonts.bold
-                    } else {
-                        fonts.italic
-                    };
-                    SelectObject(hdc, style_font as HGDIOBJ);
+                    let _run_old = select_font_for_style(hdc, &run.style, fonts);
                     SetTextColor(hdc, THINKING_TEXT_COLOR);
                     for line_text in run.text.split('\n') {
                         if line_text.is_empty() {
@@ -322,14 +297,7 @@ fn draw_message(
                         let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
                         for (w_text, w_style, _) in &wrapped {
                             if !w_text.is_empty() {
-                                let w_font = if w_style.code {
-                                    fonts.code
-                                } else if w_style.italic {
-                                    fonts.italic
-                                } else {
-                                    fonts.normal
-                                };
-                                SelectObject(hdc, w_font as HGDIOBJ);
+                                let _w_old = select_font_for_style(hdc, w_style, fonts);
                                 let wide = to_wide(w_text);
                                 let mut tr = RECT {
                                     left: bubble_left + bubble_padding + bubble_padding / 2,
@@ -592,25 +560,8 @@ pub fn compute_message_heights(
 
         for msg in &mut chat.messages {
             // Main text height
-            let mut total_text_height = 0i32;
-            for run in &msg.runs {
-                let style_font = if run.style.code {
-                    fonts.code
-                } else if run.style.bold {
-                    fonts.bold
-                } else {
-                    fonts.normal
-                };
-                SelectObject(hdc, style_font as HGDIOBJ);
-                for line_text in run.text.split('\n') {
-                    if line_text.is_empty() {
-                        total_text_height += line_height;
-                        continue;
-                    }
-                    let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
-                    total_text_height += wrapped.len() as i32 * line_height;
-                }
-            }
+            let wrapped = wrap_runs(hdc, &msg.runs, text_width, fonts);
+            let mut total_text_height = wrapped.len() as i32 * line_height;
             if total_text_height == 0 {
                 total_text_height = line_height;
             }
@@ -621,25 +572,8 @@ pub fn compute_message_heights(
             if has_thinking && msg.role == Role::Agent {
                 thinking_section_h += thinking_header_h;
                 if !msg.thinking_collapsed {
-                    let mut th = 0i32;
-                    for run in &msg.thinking_runs {
-                        let style_font = if run.style.code {
-                            fonts.code
-                        } else if run.style.bold {
-                            fonts.bold
-                        } else {
-                            fonts.normal
-                        };
-                        SelectObject(hdc, style_font as HGDIOBJ);
-                        for line_text in run.text.split('\n') {
-                            if line_text.is_empty() {
-                                th += line_height;
-                                continue;
-                            }
-                            let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
-                            th += wrapped.len() as i32 * line_height;
-                        }
-                    }
+                    let wrapped = wrap_runs(hdc, &msg.thinking_runs, text_width, fonts);
+                    let mut th = wrapped.len() as i32 * line_height;
                     if th == 0 {
                         th = line_height;
                     }
