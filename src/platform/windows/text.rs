@@ -100,38 +100,52 @@ pub fn wrap_text(
         return vec![(text.to_string(), style.clone(), 0)];
     }
 
+    // Measure the space glyph once; word widths are measured separately so we
+    // only build a `String` for a candidate line when it actually fits.
+    let space_wide = to_wide(" ");
+    let mut space_size = POINT { x: 0, y: 0 };
+    unsafe {
+        GetTextExtentPoint32W(
+            hdc,
+            space_wide.as_ptr(),
+            space_wide.len() as i32 - 1,
+            &mut space_size,
+        );
+    }
+    let space_width = space_size.x;
+
     let mut lines = Vec::new();
     let mut current_line = String::new();
     let mut current_width = 0i32;
 
     for word in words {
-        let test_line = if current_line.is_empty() {
-            word.to_string()
-        } else {
-            format!("{} {}", current_line, word)
-        };
-        let wide = to_wide(&test_line);
-        let mut size = POINT { x: 0, y: 0 };
+        let word_wide = to_wide(word);
+        let mut word_size = POINT { x: 0, y: 0 };
         unsafe {
-            GetTextExtentPoint32W(hdc, wide.as_ptr(), wide.len() as i32 - 1, &mut size);
+            GetTextExtentPoint32W(
+                hdc,
+                word_wide.as_ptr(),
+                word_wide.len() as i32 - 1,
+                &mut word_size,
+            );
         }
 
-        if size.x <= max_width || current_line.is_empty() {
-            current_line = test_line;
-            current_width = size.x;
-        } else {
-            lines.push((current_line.clone(), style.clone(), current_width));
+        if current_line.is_empty() {
+            // First word on the line always goes in, even if it overflows.
             current_line = word.to_string();
-            let word_wide = to_wide(word);
-            unsafe {
-                GetTextExtentPoint32W(
-                    hdc,
-                    word_wide.as_ptr(),
-                    word_wide.len() as i32 - 1,
-                    &mut size,
-                );
-            }
-            current_width = size.x;
+            current_width = word_size.x;
+        } else if current_width + space_width + word_size.x <= max_width {
+            current_line.push(' ');
+            current_line.push_str(word);
+            current_width += space_width + word_size.x;
+        } else {
+            lines.push((
+                std::mem::take(&mut current_line),
+                style.clone(),
+                current_width,
+            ));
+            current_line = word.to_string();
+            current_width = word_size.x;
         }
     }
 

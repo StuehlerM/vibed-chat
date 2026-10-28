@@ -62,10 +62,10 @@ fn message_from_json(j: &Json) -> Message {
         .unwrap_or(true);
 
     let mut msg = Message::new(role, &text);
-    msg.thinking = thinking.clone();
     msg.thinking_collapsed = collapsed;
     if !thinking.is_empty() {
         msg.thinking_runs = crate::markdown::parse(&thinking);
+        msg.thinking = thinking;
     }
     msg
 }
@@ -359,7 +359,7 @@ pub fn load_all(config_dir: &str) -> Option<LoadedState> {
                         if let Some(msgs) = session_json.get("messages").and_then(|v| v.as_array())
                         {
                             for m in msgs {
-                                session.chat.messages.push(message_from_json(m));
+                                session.chat.messages.push_back(message_from_json(m));
                             }
                         }
                     }

@@ -683,6 +683,10 @@ pub fn from_wide(ptr: *const u16) -> String {
         return String::new();
     }
     let mut len = 0usize;
+    // SAFETY: `ptr` must point to a valid, NUL-terminated UTF-16 buffer
+    // (Win32 convention). We only read within `[ptr, ptr + len)` where `len`
+    // is bounded by the first NUL, so the slice is in-bounds and properly
+    // aligned for `u16`. Callers pass buffers owned by Win32 or local Vecs.
     unsafe {
         while *ptr.add(len) != 0 {
             len += 1;

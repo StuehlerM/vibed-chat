@@ -3,6 +3,7 @@
 
 use crate::platform::windows::ffi::*;
 use crate::platform::windows::paint::PaintContext;
+use crate::theme::compute_settings_layout;
 use crate::theme::*;
 use crate::ui::{FocusedElement, PressedElement};
 
@@ -138,6 +139,15 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
         DeleteObject(div_brush as HGDIOBJ);
         y += (SPACE_4 as f32 * scale) as i32;
 
+        // From here on, the vertical layout is driven by the shared
+        // SettingsLayout so hit-testing (interaction.rs) matches exactly.
+        let layout = compute_settings_layout(scale);
+        let row_h = layout.toggle_row_h;
+        let section_h = layout.section_h;
+        let info_row_h = layout.info_row_h;
+        let gap = (SPACE_1 as f32 * scale) as i32;
+        let extra_gap = (SPACE_3 as f32 * scale) as i32;
+
         // Appearance section
         draw_settings_section_header(
             hdc,
@@ -146,6 +156,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             width - pad,
             &mut y,
             scale,
+            section_h,
             "Appearance",
         );
         draw_settings_switch(
@@ -155,6 +166,8 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             width - pad,
             &mut y,
             scale,
+            row_h,
+            gap,
             "Dark theme",
             ctx.app.settings.dark_theme,
             0,
@@ -166,11 +179,13 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             width - pad,
             &mut y,
             scale,
+            row_h,
+            gap,
             "Auto-scroll",
             ctx.app.settings.auto_scroll,
             1,
         );
-        y += (SPACE_3 as f32 * scale) as i32;
+        y += extra_gap;
 
         // Agent section
         draw_settings_section_header(
@@ -180,6 +195,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             width - pad,
             &mut y,
             scale,
+            section_h,
             "Agent",
         );
         draw_settings_switch(
@@ -189,11 +205,13 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             width - pad,
             &mut y,
             scale,
+            row_h,
+            gap,
             "Auto-approve",
             ctx.app.settings.auto_approve,
             2,
         );
-        y += (SPACE_3 as f32 * scale) as i32;
+        y += extra_gap;
 
         // Sessions section
         draw_settings_section_header(
@@ -203,6 +221,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             width - pad,
             &mut y,
             scale,
+            section_h,
             "Sessions",
         );
         draw_settings_switch(
@@ -212,11 +231,13 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             width - pad,
             &mut y,
             scale,
+            row_h,
+            gap,
             "Show archived",
             ctx.app.settings.show_archived,
             3,
         );
-        y += (SPACE_3 as f32 * scale) as i32;
+        y += extra_gap;
 
         // Connection section
         draw_settings_section_header(
@@ -226,6 +247,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             width - pad,
             &mut y,
             scale,
+            section_h,
             "Connection",
         );
         let conn_status = if ctx.app.acp_connected {
@@ -244,6 +266,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             panel_left + pad,
             width - pad,
             &mut y,
+            info_row_h,
             scale,
             "Status",
             conn_status,
@@ -261,12 +284,13 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             panel_left + pad,
             width - pad,
             &mut y,
+            info_row_h,
             scale,
             "Sessions",
             &sessions_label,
             SETTINGS_TEXT,
         );
-        y += (SPACE_3 as f32 * scale) as i32;
+        y += extra_gap;
 
         // About section
         draw_settings_section_header(
@@ -276,6 +300,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             width - pad,
             &mut y,
             scale,
+            section_h,
             "About",
         );
         draw_settings_info(
@@ -284,6 +309,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             panel_left + pad,
             width - pad,
             &mut y,
+            info_row_h,
             scale,
             "App",
             "ACP Chat v0.1.0",
@@ -295,15 +321,16 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             panel_left + pad,
             width - pad,
             &mut y,
+            info_row_h,
             scale,
             "Protocol",
             "ACP (JSON-RPC 2.0)",
             SETTINGS_TEXT,
         );
 
-        // Reconnect button
-        y += (SPACE_4 as f32 * scale) as i32;
-        let btn_h = (36.0 * scale) as i32;
+        // Reconnect button (positioned from the shared layout so clicks land)
+        y = layout.reconnect_y;
+        let btn_h = layout.reconnect_btn_h;
         let btn_rect = RECT {
             left: panel_left + pad,
             top: y,
@@ -384,6 +411,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_settings_section_header(
     hdc: HDC,
     ctx: &PaintContext,
@@ -391,6 +419,7 @@ fn draw_settings_section_header(
     right: i32,
     y: &mut i32,
     scale: f32,
+    section_h: i32,
     title: &str,
 ) {
     unsafe {
@@ -411,12 +440,12 @@ fn draw_settings_section_header(
             DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOCLIP,
         );
         SelectObject(hdc, old_font as HGDIOBJ);
-        *y += (22.0 * scale) as i32;
+        *y += section_h;
     }
 }
 
 /// Draw a toggle switch component (pill with sliding knob).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn draw_settings_switch(
     hdc: HDC,
     ctx: &PaintContext,
@@ -424,12 +453,13 @@ fn draw_settings_switch(
     right: i32,
     y: &mut i32,
     scale: f32,
+    row_h: i32,
+    gap: i32,
     label: &str,
     value: bool,
     toggle_idx: usize,
 ) {
     unsafe {
-        let row_h = (SPACE_5 as f32 * scale) as i32;
         let is_pressed =
             ctx.app.pressed_element == Some(PressedElement::SettingsToggle(toggle_idx));
         let is_focused =
@@ -566,7 +596,7 @@ fn draw_settings_switch(
         DeleteObject(knob_brush as HGDIOBJ);
 
         SelectObject(hdc, old_font as HGDIOBJ);
-        *y += row_h + (SPACE_1 as f32 * scale) as i32;
+        *y += row_h + gap;
     }
 }
 
@@ -577,13 +607,13 @@ fn draw_settings_info(
     left: i32,
     right: i32,
     y: &mut i32,
+    row_h: i32,
     scale: f32,
     label: &str,
     value: &str,
     value_color: u32,
 ) {
     unsafe {
-        let row_h = (24.0 * scale) as i32;
         let old_font = SelectObject(hdc, ctx.fonts.normal as HGDIOBJ);
         SetTextColor(hdc, SETTINGS_LABEL);
         let label_wide = to_wide(label);

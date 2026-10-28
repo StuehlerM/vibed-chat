@@ -22,6 +22,12 @@ impl Clipboard for WinClipboard {
             if !hglobal.is_null() {
                 let ptr = GlobalLock(hglobal);
                 if !ptr.is_null() {
+                    // SAFETY: `ptr` is a valid, writable block of at least
+                    // `wide.len() * 2` bytes returned by GlobalLock on a
+                    // `wide.len() * 2`-byte GMEM_MOVEABLE allocation, and the
+                    // source `wide` slice is a live, properly aligned `u16`
+                    // buffer of the same length. Source and destination do not
+                    // overlap (one is a Rust Vec, the other a fresh GlobalAlloc).
                     std::ptr::copy_nonoverlapping(
                         wide.as_ptr() as *const c_void,
                         ptr,

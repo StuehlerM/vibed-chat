@@ -5,20 +5,23 @@
 #![allow(dead_code)]
 
 use crate::chat::ChatState;
+use std::borrow::Cow;
 
 // ── Date/time helpers ───────────────────────────────────────────────────────
 
 /// Returns a relative time string like "2m ago", "1h ago", "3d ago".
-pub fn relative_time(created_at: &std::time::Instant) -> String {
+/// The common "now" case is borrowed (no allocation); only older timestamps
+/// allocate.
+pub fn relative_time(created_at: &std::time::Instant) -> Cow<'static, str> {
     let secs = created_at.elapsed().as_secs();
     if secs < 60 {
-        "now".to_string()
+        Cow::Borrowed("now")
     } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
+        Cow::Owned(format!("{}m ago", secs / 60))
     } else if secs < 86400 {
-        format!("{}h ago", secs / 3600)
+        Cow::Owned(format!("{}h ago", secs / 3600))
     } else {
-        format!("{}d ago", secs / 86400)
+        Cow::Owned(format!("{}d ago", secs / 86400))
     }
 }
 

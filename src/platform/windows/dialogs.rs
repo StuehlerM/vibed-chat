@@ -32,7 +32,7 @@ impl Dialogs for WinDialogs {
 
             let mut path_buf: Vec<u16> = vec![0; 260];
             let ok = SHGetPathFromIDListW(pidl, path_buf.as_mut_ptr());
-            CoTaskMemFree(pidl as *mut std::ffi::c_void);
+            CoTaskMemFree(pidl);
 
             if ok == 0 {
                 return None;

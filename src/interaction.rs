@@ -4,7 +4,7 @@
 // the platform backend trait.
 #![allow(dead_code)]
 
-use crate::app::AppState;
+use crate::app::{AppState, HoverState};
 use crate::chat::Role;
 use crate::theme::*;
 use crate::ui::{FocusedElement, PressedElement, RenameTarget};
@@ -31,24 +31,7 @@ pub enum SidebarEntry {
 
 impl AppState {
     pub fn clear_hover(&mut self) {
-        self.hover.sidebar_item = None;
-        self.hover.new_chat = false;
-        self.hover.new_project = false;
-        self.hover.project = None;
-        self.hover.project_menu = None;
-        self.hover.settings_btn = false;
-        self.hover.settings_close = false;
-        self.hover.reconnect = false;
-        self.hover.thinking_toggle = None;
-        self.hover.settings_toggle = None;
-        self.hover.scrollbar = false;
-        self.hover.sidebar_scrollbar = false;
-        self.hover.send_btn = false;
-        self.hover.session_header = false;
-        self.hover.session_archive = None;
-        self.hover.session_delete = None;
-        self.hover.link = None;
-        self.hover.code_copy = None;
+        self.hover = HoverState::default();
     }
 
     pub fn cycle_focus(&mut self, shift: bool) {
@@ -152,14 +135,7 @@ impl AppState {
                 true
             }
             Some(FocusedElement::SettingsToggle(idx)) => {
-                match idx {
-                    0 => self.settings.dark_theme = !self.settings.dark_theme,
-                    1 => self.settings.auto_scroll = !self.settings.auto_scroll,
-                    2 => self.settings.auto_approve = !self.settings.auto_approve,
-                    3 => self.settings.show_archived = !self.settings.show_archived,
-                    _ => {}
-                }
-                self.save_index();
+                self.toggle_setting(idx);
                 true
             }
             Some(FocusedElement::Reconnect) => {
@@ -192,7 +168,35 @@ impl AppState {
     /// Compute the project-aware sidebar layout matching the rendering in sidebar.rs.
     /// Returns (list_top, total_height, entries). Archived sessions are included
     /// only if show_archived is enabled.
+    ///
+    /// Results are cached in `self.sidebar_cache` keyed by `sidebar_version`:
+    /// the layout is pure in (projects, sessions, settings, dpi, client_height),
+    /// all of which bump the version when they change, so repeat calls within
+    /// one event are free.
     pub fn sidebar_layout(&self) -> (i32, i32, Vec<SidebarEntry>) {
+        if self.sidebar_cache.version == self.sidebar_version {
+            return (
+                self.sidebar_cache.list_top,
+                self.sidebar_cache.total_height,
+                self.sidebar_cache.entries.clone(),
+            );
+        }
+        let (list_top, total_height, entries) = self.compute_sidebar_layout();
+        (list_top, total_height, entries)
+    }
+
+    /// Recompute the sidebar layout and refresh the cache.
+    pub fn refresh_sidebar_layout(&mut self) {
+        let (list_top, total_height, entries) = self.compute_sidebar_layout();
+        self.sidebar_cache = crate::app::SidebarLayoutCache {
+            version: self.sidebar_version,
+            list_top,
+            total_height,
+            entries,
+        };
+    }
+
+    fn compute_sidebar_layout(&self) -> (i32, i32, Vec<SidebarEntry>) {
         let scale = self.dpi as f32 / 96.0;
         let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
         let header_h = (SIDEBAR_HEADER_HEIGHT as f32 * scale) as i32;
@@ -355,23 +359,14 @@ impl AppState {
             }
 
             if x >= panel_left {
-                let reconnect_y = self.reconnect_button_y();
-                let btn_h = (36.0 * scale) as i32;
-                if y >= reconnect_y && y <= reconnect_y + btn_h {
+                let layout = compute_settings_layout(scale);
+                if y >= layout.reconnect_y && y <= layout.reconnect_y + layout.reconnect_btn_h {
                     self.connect_acp();
                     return true;
                 }
 
-                let toggle = self.settings_toggle_at(x, y);
-                if let Some(idx) = toggle {
-                    match idx {
-                        0 => self.settings.dark_theme = !self.settings.dark_theme,
-                        1 => self.settings.auto_scroll = !self.settings.auto_scroll,
-                        2 => self.settings.auto_approve = !self.settings.auto_approve,
-                        3 => self.settings.show_archived = !self.settings.show_archived,
-                        _ => {}
-                    }
-                    self.save_index();
+                if let Some(idx) = self.settings_toggle_at(x, y) {
+                    self.toggle_setting(idx);
                     return true;
                 }
                 return true;
@@ -575,45 +570,38 @@ impl AppState {
 
     /// Check if a click landed on a link rect. Returns the URL if so.
     pub fn click_link(&self, x: i32, y: i32) -> Option<String> {
-        for (left, top, right, bottom, url) in self.link_rects.borrow().iter() {
-            if x >= *left && x <= *right && y >= *top && y <= *bottom {
-                return Some(url.clone());
-            }
-        }
-        None
+        self.link_rects
+            .iter()
+            .find(|(left, top, right, bottom, _)| {
+                x >= *left && x <= *right && y >= *top && y <= *bottom
+            })
+            .map(|(_, _, _, _, url)| url.clone())
     }
 
     /// Check if a click landed on a code block copy button. Returns the code text if so.
     pub fn click_code_copy(&self, x: i32, y: i32) -> Option<String> {
-        for (left, top, right, bottom, code) in self.code_block_rects.borrow().iter() {
-            if x >= *left && x <= *right && y >= *top && y <= *bottom {
-                return Some(code.clone());
-            }
-        }
-        None
+        self.code_block_rects
+            .iter()
+            .find(|(left, top, right, bottom, _)| {
+                x >= *left && x <= *right && y >= *top && y <= *bottom
+            })
+            .map(|(_, _, _, _, code)| code.clone())
     }
 
     /// Update link and code-copy hover states.
     pub fn update_link_hover(&mut self, x: i32, y: i32) {
-        let mut found_link = None;
-        for (idx, (left, top, right, bottom, _)) in self.link_rects.borrow().iter().enumerate() {
-            if x >= *left && x <= *right && y >= *top && y <= *bottom {
-                found_link = Some(idx);
-                break;
-            }
-        }
-        self.hover.link = found_link;
-
-        let mut found_code = None;
-        for (idx, (left, top, right, bottom, _)) in
-            self.code_block_rects.borrow().iter().enumerate()
-        {
-            if x >= *left && x <= *right && y >= *top && y <= *bottom {
-                found_code = Some(idx);
-                break;
-            }
-        }
-        self.hover.code_copy = found_code;
+        self.hover.link = self
+            .link_rects
+            .iter()
+            .position(|(left, top, right, bottom, _)| {
+                x >= *left && x <= *right && y >= *top && y <= *bottom
+            });
+        self.hover.code_copy =
+            self.code_block_rects
+                .iter()
+                .position(|(left, top, right, bottom, _)| {
+                    x >= *left && x <= *right && y >= *top && y <= *bottom
+                });
     }
 
     /// Handle a double-click. Returns true if handled.
@@ -684,22 +672,7 @@ impl AppState {
         let header_h = (SIDEBAR_HEADER_HEIGHT as f32 * scale) as i32;
         let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
 
-        self.hover.sidebar_item = None;
-        self.hover.new_chat = false;
-        self.hover.new_project = false;
-        self.hover.project = None;
-        self.hover.project_menu = None;
-        self.hover.settings_btn = false;
-        self.hover.settings_close = false;
-        self.hover.reconnect = false;
-        self.hover.thinking_toggle = None;
-        self.hover.settings_toggle = None;
-        self.hover.scrollbar = false;
-        self.hover.sidebar_scrollbar = false;
-        self.hover.send_btn = false;
-        self.hover.session_header = false;
-        self.hover.session_archive = None;
-        self.hover.session_delete = None;
+        self.hover = HoverState::default();
 
         // Settings panel hover
         if self.show_settings {
@@ -717,13 +690,12 @@ impl AppState {
                 self.hover.settings_toggle = Some(idx);
                 return;
             }
-            let reconnect_y = self.reconnect_button_y();
-            let btn_h = (36.0 * scale) as i32;
+            let layout = compute_settings_layout(scale);
             let panel_left = self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32;
             if x >= panel_left
                 && x <= self.client_width
-                && y >= reconnect_y
-                && y <= reconnect_y + btn_h
+                && y >= layout.reconnect_y
+                && y <= layout.reconnect_y + layout.reconnect_btn_h
             {
                 self.hover.reconnect = true;
                 return;
@@ -961,21 +933,6 @@ impl AppState {
 
     // ── Layout helpers ───────────────────────────────────────
 
-    /// Left edge of the chat area (right edge of the sidebar), DPI-scaled.
-    pub fn chat_left(&self) -> i32 {
-        (SIDEBAR_WIDTH as f32 * self.dpi as f32 / 96.0) as i32
-    }
-
-    /// Right edge of the chat area - shrinks when the settings panel is open.
-    pub fn chat_right(&self) -> i32 {
-        if self.show_settings {
-            let scale = self.dpi as f32 / 96.0;
-            self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32
-        } else {
-            self.client_width
-        }
-    }
-
     pub fn send_btn_rect(&self) -> Option<(i32, i32, i32, i32)> {
         if self.sessions.is_empty() {
             return None;
@@ -1037,45 +994,6 @@ impl AppState {
         self.client_height - input_h - hint_row_h - input_margin
     }
 
-    fn reconnect_button_y(&self) -> i32 {
-        let scale = self.dpi as f32 / 96.0;
-        let spad = (SPACE_5 as f32 * scale) as i32;
-        let row_h = (SPACE_5 as f32 * scale) as i32;
-        let section_h = (22.0 * scale) as i32;
-        let gap = (SPACE_1 as f32 * scale) as i32;
-        let extra_gap = (SPACE_3 as f32 * scale) as i32;
-        let info_row_h = (24.0 * scale) as i32;
-
-        let mut ty = spad
-            + (SPACE_6 as f32 * scale) as i32
-            + (SPACE_1 as f32 * scale) as i32
-            + (SPACE_4 as f32 * scale) as i32;
-        // Appearance: section + 2 toggles
-        ty += section_h;
-        ty += row_h + gap;
-        ty += row_h + gap;
-        ty += extra_gap;
-        // Agent: section + 1 toggle
-        ty += section_h;
-        ty += row_h + gap;
-        ty += extra_gap;
-        // Sessions: section + 1 toggle
-        ty += section_h;
-        ty += row_h + gap;
-        ty += extra_gap;
-        // Connection: section + 2 info rows
-        ty += section_h;
-        ty += info_row_h;
-        ty += info_row_h;
-        ty += extra_gap;
-        // About: section + 2 info rows
-        ty += section_h;
-        ty += info_row_h;
-        ty += info_row_h;
-        ty += (SPACE_4 as f32 * scale) as i32;
-        ty
-    }
-
     fn scrollbar_at(&self, x: i32, y: i32) -> bool {
         if self.sessions.is_empty() {
             return false;
@@ -1130,48 +1048,13 @@ impl AppState {
         let scale = self.dpi as f32 / 96.0;
         let panel_left = self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32;
         let spad = (SPACE_5 as f32 * scale) as i32;
-        let row_h = (SPACE_5 as f32 * scale) as i32;
-        let section_h = (22.0 * scale) as i32;
-        let gap = (SPACE_1 as f32 * scale) as i32;
-        let extra_gap = (SPACE_3 as f32 * scale) as i32;
-
-        let mut ty = spad
-            + (SPACE_6 as f32 * scale) as i32
-            + (SPACE_1 as f32 * scale) as i32
-            + (SPACE_4 as f32 * scale) as i32;
-
-        // Appearance section
-        ty += section_h;
-        let t0_top = ty;
-        let t0_bottom = ty + row_h;
-        ty += row_h + gap;
-        let t1_top = ty;
-        let t1_bottom = ty + row_h;
-        ty += row_h + gap + extra_gap;
-
-        // Agent section
-        ty += section_h;
-        let t2_top = ty;
-        let t2_bottom = ty + row_h;
-        ty += row_h + gap + extra_gap;
-
-        // Sessions section
-        ty += section_h;
-        let t3_top = ty;
-        let t3_bottom = ty + row_h;
+        let layout = compute_settings_layout(scale);
 
         if x >= panel_left + spad && x <= self.client_width - spad {
-            if y >= t0_top && y <= t0_bottom {
-                return Some(0);
-            }
-            if y >= t1_top && y <= t1_bottom {
-                return Some(1);
-            }
-            if y >= t2_top && y <= t2_bottom {
-                return Some(2);
-            }
-            if y >= t3_top && y <= t3_bottom {
-                return Some(3);
+            for (idx, &top) in layout.toggle_tops.iter().enumerate() {
+                if y >= top && y <= top + layout.toggle_row_h {
+                    return Some(idx);
+                }
             }
         }
         None
@@ -1229,15 +1112,18 @@ impl AppState {
 
 // ── Session action button geometry ───────────────────────────
 
-/// Compute the (left, top, right, bottom) rects for the archive and delete buttons
-/// on a session sidebar item. Returns (archive_rect, delete_rect).
+/// A rectangle in `(left, top, right, bottom)` order.
+pub type Rect = (i32, i32, i32, i32);
+
+/// Compute the rects for the archive and delete buttons on a session sidebar
+/// item. Returns (archive_rect, delete_rect).
 pub fn session_action_rects(
     _item_left: i32,
     item_right: i32,
     item_top: i32,
     item_height: i32,
     scale: f32,
-) -> ((i32, i32, i32, i32), (i32, i32, i32, i32)) {
+) -> (Rect, Rect) {
     let btn_size = (SESSION_ACTION_BTN_SIZE as f32 * scale) as i32;
     let btn_gap = (SESSION_ACTION_BTN_GAP as f32 * scale) as i32;
     let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
@@ -1254,6 +1140,10 @@ pub fn session_action_rects(
         (delete_left, btn_top, delete_right, btn_bottom),
     )
 }
+
+/// Alias kept for call sites that build raw rects inline.
+#[allow(dead_code)]
+pub type _LegacyRectPair = (Rect, Rect);
 
 /// Check if point (x, y) is inside a rect (left, top, right, bottom).
 pub fn point_in_rect(x: i32, y: i32, left: i32, top: i32, right: i32, bottom: i32) -> bool {

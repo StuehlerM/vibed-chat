@@ -34,8 +34,21 @@ pub const TOAST_DURATION_MS: u64 = 4000;
 /// A clickable rectangle with associated text (URL for links, code for copy buttons).
 pub type ClickableRect = (i32, i32, i32, i32, String);
 
+/// Cached result of `sidebar_layout()`. The layout only changes when the
+/// session/project structure, DPI, window height, or archived-visibility
+/// setting changes — none of which happen on mouse-move — so we cache it and
+/// avoid rebuilding (and re-allocating) the entry vector on every mouse event.
+#[derive(Debug, Clone, Default)]
+pub struct SidebarLayoutCache {
+    /// Structure version this layout was computed at.
+    pub version: u64,
+    pub list_top: i32,
+    pub total_height: i32,
+    pub entries: Vec<crate::interaction::SidebarEntry>,
+}
+
 /// All transient hover state (which element the mouse is over).
-#[derive(Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HoverState {
     pub sidebar_item: Option<usize>,
     pub new_chat: bool,
@@ -88,8 +101,13 @@ pub struct AppState {
     pub rename_target: Option<RenameTarget>,
     pub rename_buffer: String,
     pub rename_cursor: usize,
-    pub link_rects: std::cell::RefCell<Vec<ClickableRect>>,
-    pub code_block_rects: std::cell::RefCell<Vec<ClickableRect>>,
+    /// Clickable link rects collected during the last paint pass.
+    /// Plain `Vec` (not `RefCell`): paint and hit-testing both run on the UI
+    /// thread, so interior mutability is unnecessary and only adds a
+    /// re-entrancy panic risk.
+    pub link_rects: Vec<ClickableRect>,
+    /// Clickable code-block copy-button rects collected during the last paint.
+    pub code_block_rects: Vec<ClickableRect>,
     pub saved_window: Option<crate::persistence::WindowState>,
     pub reconnect_attempts: u32,
     pub last_reconnect_attempt: Option<std::time::Instant>,
@@ -99,6 +117,13 @@ pub struct AppState {
     /// Set by interaction when a project's menu button is clicked;
     /// the platform backend shows the project context menu.
     pub project_menu_requested: Option<usize>,
+    /// Cache of the last computed sidebar layout plus the structure version it
+    /// was computed at. Invalidated (version mismatch) on any structural change.
+    pub sidebar_cache: SidebarLayoutCache,
+    /// Monotonic counter bumped whenever the sidebar structure may have changed
+    /// (session/project add/remove, archive toggle, expand/collapse, DPI or
+    /// window resize, show-archived setting change).
+    pub sidebar_version: u64,
 }
 
 impl AppState {
@@ -140,14 +165,38 @@ impl AppState {
             rename_target: None,
             rename_buffer: String::new(),
             rename_cursor: 0,
-            link_rects: std::cell::RefCell::new(Vec::new()),
-            code_block_rects: std::cell::RefCell::new(Vec::new()),
+            link_rects: Vec::new(),
+            code_block_rects: Vec::new(),
             saved_window: None,
             reconnect_attempts: 0,
             last_reconnect_attempt: None,
             new_project_requested: false,
             project_menu_requested: None,
+            sidebar_cache: SidebarLayoutCache::default(),
+            sidebar_version: 0,
         }
+    }
+
+    /// Invalidate the cached sidebar layout. Call after any change that can
+    /// affect the sidebar's structure or geometry.
+    pub fn invalidate_sidebar_cache(&mut self) {
+        self.sidebar_version = self.sidebar_version.wrapping_add(1);
+    }
+
+    /// Toggle a settings switch by index (0=dark, 1=auto-scroll, 2=auto-approve,
+    /// 3=show-archived). Shared by mouse and keyboard activation paths.
+    pub fn toggle_setting(&mut self, idx: usize) {
+        match idx {
+            0 => self.settings.dark_theme = !self.settings.dark_theme,
+            1 => self.settings.auto_scroll = !self.settings.auto_scroll,
+            2 => self.settings.auto_approve = !self.settings.auto_approve,
+            3 => {
+                self.settings.show_archived = !self.settings.show_archived;
+                self.invalidate_sidebar_cache();
+            }
+            _ => return,
+        }
+        self.save_index();
     }
 
     pub fn active_chat(&mut self) -> Option<&mut ChatState> {
@@ -156,6 +205,21 @@ impl AppState {
         }
         let idx = self.active_session.min(self.sessions.len() - 1);
         Some(&mut self.sessions[idx].chat)
+    }
+
+    /// Left edge of the chat area (right edge of the sidebar), DPI-scaled.
+    pub fn chat_left(&self) -> i32 {
+        (crate::theme::SIDEBAR_WIDTH as f32 * self.dpi as f32 / 96.0) as i32
+    }
+
+    /// Right edge of the chat area - shrinks when the settings panel is open.
+    pub fn chat_right(&self) -> i32 {
+        if self.show_settings {
+            let scale = self.dpi as f32 / 96.0;
+            self.client_width - (crate::theme::SETTINGS_PANEL_WIDTH as f32 * scale) as i32
+        } else {
+            self.client_width
+        }
     }
 
     // ── Project management ──────────────────────────────────────────────────
@@ -170,17 +234,26 @@ impl AppState {
     }
 
     pub fn rebuild_project_indices(&mut self) {
+        self.invalidate_sidebar_cache();
         for project in &mut self.projects {
             project.session_indices.clear();
         }
+        // Build a path -> project-index map once so the per-session lookup is
+        // O(1) instead of a linear scan (was O(projects * sessions)).
+        let index_by_path: std::collections::HashMap<&str, usize> = self
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.path.as_str(), i))
+            .collect();
+        let mut pushes: Vec<(usize, usize)> = Vec::new();
         for (i, session) in self.sessions.iter().enumerate() {
-            if let Some(pidx) = self
-                .projects
-                .iter()
-                .position(|p| p.path == session.working_dir)
-            {
-                self.projects[pidx].session_indices.push(i);
+            if let Some(&pidx) = index_by_path.get(session.working_dir.as_str()) {
+                pushes.push((pidx, i));
             }
+        }
+        for (pidx, sidx) in pushes {
+            self.projects[pidx].session_indices.push(sidx);
         }
     }
 
@@ -196,6 +269,7 @@ impl AppState {
         if let Some(project) = self.projects.get_mut(idx) {
             project.expanded = !project.expanded;
         }
+        self.invalidate_sidebar_cache();
         self.save_index();
     }
 
@@ -349,6 +423,7 @@ impl AppState {
                 self.active_session = self.nearest_visible_session(idx);
             }
         }
+        self.invalidate_sidebar_cache();
         self.save_index();
     }
 
@@ -724,6 +799,7 @@ impl AppState {
 
     /// Load persisted state from disk. Returns true if state was loaded.
     pub fn load_state(&mut self) -> bool {
+        self.invalidate_sidebar_cache();
         if let Some(loaded) = crate::persistence::load_all(&self.config_dir) {
             self.settings = loaded.settings;
             self.projects = loaded.projects;
