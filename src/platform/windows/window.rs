@@ -9,7 +9,6 @@ use crate::platform::windows::paint::PaintContext;
 use crate::platform::windows::render;
 use crate::platform::windows::{clipboard::WinClipboard, dialogs::WinDialogs};
 use crate::theme::*;
-use crate::ui::FocusedElement;
 
 pub const WINDOW_CLASS_NAME: &str = "AcpChatWindow";
 pub const WINDOW_TITLE: &str = "ACP Chat";
@@ -205,7 +204,7 @@ pub unsafe extern "system" fn wnd_proc(
                     hover_session_header: state.hover_session_header,
                     hover_session_archive: state.hover_session_archive,
                     hover_session_delete: state.hover_session_delete,
-                    renaming_session: state.renaming_session,
+                    rename_target: state.rename_target,
                     rename_buffer: &state.rename_buffer,
                     rename_cursor: state.rename_cursor,
                     hover_link: state.hover_link,
@@ -228,7 +227,7 @@ pub unsafe extern "system" fn wnd_proc(
                 let state = &mut *app_state;
 
                 // Handle rename mode keys
-                if state.renaming_session.is_some() {
+                if state.rename_target.is_some() {
                     match wparam as u8 {
                         VK_RETURN => {
                             state.commit_rename();
@@ -256,14 +255,14 @@ pub unsafe extern "system" fn wnd_proc(
                             return 0;
                         }
                         VK_HOME => {
-                            if state.renaming_session.is_some() {
+                            if state.rename_target.is_some() {
                                 state.rename_cursor = 0;
                                 InvalidateRect(hwnd, std::ptr::null(), 0);
                             }
                             return 0;
                         }
                         VK_END => {
-                            if state.renaming_session.is_some() {
+                            if state.rename_target.is_some() {
                                 state.rename_cursor = state.rename_buffer.len();
                                 InvalidateRect(hwnd, std::ptr::null(), 0);
                             }
@@ -349,24 +348,23 @@ pub unsafe extern "system" fn wnd_proc(
                     return 0;
                 }
 
-                // Send/Stop button keyboard activation
-                if state.focused_element == Some(FocusedElement::SendButton)
-                    && (wparam as u8 == VK_RETURN || wparam as u8 == VK_SPACE)
-                {
-                    if !state.sessions.is_empty() {
-                        let idx = state.active_session.min(state.sessions.len() - 1);
-                        if state.sessions[idx].chat.is_waiting_for_agent {
-                            state.cancel_turn();
-                        } else {
-                            let text = state.sessions[idx].chat.input_buffer.trim().to_string();
-                            if !text.is_empty() {
-                                let text = state.sessions[idx].chat.take_input();
-                                state.send_message(text);
+                // Enter/Space activates the focused element
+                if wparam as u8 == VK_RETURN || wparam as u8 == VK_SPACE {
+                    if state.activate_focused_element() {
+                        // Handle deferred platform requests from the activation
+                        if state.new_project_requested {
+                            state.new_project_requested = false;
+                            let dialogs = WinDialogs;
+                            if let Some(path) = crate::platform::backend::Dialogs::pick_folder(
+                                &dialogs,
+                                "Select a project folder",
+                            ) {
+                                state.new_chat_in_dir(&path);
                             }
                         }
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                        return 0;
                     }
-                    InvalidateRect(hwnd, std::ptr::null(), 0);
-                    return 0;
                 }
 
                 if state.sessions.is_empty() {
@@ -423,7 +421,7 @@ pub unsafe extern "system" fn wnd_proc(
                 {
                     return DefWindowProcW(hwnd, msg, wparam, lparam);
                 }
-                if state.renaming_session.is_some() {
+                if state.rename_target.is_some() {
                     if let Some(c) = char::from_u32(wparam as u32) {
                         state.rename_insert_char(c);
                     }
@@ -480,6 +478,22 @@ pub unsafe extern "system" fn wnd_proc(
                 } else {
                     state.handle_click(x, y);
                 }
+
+                // Handle deferred platform requests from interaction handlers
+                if state.new_project_requested {
+                    state.new_project_requested = false;
+                    let dialogs = WinDialogs;
+                    if let Some(path) = crate::platform::backend::Dialogs::pick_folder(
+                        &dialogs,
+                        "Select a project folder",
+                    ) {
+                        state.new_chat_in_dir(&path);
+                    }
+                }
+                if let Some(pidx) = state.project_menu_requested.take() {
+                    show_project_menu(hwnd, state, pidx);
+                }
+
                 InvalidateRect(hwnd, std::ptr::null(), 0);
             }
             return 0;
@@ -586,7 +600,7 @@ pub unsafe extern "system" fn wnd_proc(
                 if x < sidebar_w {
                     let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
                     let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
-                    let (list_top, total_list_height, _) = state.date_grouped_sidebar_layout();
+                    let (list_top, total_list_height, _) = state.sidebar_layout();
                     let list_bottom = state.client_height - footer_h - pad;
                     let avail_height = list_bottom - list_top;
                     let max_scroll = (total_list_height - avail_height).max(0);
@@ -696,6 +710,64 @@ pub unsafe extern "system" fn wnd_proc(
 
 fn get_app_state(hwnd: HWND) -> *mut AppState {
     unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState }
+}
+
+const PROJECT_MENU_RENAME: usize = 1;
+const PROJECT_MENU_DELETE: usize = 2;
+
+/// Show the project context menu (Rename / Delete) at the cursor position.
+fn show_project_menu(hwnd: HWND, state: &mut AppState, project_idx: usize) {
+    if project_idx >= state.projects.len() {
+        return;
+    }
+    let project_name = state.projects[project_idx].name.clone();
+    let session_count = state.projects[project_idx].session_indices.len();
+
+    unsafe {
+        let menu = CreatePopupMenu();
+        if menu.is_null() {
+            return;
+        }
+        let rename_wide = to_wide("Rename project");
+        let delete_wide = to_wide("Delete project");
+        AppendMenuW(menu, MF_STRING, PROJECT_MENU_RENAME, rename_wide.as_ptr());
+        AppendMenuW(menu, MF_STRING, PROJECT_MENU_DELETE, delete_wide.as_ptr());
+
+        let mut pt = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut pt);
+        SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            pt.x,
+            pt.y,
+            0,
+            hwnd,
+            std::ptr::null(),
+        );
+        DestroyMenu(menu);
+
+        match cmd as usize {
+            PROJECT_MENU_RENAME => {
+                state.start_rename_project(project_idx);
+            }
+            PROJECT_MENU_DELETE => {
+                let dialogs = WinDialogs;
+                let confirmed = crate::platform::backend::Dialogs::confirm(
+                    &dialogs,
+                    "Delete Project",
+                    &format!(
+                        "Delete project \"{}\" and its {} session(s)? This cannot be undone.",
+                        project_name, session_count
+                    ),
+                );
+                if confirmed {
+                    state.remove_project(project_idx);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Translate a Win32 virtual key code to the platform-independent Key enum.

@@ -7,7 +7,7 @@ use crate::acp::{AcpClient, AcpEvent};
 use crate::chat::{ChatState, Role};
 use crate::session::{Project, Session};
 use crate::theme::Settings;
-use crate::ui::{FocusedElement, Toast, ToastKind};
+use crate::ui::{FocusedElement, RenameTarget, Toast, ToastKind};
 
 /// Opaque handle to platform-specific font resources.
 /// On Windows this wraps GDI HFONT handles; on other platforms it will
@@ -77,7 +77,7 @@ pub struct AppState {
     pub default_working_dir: String,
     pub toast: Option<Toast>,
     pub config_dir: String,
-    pub renaming_session: Option<usize>,
+    pub rename_target: Option<RenameTarget>,
     pub rename_buffer: String,
     pub rename_cursor: usize,
     pub link_rects: std::cell::RefCell<Vec<ClickableRect>>,
@@ -87,6 +87,12 @@ pub struct AppState {
     pub saved_window: Option<crate::persistence::WindowState>,
     pub reconnect_attempts: u32,
     pub last_reconnect_attempt: Option<std::time::Instant>,
+    /// Set by interaction when the "+ New Project" button is clicked;
+    /// the platform backend picks a folder and calls `create_project`.
+    pub new_project_requested: bool,
+    /// Set by interaction when a project's menu button is clicked;
+    /// the platform backend shows the project context menu.
+    pub project_menu_requested: Option<usize>,
 }
 
 impl AppState {
@@ -140,7 +146,7 @@ impl AppState {
             default_working_dir: default_wd,
             toast: None,
             config_dir: crate::persistence::default_config_dir(),
-            renaming_session: None,
+            rename_target: None,
             rename_buffer: String::new(),
             rename_cursor: 0,
             link_rects: std::cell::RefCell::new(Vec::new()),
@@ -150,6 +156,8 @@ impl AppState {
             saved_window: None,
             reconnect_attempts: 0,
             last_reconnect_attempt: None,
+            new_project_requested: false,
+            project_menu_requested: None,
         }
     }
 
@@ -256,18 +264,38 @@ impl AppState {
     /// Start inline rename for a session.
     pub fn start_rename(&mut self, idx: usize) {
         if idx < self.sessions.len() {
-            self.renaming_session = Some(idx);
+            self.rename_target = Some(RenameTarget::Session(idx));
             self.rename_buffer = self.sessions[idx].name.clone();
             self.rename_cursor = self.rename_buffer.len();
         }
     }
 
-    /// Commit the rename buffer to the session name.
+    /// Start inline rename for a project.
+    pub fn start_rename_project(&mut self, idx: usize) {
+        if idx < self.projects.len() {
+            self.rename_target = Some(RenameTarget::Project(idx));
+            self.rename_buffer = self.projects[idx].name.clone();
+            self.rename_cursor = self.rename_buffer.len();
+        }
+    }
+
+    /// Commit the rename buffer to the target's name.
     pub fn commit_rename(&mut self) {
-        if let Some(idx) = self.renaming_session.take() {
+        if let Some(target) = self.rename_target.take() {
             let name = self.rename_buffer.trim().to_string();
-            if !name.is_empty() && idx < self.sessions.len() {
-                self.sessions[idx].name = name;
+            if !name.is_empty() {
+                match target {
+                    RenameTarget::Session(idx) => {
+                        if idx < self.sessions.len() {
+                            self.sessions[idx].name = name;
+                        }
+                    }
+                    RenameTarget::Project(idx) => {
+                        if idx < self.projects.len() {
+                            self.projects[idx].name = name;
+                        }
+                    }
+                }
                 self.save_index();
             }
             self.rename_buffer.clear();
@@ -277,14 +305,14 @@ impl AppState {
 
     /// Cancel the inline rename.
     pub fn cancel_rename(&mut self) {
-        self.renaming_session = None;
+        self.rename_target = None;
         self.rename_buffer.clear();
         self.rename_cursor = 0;
     }
 
     /// Insert a character into the rename buffer.
     pub fn rename_insert_char(&mut self, c: char) {
-        if self.renaming_session.is_some() && !c.is_control() {
+        if self.rename_target.is_some() && !c.is_control() {
             self.rename_buffer.insert(self.rename_cursor, c);
             self.rename_cursor += c.len_utf8();
         }
@@ -292,7 +320,7 @@ impl AppState {
 
     /// Backspace in the rename buffer.
     pub fn rename_backspace(&mut self) {
-        if self.renaming_session.is_some() && self.rename_cursor > 0 {
+        if self.rename_target.is_some() && self.rename_cursor > 0 {
             let mut pos = self.rename_cursor - 1;
             while pos > 0 && !self.rename_buffer.is_char_boundary(pos) {
                 pos -= 1;
@@ -304,7 +332,7 @@ impl AppState {
 
     /// Move rename cursor left.
     pub fn rename_cursor_left(&mut self) {
-        if self.renaming_session.is_some() && self.rename_cursor > 0 {
+        if self.rename_target.is_some() && self.rename_cursor > 0 {
             let mut pos = self.rename_cursor - 1;
             while pos > 0 && !self.rename_buffer.is_char_boundary(pos) {
                 pos -= 1;
@@ -315,7 +343,7 @@ impl AppState {
 
     /// Move rename cursor right.
     pub fn rename_cursor_right(&mut self) {
-        if self.renaming_session.is_some() && self.rename_cursor < self.rename_buffer.len() {
+        if self.rename_target.is_some() && self.rename_cursor < self.rename_buffer.len() {
             let mut pos = self.rename_cursor + 1;
             while pos < self.rename_buffer.len() && !self.rename_buffer.is_char_boundary(pos) {
                 pos += 1;

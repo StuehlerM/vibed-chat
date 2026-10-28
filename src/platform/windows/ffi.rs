@@ -209,6 +209,14 @@ pub const IDYES: UINT = 6;
 pub const IDNO: UINT = 7;
 pub const MB_ICONINFORMATION: UINT = 0x0000_0040;
 
+// Menus
+pub const MF_STRING: UINT = 0x0000_0000;
+pub const TPM_LEFTALIGN: UINT = 0x0000_0000;
+pub const TPM_TOPALIGN: UINT = 0x0000_0000;
+pub const TPM_RETURNCMD: UINT = 0x0100;
+pub const TPM_NONOTIFY: UINT = 0x0080;
+pub const TPM_RIGHTBUTTON: UINT = 0x0002;
+
 // ── Cursor ───────────────────────────────────────────────────
 pub const IDC_ARROW: LPCWSTR = 32512 as LPCWSTR;
 pub const IDC_IBEAM: LPCWSTR = 32513 as LPCWSTR;
@@ -527,6 +535,24 @@ extern "system" {
     pub fn GetCapture() -> HWND;
     pub fn DragDetect(hwnd: HWND, pt: POINT) -> BOOL;
     pub fn GetCaretBlinkTime() -> UINT;
+    pub fn CreatePopupMenu() -> HMENU;
+    pub fn AppendMenuW(
+        hMenu: HMENU,
+        uFlags: UINT,
+        uIDNewItem: UINT_PTR,
+        lpNewItem: LPCWSTR,
+    ) -> BOOL;
+    pub fn TrackPopupMenu(
+        hMenu: HMENU,
+        uFlags: UINT,
+        x: i32,
+        y: i32,
+        nReserved: i32,
+        hWnd: HWND,
+        prcRect: *const RECT,
+    ) -> i32;
+    pub fn DestroyMenu(hMenu: HMENU) -> BOOL;
+    pub fn SetForegroundWindow(hWnd: HWND) -> BOOL;
 }
 
 // ── gdi32.dll ────────────────────────────────────────────────

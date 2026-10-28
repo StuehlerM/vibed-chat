@@ -7,7 +7,7 @@ use crate::chat::ChatState;
 use crate::platform::windows::fonts::Fonts;
 use crate::session::{Project, Session};
 use crate::theme::*;
-use crate::ui::{FocusedElement, PressedElement, Toast};
+use crate::ui::{FocusedElement, PressedElement, RenameTarget, Toast};
 
 /// Bundles all data needed for a GDI paint pass.
 pub struct PaintContext<'a> {
@@ -43,7 +43,7 @@ pub struct PaintContext<'a> {
     pub hover_session_header: bool,
     pub hover_session_archive: Option<usize>,
     pub hover_session_delete: Option<usize>,
-    pub renaming_session: Option<usize>,
+    pub rename_target: Option<RenameTarget>,
     pub rename_buffer: &'a str,
     pub rename_cursor: usize,
     pub hover_link: Option<usize>,
