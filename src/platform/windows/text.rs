@@ -97,7 +97,7 @@ pub fn wrap_text(
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
         unsafe { SelectObject(hdc, old_font) };
-        return vec![(text.to_string(), *style, 0)];
+        return vec![(text.to_string(), style.clone(), 0)];
     }
 
     let mut lines = Vec::new();
@@ -120,7 +120,7 @@ pub fn wrap_text(
             current_line = test_line;
             current_width = size.x;
         } else {
-            lines.push((current_line.clone(), *style, current_width));
+            lines.push((current_line.clone(), style.clone(), current_width));
             current_line = word.to_string();
             let word_wide = to_wide(word);
             unsafe {
@@ -136,10 +136,10 @@ pub fn wrap_text(
     }
 
     if !current_line.is_empty() {
-        lines.push((current_line, *style, current_width));
+        lines.push((current_line, style.clone(), current_width));
     }
     if lines.is_empty() {
-        lines.push((text.to_string(), *style, 0));
+        lines.push((text.to_string(), style.clone(), 0));
     }
 
     unsafe { SelectObject(hdc, old_font) };

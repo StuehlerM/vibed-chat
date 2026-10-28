@@ -7,7 +7,7 @@ use crate::acp::{AcpClient, AcpEvent};
 use crate::chat::{ChatState, Role};
 use crate::session::{Project, Session};
 use crate::theme::Settings;
-use crate::ui::{FocusedElement, Toast, ToastKind};
+use crate::ui::{FocusedElement, RenameTarget, Toast, ToastKind};
 
 /// Opaque handle to platform-specific font resources.
 /// On Windows this wraps GDI HFONT handles; on other platforms it will
@@ -31,6 +31,32 @@ impl FontsHandle {
 /// Duration (ms) for which a toast notification stays visible.
 pub const TOAST_DURATION_MS: u64 = 4000;
 
+/// A clickable rectangle with associated text (URL for links, code for copy buttons).
+pub type ClickableRect = (i32, i32, i32, i32, String);
+
+/// All transient hover state (which element the mouse is over).
+#[derive(Default)]
+pub struct HoverState {
+    pub sidebar_item: Option<usize>,
+    pub new_chat: bool,
+    pub new_project: bool,
+    pub project: Option<usize>,
+    pub project_menu: Option<usize>,
+    pub settings_btn: bool,
+    pub settings_close: bool,
+    pub reconnect: bool,
+    pub thinking_toggle: Option<usize>,
+    pub settings_toggle: Option<usize>,
+    pub send_btn: bool,
+    pub session_header: bool,
+    pub session_archive: Option<usize>,
+    pub session_delete: Option<usize>,
+    pub scrollbar: bool,
+    pub sidebar_scrollbar: bool,
+    pub link: Option<usize>,
+    pub code_copy: Option<usize>,
+}
+
 /// Shared application state stored in the window's user data.
 pub struct AppState {
     pub projects: Vec<Project>,
@@ -48,31 +74,31 @@ pub struct AppState {
     pub last_cursor_blink: std::time::Instant,
     pub cursor_visible: bool,
     pub caret_blink_ms: u32,
-    pub hover_sidebar_item: Option<usize>,
-    pub hover_new_chat: bool,
-    pub hover_new_project: bool,
-    pub hover_project: Option<usize>,
-    pub hover_project_menu: Option<usize>,
-    pub hover_settings_btn: bool,
-    pub hover_settings_close: bool,
-    pub hover_reconnect: bool,
-    pub hover_thinking_toggle: Option<usize>,
-    pub hover_settings_toggle: Option<usize>,
-    pub hover_send_btn: bool,
-    pub hover_session_header: bool,
-    pub hover_session_archive: Option<usize>,
-    pub hover_session_delete: Option<usize>,
+    pub hover: HoverState,
     pub pressed_element: Option<crate::ui::PressedElement>,
     pub focused_element: Option<FocusedElement>,
     pub sidebar_scroll_offset: i32,
-    pub hover_sidebar_scrollbar: bool,
-    pub hover_scrollbar: bool,
     pub streaming_dots: u8,
     pub pending_new_session: bool,
     pub pending_working_dir: String,
     pub session_counter: usize,
     pub default_working_dir: String,
     pub toast: Option<Toast>,
+    pub config_dir: String,
+    pub rename_target: Option<RenameTarget>,
+    pub rename_buffer: String,
+    pub rename_cursor: usize,
+    pub link_rects: std::cell::RefCell<Vec<ClickableRect>>,
+    pub code_block_rects: std::cell::RefCell<Vec<ClickableRect>>,
+    pub saved_window: Option<crate::persistence::WindowState>,
+    pub reconnect_attempts: u32,
+    pub last_reconnect_attempt: Option<std::time::Instant>,
+    /// Set by interaction when the "+ New Project" button is clicked;
+    /// the platform backend picks a folder and calls `create_project`.
+    pub new_project_requested: bool,
+    /// Set by interaction when a project's menu button is clicked;
+    /// the platform backend shows the project context menu.
+    pub project_menu_requested: Option<usize>,
 }
 
 impl AppState {
@@ -100,31 +126,27 @@ impl AppState {
             } else {
                 caret_blink_ms
             },
-            hover_sidebar_item: None,
-            hover_new_chat: false,
-            hover_new_project: false,
-            hover_project: None,
-            hover_project_menu: None,
-            hover_settings_btn: false,
-            hover_settings_close: false,
-            hover_reconnect: false,
-            hover_thinking_toggle: None,
-            hover_settings_toggle: None,
-            hover_send_btn: false,
-            hover_session_header: false,
-            hover_session_archive: None,
-            hover_session_delete: None,
+            hover: HoverState::default(),
             pressed_element: None,
             focused_element: Some(FocusedElement::Input),
             sidebar_scroll_offset: 0,
-            hover_sidebar_scrollbar: false,
-            hover_scrollbar: false,
             streaming_dots: 0,
             pending_new_session: false,
             pending_working_dir: String::new(),
             session_counter: 0,
             default_working_dir: default_wd,
             toast: None,
+            config_dir: crate::persistence::default_config_dir(),
+            rename_target: None,
+            rename_buffer: String::new(),
+            rename_cursor: 0,
+            link_rects: std::cell::RefCell::new(Vec::new()),
+            code_block_rects: std::cell::RefCell::new(Vec::new()),
+            saved_window: None,
+            reconnect_attempts: 0,
+            last_reconnect_attempt: None,
+            new_project_requested: false,
+            project_menu_requested: None,
         }
     }
 
@@ -174,6 +196,7 @@ impl AppState {
         if let Some(project) = self.projects.get_mut(idx) {
             project.expanded = !project.expanded;
         }
+        self.save_index();
     }
 
     pub fn remove_project(&mut self, project_idx: usize) {
@@ -198,6 +221,7 @@ impl AppState {
             self.active_session = 0;
         }
         self.rebuild_project_indices();
+        self.save_index();
     }
 
     // ── Session management ──────────────────────────────────────────────────
@@ -212,6 +236,7 @@ impl AppState {
         self.pending_working_dir = working_dir.to_string();
         self.ensure_project(working_dir);
         self.rebuild_project_indices();
+        self.save_index();
     }
 
     pub fn create_local_session_default(&mut self) {
@@ -225,6 +250,97 @@ impl AppState {
         }
     }
 
+    /// Start inline rename for a session.
+    pub fn start_rename(&mut self, idx: usize) {
+        if idx < self.sessions.len() {
+            self.rename_target = Some(RenameTarget::Session(idx));
+            self.rename_buffer = self.sessions[idx].name.clone();
+            self.rename_cursor = self.rename_buffer.len();
+        }
+    }
+
+    /// Start inline rename for a project.
+    pub fn start_rename_project(&mut self, idx: usize) {
+        if idx < self.projects.len() {
+            self.rename_target = Some(RenameTarget::Project(idx));
+            self.rename_buffer = self.projects[idx].name.clone();
+            self.rename_cursor = self.rename_buffer.len();
+        }
+    }
+
+    /// Commit the rename buffer to the target's name.
+    pub fn commit_rename(&mut self) {
+        if let Some(target) = self.rename_target.take() {
+            let name = self.rename_buffer.trim().to_string();
+            if !name.is_empty() {
+                match target {
+                    RenameTarget::Session(idx) => {
+                        if idx < self.sessions.len() {
+                            self.sessions[idx].name = name;
+                        }
+                    }
+                    RenameTarget::Project(idx) => {
+                        if idx < self.projects.len() {
+                            self.projects[idx].name = name;
+                        }
+                    }
+                }
+                self.save_index();
+            }
+            self.rename_buffer.clear();
+            self.rename_cursor = 0;
+        }
+    }
+
+    /// Cancel the inline rename.
+    pub fn cancel_rename(&mut self) {
+        self.rename_target = None;
+        self.rename_buffer.clear();
+        self.rename_cursor = 0;
+    }
+
+    /// Insert a character into the rename buffer.
+    pub fn rename_insert_char(&mut self, c: char) {
+        if self.rename_target.is_some() && !c.is_control() {
+            self.rename_buffer.insert(self.rename_cursor, c);
+            self.rename_cursor += c.len_utf8();
+        }
+    }
+
+    /// Backspace in the rename buffer.
+    pub fn rename_backspace(&mut self) {
+        if self.rename_target.is_some() && self.rename_cursor > 0 {
+            let mut pos = self.rename_cursor - 1;
+            while pos > 0 && !self.rename_buffer.is_char_boundary(pos) {
+                pos -= 1;
+            }
+            self.rename_buffer.remove(pos);
+            self.rename_cursor = pos;
+        }
+    }
+
+    /// Move rename cursor left.
+    pub fn rename_cursor_left(&mut self) {
+        if self.rename_target.is_some() && self.rename_cursor > 0 {
+            let mut pos = self.rename_cursor - 1;
+            while pos > 0 && !self.rename_buffer.is_char_boundary(pos) {
+                pos -= 1;
+            }
+            self.rename_cursor = pos;
+        }
+    }
+
+    /// Move rename cursor right.
+    pub fn rename_cursor_right(&mut self) {
+        if self.rename_target.is_some() && self.rename_cursor < self.rename_buffer.len() {
+            let mut pos = self.rename_cursor + 1;
+            while pos < self.rename_buffer.len() && !self.rename_buffer.is_char_boundary(pos) {
+                pos += 1;
+            }
+            self.rename_cursor = pos;
+        }
+    }
+
     /// Toggle the archived state of a session.
     pub fn toggle_archive_session(&mut self, idx: usize) {
         if let Some(session) = self.sessions.get_mut(idx) {
@@ -233,6 +349,7 @@ impl AppState {
                 self.active_session = self.nearest_visible_session(idx);
             }
         }
+        self.save_index();
     }
 
     /// Permanently delete a session. Returns true if a session was removed.
@@ -243,7 +360,9 @@ impl AppState {
         if self.sessions[idx].chat.is_waiting_for_agent {
             return false;
         }
+        let local_id = self.sessions[idx].local_id.clone();
         self.sessions.remove(idx);
+        self.delete_session_file(&local_id);
         self.rebuild_project_indices();
         if self.sessions.is_empty() {
             self.active_session = 0;
@@ -253,6 +372,7 @@ impl AppState {
         } else if self.active_session > idx {
             self.active_session -= 1;
         }
+        self.save_index();
         true
     }
 
@@ -311,6 +431,7 @@ impl AppState {
             match event {
                 AcpEvent::Connected => {
                     self.acp_connected = true;
+                    self.reset_reconnect();
                     if self.sessions.is_empty() {
                         self.create_local_session_default();
                     }
@@ -333,6 +454,8 @@ impl AppState {
                         self.add_system_message_to_active(
                             "Session ready. Type a message to begin.",
                         );
+                        self.save_index();
+                        self.save_session(idx);
                     } else {
                         self.session_counter += 1;
                         let name = format!("Chat {}", self.session_counter);
@@ -345,6 +468,8 @@ impl AppState {
                         self.active_session = self.sessions.len() - 1;
                         self.ensure_project(&wd);
                         self.rebuild_project_indices();
+                        self.save_index();
+                        self.save_session(self.active_session);
                     }
                 }
                 AcpEvent::StreamChunk { session_id, text } => {
@@ -369,8 +494,13 @@ impl AppState {
                 } => {
                     if let Some(idx) = self.find_session_by_acp_id(&session_id) {
                         self.sessions[idx].chat.finish_streaming();
+                        self.save_session(idx);
                     } else if let Some(chat) = self.active_chat() {
                         chat.finish_streaming();
+                        let idx = self
+                            .active_session
+                            .min(self.sessions.len().saturating_sub(1));
+                        self.save_session(idx);
                     }
                 }
                 AcpEvent::ToolCall {
@@ -380,6 +510,9 @@ impl AppState {
                 } => {
                     let msg = format!("[Tool: {}] {}", name, truncate_str(&input, 200));
                     self.add_system_message_to_session(&session_id, &msg);
+                    if let Some(idx) = self.find_session_by_acp_id(&session_id) {
+                        self.save_session(idx);
+                    }
                 }
                 AcpEvent::ToolResult {
                     session_id,
@@ -388,6 +521,9 @@ impl AppState {
                 } => {
                     let msg = format!("[Result] {}", truncate_str(&output, 200));
                     self.add_system_message_to_session(&session_id, &msg);
+                    if let Some(idx) = self.find_session_by_acp_id(&session_id) {
+                        self.save_session(idx);
+                    }
                 }
                 AcpEvent::PermissionRequest {
                     id,
@@ -408,16 +544,20 @@ impl AppState {
                         );
                         self.add_system_message_to_session(&session_id, &msg);
                     }
+                    if let Some(idx) = self.find_session_by_acp_id(&session_id) {
+                        self.save_session(idx);
+                    }
                 }
                 AcpEvent::ProcessDied { code } => {
                     self.acp_connected = false;
                     let msg = match code {
-                        Some(c) => {
-                            format!("Agent process exited (code {}). Press F5 to reconnect", c)
-                        }
-                        None => "Agent process died. Press F5 to reconnect".to_string(),
+                        Some(c) => format!("Agent process exited (code {})", c),
+                        None => "Agent process died".to_string(),
                     };
                     self.show_toast(&msg, ToastKind::Error);
+                    // Auto-reconnect: schedule a retry
+                    self.reconnect_attempts += 1;
+                    self.last_reconnect_attempt = Some(std::time::Instant::now());
                 }
                 AcpEvent::Error(msg) => {
                     self.show_toast(&format!("Error: {}", msg), ToastKind::Error);
@@ -463,15 +603,21 @@ impl AppState {
         }
 
         let idx = self.active_session.min(self.sessions.len() - 1);
-        let session = &mut self.sessions[idx];
 
-        session.chat.add_message(Role::User, &text);
-        session.auto_name();
+        let acp_session_id;
+        {
+            let session = &mut self.sessions[idx];
+            session.chat.add_message(Role::User, &text);
+            session.auto_name();
+            acp_session_id = session.acp_session_id.clone();
+        }
+        self.save_session(idx);
+        self.save_index();
 
         if let Some(ref acp) = self.acp {
-            if self.acp_connected && !session.acp_session_id.is_empty() {
-                session.chat.start_streaming();
-                acp.send_prompt(&session.acp_session_id, &text);
+            if self.acp_connected && !acp_session_id.is_empty() {
+                self.sessions[idx].chat.start_streaming();
+                acp.send_prompt(&acp_session_id, &text);
             } else {
                 self.show_toast(
                     "Not connected to agent. Press F5 to reconnect",
@@ -532,6 +678,119 @@ impl AppState {
                 acp.request_session(working_dir);
             }
         }
+    }
+
+    // ── Persistence ────────────────────────────────────────────────────────
+
+    /// Save the state index (settings, projects, session metadata) to disk.
+    /// Failures surface as a toast — a silent save loss must never look like success.
+    pub fn save_index(&mut self) {
+        let window = self.saved_window_state();
+        if let Err(e) = crate::persistence::save_index(
+            &self.config_dir,
+            &self.settings,
+            &self.projects,
+            &self.sessions,
+            window.as_ref(),
+        ) {
+            self.show_toast(&format!("Save failed: {}", e), ToastKind::Error);
+        }
+    }
+
+    /// Save a single session's message history to disk.
+    pub fn save_session(&mut self, idx: usize) {
+        let result = self
+            .sessions
+            .get(idx)
+            .map(|session| crate::persistence::save_session(&self.config_dir, session));
+        if let Some(Err(e)) = result {
+            self.show_toast(&format!("Save failed: {}", e), ToastKind::Error);
+        }
+    }
+
+    /// Save the state index and all session files to disk.
+    pub fn save_all(&mut self) {
+        let window = self.saved_window_state();
+        if let Err(e) = crate::persistence::save_all(
+            &self.config_dir,
+            &self.settings,
+            &self.projects,
+            &self.sessions,
+            window.as_ref(),
+        ) {
+            self.show_toast(&format!("Save failed: {}", e), ToastKind::Error);
+        }
+    }
+
+    /// Load persisted state from disk. Returns true if state was loaded.
+    pub fn load_state(&mut self) -> bool {
+        if let Some(loaded) = crate::persistence::load_all(&self.config_dir) {
+            self.settings = loaded.settings;
+            self.projects = loaded.projects;
+            self.sessions = loaded.sessions;
+            self.active_session = 0;
+            self.session_counter = self
+                .sessions
+                .iter()
+                .map(|s| {
+                    s.name
+                        .strip_prefix("Chat ")
+                        .and_then(|n| n.parse::<usize>().ok())
+                        .unwrap_or(0)
+                })
+                .max()
+                .unwrap_or(0);
+            self.rebuild_project_indices();
+            if let Some(w) = loaded.window {
+                self.saved_window = Some(w);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    fn saved_window_state(&self) -> Option<crate::persistence::WindowState> {
+        self.saved_window.clone()
+    }
+
+    /// Delete a session's file from disk.
+    pub fn delete_session_file(&self, local_id: &str) {
+        crate::persistence::delete_session_file(&self.config_dir, local_id);
+    }
+
+    /// Check if an auto-reconnect should be attempted. Called from the timer tick.
+    /// Returns true if a reconnect was initiated.
+    pub fn try_auto_reconnect(&mut self) -> bool {
+        const MAX_AUTO_RECONNECTS: u32 = 5;
+        const RECONNECT_DELAY_SECS: u64 = 3;
+
+        if self.reconnect_attempts == 0 || self.reconnect_attempts > MAX_AUTO_RECONNECTS {
+            return false;
+        }
+        if self.acp_connected {
+            self.reconnect_attempts = 0;
+            return false;
+        }
+        let should_retry = match self.last_reconnect_attempt {
+            Some(t) => t.elapsed().as_secs() >= RECONNECT_DELAY_SECS,
+            None => false,
+        };
+        if should_retry {
+            self.show_toast(
+                &format!("Reconnecting... (attempt {})", self.reconnect_attempts),
+                ToastKind::Info,
+            );
+            self.connect_acp();
+            return true;
+        }
+        false
+    }
+
+    /// Reset reconnect counter (call on successful connection).
+    pub fn reset_reconnect(&mut self) {
+        self.reconnect_attempts = 0;
+        self.last_reconnect_attempt = None;
     }
 }
 

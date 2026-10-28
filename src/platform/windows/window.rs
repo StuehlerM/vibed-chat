@@ -9,7 +9,6 @@ use crate::platform::windows::paint::PaintContext;
 use crate::platform::windows::render;
 use crate::platform::windows::{clipboard::WinClipboard, dialogs::WinDialogs};
 use crate::theme::*;
-use crate::ui::FocusedElement;
 
 pub const WINDOW_CLASS_NAME: &str = "AcpChatWindow";
 pub const WINDOW_TITLE: &str = "ACP Chat";
@@ -74,6 +73,44 @@ pub unsafe extern "system" fn wnd_proc(
             if !app_state.is_null() {
                 (*app_state).client_width = (lparam & 0xFFFF) as i32;
                 (*app_state).client_height = ((lparam >> 16) & 0xFFFF) as i32;
+
+                // Save window size to state (only when not minimized and has real size)
+                let state = &mut *app_state;
+                if wparam != SIZE_MINIMIZED && state.client_width > 0 && state.client_height > 0 {
+                    let mut rect = RECT {
+                        left: 0,
+                        top: 0,
+                        right: 0,
+                        bottom: 0,
+                    };
+                    GetWindowRect(hwnd, &mut rect);
+                    state.saved_window = Some(crate::persistence::WindowState {
+                        width: state.client_width,
+                        height: state.client_height,
+                        x: rect.left,
+                        y: rect.top,
+                    });
+                }
+            }
+            return 0;
+        }
+        WM_MOVE => {
+            let app_state = get_app_state(hwnd);
+            if !app_state.is_null() {
+                let state = &mut *app_state;
+                let x = (lparam & 0xFFFF) as i16 as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
+                if let Some(ref mut w) = state.saved_window {
+                    w.x = x;
+                    w.y = y;
+                } else if state.client_width > 0 && state.client_height > 0 {
+                    state.saved_window = Some(crate::persistence::WindowState {
+                        width: state.client_width,
+                        height: state.client_height,
+                        x,
+                        y,
+                    });
+                }
             }
             return 0;
         }
@@ -82,6 +119,7 @@ pub unsafe extern "system" fn wnd_proc(
                 let app_state = get_app_state(hwnd);
                 if !app_state.is_null() {
                     (*app_state).poll_acp();
+                    (*app_state).try_auto_reconnect();
 
                     // Cursor blink
                     let now = std::time::Instant::now();
@@ -113,10 +151,14 @@ pub unsafe extern "system" fn wnd_proc(
                     state.fonts = Some(FontsHandle::new(fonts));
                 }
 
-                let fonts_ref = match state.fonts.as_ref().and_then(|f| f.downcast_ref::<Fonts>()) {
-                    Some(f) => f,
-                    None => return 0,
-                };
+                let fonts_ptr: *const Fonts =
+                    match state.fonts.as_ref().and_then(|f| f.downcast_ref::<Fonts>()) {
+                        Some(f) => f as *const Fonts,
+                        None => return 0,
+                    };
+                // SAFETY: fonts outlive the paint pass; the AppState borrow for
+                // fonts is released here, and the paint pass only reads fonts.
+                let fonts_ref = unsafe { &*fonts_ptr };
 
                 let mut ps = PAINTSTRUCT {
                     hdc: std::ptr::null_mut(),
@@ -134,38 +176,8 @@ pub unsafe extern "system" fn wnd_proc(
                 BeginPaint(hwnd, &mut ps);
 
                 let mut ctx = PaintContext {
-                    toast: state.toast.clone(),
-                    projects: &state.projects,
-                    sessions: &mut state.sessions,
-                    active_session: state.active_session,
-                    show_settings: state.show_settings,
-                    settings: &state.settings,
+                    app: state,
                     fonts: fonts_ref,
-                    dpi: state.dpi,
-                    width: state.client_width,
-                    height: state.client_height,
-                    cursor_visible: state.cursor_visible,
-                    acp_connected: state.acp_connected,
-                    hover_sidebar_item: state.hover_sidebar_item,
-                    hover_new_chat: state.hover_new_chat,
-                    hover_new_project: state.hover_new_project,
-                    hover_project: state.hover_project,
-                    hover_project_menu: state.hover_project_menu,
-                    hover_settings_btn: state.hover_settings_btn,
-                    hover_settings_close: state.hover_settings_close,
-                    hover_reconnect: state.hover_reconnect,
-                    hover_thinking_toggle: state.hover_thinking_toggle,
-                    hover_settings_toggle: state.hover_settings_toggle,
-                    pressed_element: state.pressed_element,
-                    focused_element: state.focused_element,
-                    sidebar_scroll_offset: state.sidebar_scroll_offset,
-                    hover_scrollbar: state.hover_scrollbar,
-                    hover_sidebar_scrollbar: state.hover_sidebar_scrollbar,
-                    streaming_dots: state.streaming_dots,
-                    hover_send_btn: state.hover_send_btn,
-                    hover_session_header: state.hover_session_header,
-                    hover_session_archive: state.hover_session_archive,
-                    hover_session_delete: state.hover_session_delete,
                 };
                 render::paint(hwnd, &mut ctx);
 
@@ -180,6 +192,53 @@ pub unsafe extern "system" fn wnd_proc(
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
                 let state = &mut *app_state;
+
+                // Handle rename mode keys
+                if state.rename_target.is_some() {
+                    match wparam as u8 {
+                        VK_RETURN => {
+                            state.commit_rename();
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                            return 0;
+                        }
+                        VK_ESCAPE => {
+                            state.cancel_rename();
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                            return 0;
+                        }
+                        VK_BACK => {
+                            state.rename_backspace();
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                            return 0;
+                        }
+                        VK_LEFT => {
+                            state.rename_cursor_left();
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                            return 0;
+                        }
+                        VK_RIGHT => {
+                            state.rename_cursor_right();
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                            return 0;
+                        }
+                        VK_HOME => {
+                            if state.rename_target.is_some() {
+                                state.rename_cursor = 0;
+                                InvalidateRect(hwnd, std::ptr::null(), 0);
+                            }
+                            return 0;
+                        }
+                        VK_END => {
+                            if state.rename_target.is_some() {
+                                state.rename_cursor = state.rename_buffer.len();
+                                InvalidateRect(hwnd, std::ptr::null(), 0);
+                            }
+                            return 0;
+                        }
+                        _ => {}
+                    }
+                    return 0;
+                }
 
                 // F5 to reconnect
                 if wparam as u8 == VK_F5 {
@@ -256,20 +315,23 @@ pub unsafe extern "system" fn wnd_proc(
                     return 0;
                 }
 
-                // Send button keyboard activation
-                if state.focused_element == Some(FocusedElement::SendButton)
-                    && (wparam as u8 == VK_RETURN || wparam as u8 == VK_SPACE)
-                {
-                    if !state.sessions.is_empty() {
-                        let idx = state.active_session.min(state.sessions.len() - 1);
-                        let text = state.sessions[idx].chat.input_buffer.trim().to_string();
-                        if !text.is_empty() && !state.sessions[idx].chat.is_waiting_for_agent {
-                            let text = state.sessions[idx].chat.take_input();
-                            state.send_message(text);
+                // Enter/Space activates the focused element
+                if wparam as u8 == VK_RETURN || wparam as u8 == VK_SPACE {
+                    if state.activate_focused_element() {
+                        // Handle deferred platform requests from the activation
+                        if state.new_project_requested {
+                            state.new_project_requested = false;
+                            let dialogs = WinDialogs;
+                            if let Some(path) = crate::platform::backend::Dialogs::pick_folder(
+                                &dialogs,
+                                "Select a project folder",
+                            ) {
+                                state.new_chat_in_dir(&path);
+                            }
                         }
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                        return 0;
                     }
-                    InvalidateRect(hwnd, std::ptr::null(), 0);
-                    return 0;
                 }
 
                 if state.sessions.is_empty() {
@@ -326,7 +388,11 @@ pub unsafe extern "system" fn wnd_proc(
                 {
                     return DefWindowProcW(hwnd, msg, wparam, lparam);
                 }
-                if !state.sessions.is_empty() {
+                if state.rename_target.is_some() {
+                    if let Some(c) = char::from_u32(wparam as u32) {
+                        state.rename_insert_char(c);
+                    }
+                } else if !state.sessions.is_empty() {
                     if let Some(chat) = state.active_chat() {
                         if let Some(c) = char::from_u32(wparam as u32) {
                             let _ = input::handle_char_input(chat, c);
@@ -360,7 +426,52 @@ pub unsafe extern "system" fn wnd_proc(
                 let state = &mut *app_state;
                 let x = (lparam & 0xFFFF) as i16 as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-                state.handle_click(x, y);
+                if let Some(url) = state.click_link(x, y) {
+                    let url_wide = to_wide(&url);
+                    let open_wide = to_wide("open");
+                    unsafe {
+                        ShellExecuteW(
+                            hwnd,
+                            open_wide.as_ptr(),
+                            url_wide.as_ptr(),
+                            std::ptr::null(),
+                            std::ptr::null(),
+                            SW_SHOW,
+                        );
+                    }
+                } else if let Some(code) = state.click_code_copy(x, y) {
+                    let clipboard = WinClipboard;
+                    crate::platform::backend::Clipboard::set_text(&clipboard, &code);
+                } else {
+                    state.handle_click(x, y);
+                }
+
+                // Handle deferred platform requests from interaction handlers
+                if state.new_project_requested {
+                    state.new_project_requested = false;
+                    let dialogs = WinDialogs;
+                    if let Some(path) = crate::platform::backend::Dialogs::pick_folder(
+                        &dialogs,
+                        "Select a project folder",
+                    ) {
+                        state.new_chat_in_dir(&path);
+                    }
+                }
+                if let Some(pidx) = state.project_menu_requested.take() {
+                    show_project_menu(hwnd, state, pidx);
+                }
+
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+            }
+            return 0;
+        }
+        WM_LBUTTONDBLCLK => {
+            let app_state = get_app_state(hwnd);
+            if !app_state.is_null() {
+                let state = &mut *app_state;
+                let x = (lparam & 0xFFFF) as i16 as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
+                state.handle_double_click(x, y);
                 InvalidateRect(hwnd, std::ptr::null(), 0);
             }
             return 0;
@@ -390,35 +501,40 @@ pub unsafe extern "system" fn wnd_proc(
                 };
                 TrackMouseEvent(&mut tme);
 
-                let old_hover_item = state.hover_sidebar_item;
-                let old_hover_new = state.hover_new_chat;
-                let old_hover_new_proj = state.hover_new_project;
-                let old_hover_proj = state.hover_project;
-                let old_hover_settings = state.hover_settings_btn;
-                let old_hover_close = state.hover_settings_close;
-                let old_hover_thinking = state.hover_thinking_toggle;
-                let old_hover_toggle = state.hover_settings_toggle;
-                let old_hover_sb = state.hover_scrollbar;
-                let old_hover_sb_sidebar = state.hover_sidebar_scrollbar;
-                let old_hover_send = state.hover_send_btn;
-                let old_hover_sh = state.hover_session_header;
-                let old_hover_arch = state.hover_session_archive;
-                let old_hover_del = state.hover_session_delete;
+                let old_hover_item = state.hover.sidebar_item;
+                let old_hover_new = state.hover.new_chat;
+                let old_hover_new_proj = state.hover.new_project;
+                let old_hover_proj = state.hover.project;
+                let old_hover_settings = state.hover.settings_btn;
+                let old_hover_close = state.hover.settings_close;
+                let old_hover_thinking = state.hover.thinking_toggle;
+                let old_hover_toggle = state.hover.settings_toggle;
+                let old_hover_sb = state.hover.scrollbar;
+                let old_hover_sb_sidebar = state.hover.sidebar_scrollbar;
+                let old_hover_send = state.hover.send_btn;
+                let old_hover_sh = state.hover.session_header;
+                let old_hover_arch = state.hover.session_archive;
+                let old_hover_del = state.hover.session_delete;
+                let old_hover_link = state.hover.link;
+                let old_hover_code = state.hover.code_copy;
                 state.update_hover(x, y);
-                if state.hover_sidebar_item != old_hover_item
-                    || state.hover_new_chat != old_hover_new
-                    || state.hover_new_project != old_hover_new_proj
-                    || state.hover_project != old_hover_proj
-                    || state.hover_settings_btn != old_hover_settings
-                    || state.hover_settings_close != old_hover_close
-                    || state.hover_thinking_toggle != old_hover_thinking
-                    || state.hover_settings_toggle != old_hover_toggle
-                    || state.hover_scrollbar != old_hover_sb
-                    || state.hover_sidebar_scrollbar != old_hover_sb_sidebar
-                    || state.hover_send_btn != old_hover_send
-                    || state.hover_session_header != old_hover_sh
-                    || state.hover_session_archive != old_hover_arch
-                    || state.hover_session_delete != old_hover_del
+                state.update_link_hover(x, y);
+                if state.hover.sidebar_item != old_hover_item
+                    || state.hover.new_chat != old_hover_new
+                    || state.hover.new_project != old_hover_new_proj
+                    || state.hover.project != old_hover_proj
+                    || state.hover.settings_btn != old_hover_settings
+                    || state.hover.settings_close != old_hover_close
+                    || state.hover.thinking_toggle != old_hover_thinking
+                    || state.hover.settings_toggle != old_hover_toggle
+                    || state.hover.scrollbar != old_hover_sb
+                    || state.hover.sidebar_scrollbar != old_hover_sb_sidebar
+                    || state.hover.send_btn != old_hover_send
+                    || state.hover.session_header != old_hover_sh
+                    || state.hover.session_archive != old_hover_arch
+                    || state.hover.session_delete != old_hover_del
+                    || state.hover.link != old_hover_link
+                    || state.hover.code_copy != old_hover_code
                 {
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                 }
@@ -492,24 +608,26 @@ pub unsafe extern "system" fn wnd_proc(
                 let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
 
                 if x < sidebar_w
-                    && (state.hover_new_chat
-                        || state.hover_new_project
-                        || state.hover_project.is_some()
-                        || state.hover_sidebar_item.is_some()
-                        || state.hover_settings_btn
-                        || state.hover_sidebar_scrollbar
-                        || state.hover_session_archive.is_some()
-                        || state.hover_session_delete.is_some())
+                    && (state.hover.new_chat
+                        || state.hover.new_project
+                        || state.hover.project.is_some()
+                        || state.hover.sidebar_item.is_some()
+                        || state.hover.settings_btn
+                        || state.hover.sidebar_scrollbar
+                        || state.hover.session_archive.is_some()
+                        || state.hover.session_delete.is_some())
                 {
                     let hcursor = LoadCursorW(std::ptr::null_mut(), IDC_HAND);
                     SetCursor(hcursor);
                     return 1;
                 }
 
-                if state.hover_thinking_toggle.is_some()
-                    || state.hover_settings_toggle.is_some()
-                    || state.hover_scrollbar
-                    || state.hover_send_btn
+                if state.hover.thinking_toggle.is_some()
+                    || state.hover.settings_toggle.is_some()
+                    || state.hover.scrollbar
+                    || state.hover.send_btn
+                    || state.hover.link.is_some()
+                    || state.hover.code_copy.is_some()
                 {
                     let hcursor = LoadCursorW(std::ptr::null_mut(), IDC_HAND);
                     SetCursor(hcursor);
@@ -561,6 +679,64 @@ fn get_app_state(hwnd: HWND) -> *mut AppState {
     unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState }
 }
 
+const PROJECT_MENU_RENAME: usize = 1;
+const PROJECT_MENU_DELETE: usize = 2;
+
+/// Show the project context menu (Rename / Delete) at the cursor position.
+fn show_project_menu(hwnd: HWND, state: &mut AppState, project_idx: usize) {
+    if project_idx >= state.projects.len() {
+        return;
+    }
+    let project_name = state.projects[project_idx].name.clone();
+    let session_count = state.projects[project_idx].session_indices.len();
+
+    unsafe {
+        let menu = CreatePopupMenu();
+        if menu.is_null() {
+            return;
+        }
+        let rename_wide = to_wide("Rename project");
+        let delete_wide = to_wide("Delete project");
+        AppendMenuW(menu, MF_STRING, PROJECT_MENU_RENAME, rename_wide.as_ptr());
+        AppendMenuW(menu, MF_STRING, PROJECT_MENU_DELETE, delete_wide.as_ptr());
+
+        let mut pt = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut pt);
+        SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            pt.x,
+            pt.y,
+            0,
+            hwnd,
+            std::ptr::null(),
+        );
+        DestroyMenu(menu);
+
+        match cmd as usize {
+            PROJECT_MENU_RENAME => {
+                state.start_rename_project(project_idx);
+            }
+            PROJECT_MENU_DELETE => {
+                let dialogs = WinDialogs;
+                let confirmed = crate::platform::backend::Dialogs::confirm(
+                    &dialogs,
+                    "Delete Project",
+                    &format!(
+                        "Delete project \"{}\" and its {} session(s)? This cannot be undone.",
+                        project_name, session_count
+                    ),
+                );
+                if confirmed {
+                    state.remove_project(project_idx);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Translate a Win32 virtual key code to the platform-independent Key enum.
 fn wparam_to_key(vk: u8) -> Option<Key> {
     match vk {
@@ -589,7 +765,7 @@ pub fn register_class(hinstance: HINSTANCE) -> bool {
         let class_name = to_wide(WINDOW_CLASS_NAME);
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as UINT,
-            style: CS_HREDRAW | CS_VREDRAW,
+            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
             lpfnWndProc: Some(wnd_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
@@ -623,13 +799,20 @@ pub fn create_window(
         };
         AdjustWindowRectEx(&mut rect, WS_OVERLAPPEDWINDOW, 0, 0);
 
+        // Use saved window position if available
+        let (pos_x, pos_y) = if let Some(ref w) = (*app_state).saved_window {
+            (w.x, w.y)
+        } else {
+            (CW_USEDEFAULT, CW_USEDEFAULT)
+        };
+
         let hwnd = CreateWindowExW(
             0,
             class_name.as_ptr(),
             title.as_ptr(),
             WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
+            pos_x,
+            pos_y,
             rect.right - rect.left,
             rect.bottom - rect.top,
             std::ptr::null_mut(),

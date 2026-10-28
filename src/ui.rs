@@ -38,6 +38,13 @@ pub enum FocusedElement {
     Reconnect,
 }
 
+/// Identifies which sidebar element is being inline-renamed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RenameTarget {
+    Session(usize),
+    Project(usize),
+}
+
 /// Transient toast notification (e.g. agent connection status).
 #[derive(Clone)]
 pub struct Toast {

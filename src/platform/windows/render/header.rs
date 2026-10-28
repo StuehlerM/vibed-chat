@@ -61,8 +61,11 @@ pub fn draw_session_header(
         }
 
         let pad = (SPACE_4 as f32 * scale) as i32;
-        let idx = ctx.active_session.min(ctx.sessions.len().saturating_sub(1));
-        let session = &ctx.sessions[idx];
+        let idx = ctx
+            .app
+            .active_session
+            .min(ctx.app.sessions.len().saturating_sub(1));
+        let session = &ctx.app.sessions[idx];
 
         // Session name (truncated)
         if !session.chat.messages.is_empty() {
@@ -98,7 +101,7 @@ pub fn draw_session_header(
             ("Agent responding...".to_string(), ACCENT, true)
         } else if session.chat.streaming_message_idx.is_some() {
             ("Streaming".to_string(), ACCENT, false)
-        } else if !ctx.acp_connected {
+        } else if !ctx.app.acp_connected {
             ("Disconnected".to_string(), ERROR_COLOR, false)
         } else {
             ("Connected".to_string(), SUCCESS, false)
@@ -137,7 +140,7 @@ pub fn draw_session_header(
         SelectObject(hdc, old_font2 as HGDIOBJ);
         let dot_x = dot_cx - sz.x - dot_r - (6.0 * scale) as i32;
         let dot_color = if pulse_dot {
-            let pulse = (ctx.streaming_dots % 30) < 15;
+            let pulse = (ctx.app.streaming_dots % 30) < 15;
             if pulse {
                 status_color
             } else {

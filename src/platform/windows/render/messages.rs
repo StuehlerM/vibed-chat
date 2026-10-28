@@ -9,6 +9,28 @@ use crate::platform::windows::paint::PaintContext;
 use crate::platform::windows::text::wrap_text;
 use crate::theme::*;
 
+/// Wrap a set of styled runs into drawable lines, selecting the right font
+/// per run. Empty source lines produce an empty placeholder line.
+fn wrap_runs(
+    hdc: HDC,
+    runs: &[crate::markdown::StyledRun],
+    text_width: i32,
+    fonts: &Fonts,
+) -> Vec<(String, Style, i32)> {
+    let mut out = Vec::new();
+    for run in runs {
+        let _old = select_font_for_style(hdc, &run.style, fonts);
+        for line_text in run.text.split('\n') {
+            if line_text.is_empty() {
+                out.push((String::new(), run.style.clone(), 0));
+                continue;
+            }
+            out.extend(wrap_text(hdc, line_text, text_width, &run.style, fonts));
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn draw_messages(
     hdc: HDC,
@@ -24,22 +46,27 @@ pub fn draw_messages(
     let content_width = chat_w - 2 * (MESSAGE_PADDING as f32 * scale) as i32;
     let max_bubble_width = (content_width as f32 * MESSAGE_MAX_WIDTH_RATIO) as i32;
 
-    let scroll_offset = ctx.sessions[ctx.active_session].chat.scroll_offset;
-    let streaming_idx = ctx.sessions[ctx.active_session].chat.streaming_message_idx;
-    let messages_len = ctx.sessions[ctx.active_session].chat.messages.len();
-    let hover_thinking = ctx.hover_thinking_toggle;
+    let scroll_offset = ctx.app.sessions[ctx.app.active_session].chat.scroll_offset;
+    let streaming_idx = ctx.app.sessions[ctx.app.active_session]
+        .chat
+        .streaming_message_idx;
+    let messages_len = ctx.app.sessions[ctx.app.active_session].chat.messages.len();
+    let hover_thinking = ctx.app.hover.thinking_toggle;
     let viewport = area_bottom - area_top;
 
     let visible = {
-        let chat = &ctx.sessions[ctx.active_session].chat;
+        let chat = &ctx.app.sessions[ctx.app.active_session].chat;
         chat.visible_messages(viewport, scroll_offset)
     };
+
+    ctx.app.link_rects.borrow_mut().clear();
+    ctx.app.code_block_rects.borrow_mut().clear();
 
     for (msg_idx, y_top) in visible {
         if msg_idx >= messages_len {
             break;
         }
-        let msg = &ctx.sessions[ctx.active_session].chat.messages[msg_idx];
+        let msg = &ctx.app.sessions[ctx.app.active_session].chat.messages[msg_idx];
         let is_streaming = streaming_idx == Some(msg_idx);
         let is_thinking_hover = hover_thinking == Some(msg_idx);
 
@@ -57,6 +84,10 @@ pub fn draw_messages(
             ctx.fonts,
             is_streaming,
             is_thinking_hover,
+            ctx.app.hover.link,
+            ctx.app.hover.code_copy,
+            &ctx.app.link_rects,
+            &ctx.app.code_block_rects,
         );
     }
 }
@@ -74,6 +105,10 @@ fn draw_message(
     fonts: &Fonts,
     is_streaming: bool,
     hover_thinking: bool,
+    hover_link: Option<usize>,
+    hover_code_copy: Option<usize>,
+    link_rects: &std::cell::RefCell<Vec<crate::app::ClickableRect>>,
+    code_block_rects: &std::cell::RefCell<Vec<crate::app::ClickableRect>>,
 ) {
     unsafe {
         let label_height = (SPACE_4 as f32 * scale) as i32;
@@ -86,25 +121,8 @@ fn draw_message(
         // Calculate thinking section height
         let has_thinking = !msg.thinking.is_empty();
         let thinking_text_height = if has_thinking && !msg.thinking_collapsed {
-            let mut th = 0i32;
-            for run in &msg.thinking_runs {
-                let style_font = if run.style.code {
-                    fonts.code
-                } else if run.style.bold {
-                    fonts.bold
-                } else {
-                    fonts.normal
-                };
-                SelectObject(hdc, style_font as HGDIOBJ);
-                for line_text in run.text.split('\n') {
-                    if line_text.is_empty() {
-                        th += line_height;
-                        continue;
-                    }
-                    let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
-                    th += wrapped.len() as i32 * line_height;
-                }
-            }
+            let wrapped = wrap_runs(hdc, &msg.thinking_runs, text_width, fonts);
+            let mut th = wrapped.len() as i32 * line_height;
             if th == 0 {
                 th = line_height;
             }
@@ -114,31 +132,8 @@ fn draw_message(
         };
 
         // Calculate main text height
-        let mut total_text_height = 0i32;
-        let mut lines: Vec<(String, Style, i32)> = Vec::new();
-
-        for run in &msg.runs {
-            let style_font = if run.style.code {
-                fonts.code
-            } else if run.style.bold {
-                fonts.bold
-            } else {
-                fonts.normal
-            };
-            SelectObject(hdc, style_font as HGDIOBJ);
-            for line_text in run.text.split('\n') {
-                if line_text.is_empty() {
-                    total_text_height += line_height;
-                    lines.push((String::new(), run.style, 0));
-                    continue;
-                }
-                let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
-                for w in wrapped {
-                    total_text_height += line_height;
-                    lines.push(w);
-                }
-            }
-        }
+        let lines = wrap_runs(hdc, &msg.runs, text_width, fonts);
+        let mut total_text_height = lines.len() as i32 * line_height;
         if total_text_height == 0 {
             total_text_height = line_height;
         }
@@ -294,14 +289,7 @@ fn draw_message(
 
                 let mut think_y = content_y + bubble_padding / 2;
                 for run in &msg.thinking_runs {
-                    let style_font = if run.style.code {
-                        fonts.code
-                    } else if run.style.bold {
-                        fonts.bold
-                    } else {
-                        fonts.italic
-                    };
-                    SelectObject(hdc, style_font as HGDIOBJ);
+                    let _run_old = select_font_for_style(hdc, &run.style, fonts);
                     SetTextColor(hdc, THINKING_TEXT_COLOR);
                     for line_text in run.text.split('\n') {
                         if line_text.is_empty() {
@@ -311,14 +299,7 @@ fn draw_message(
                         let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
                         for (w_text, w_style, _) in &wrapped {
                             if !w_text.is_empty() {
-                                let w_font = if w_style.code {
-                                    fonts.code
-                                } else if w_style.italic {
-                                    fonts.italic
-                                } else {
-                                    fonts.normal
-                                };
-                                SelectObject(hdc, w_font as HGDIOBJ);
+                                let _w_old = select_font_for_style(hdc, w_style, fonts);
                                 let wide = to_wide(w_text);
                                 let mut tr = RECT {
                                     left: bubble_left + bubble_padding + bubble_padding / 2,
@@ -343,18 +324,67 @@ fn draw_message(
             }
         }
 
-        // Draw main text lines
+        // Draw main text lines, register link rects, detect code blocks
         let mut text_y = content_y;
+        let mut local_link_idx = link_rects.borrow().len();
+        let mut in_code_block = false;
+        let mut code_block_start_y = 0i32;
+        let mut code_block_lines: Vec<String> = Vec::new();
+        let mut code_block_lang: Option<String> = None;
+        let code_block_left = bubble_left + bubble_padding;
+        let code_block_right = bubble_left + bubble_width - bubble_padding;
+        let mut code_block_global_idx = code_block_rects.borrow().len();
+
         for (line_text, style, _width) in &lines {
             if line_text.is_empty() {
+                if in_code_block {
+                    code_block_lines.push(String::new());
+                }
                 text_y += line_height;
                 continue;
             }
             let style_font = select_font_for_style(hdc, style, fonts);
-            let text_color = match msg.role {
-                Role::User => USER_BUBBLE_TEXT,
-                Role::System => SYSTEM_TEXT_COLOR,
-                Role::Agent => style.color,
+
+            // Code block tracking
+            if style.is_code_block {
+                if !in_code_block {
+                    in_code_block = true;
+                    code_block_start_y = text_y;
+                    code_block_lines.clear();
+                    code_block_lang = style.code_lang.clone();
+                }
+                code_block_lines.push(line_text.clone());
+            } else if in_code_block {
+                in_code_block = false;
+                finish_code_block(
+                    hdc,
+                    fonts,
+                    code_block_start_y,
+                    code_block_left,
+                    code_block_right,
+                    &code_block_lang,
+                    &code_block_lines,
+                    hover_code_copy == Some(code_block_global_idx),
+                    code_block_rects,
+                    line_height,
+                    scale,
+                );
+                code_block_global_idx = code_block_rects.borrow().len();
+            }
+
+            let is_link_hover = style.is_link && hover_link == Some(local_link_idx);
+            let text_color = if style.is_link {
+                if is_link_hover {
+                    MD_LINK_HOVER
+                } else {
+                    MD_LINK
+                }
+            } else {
+                match msg.role {
+                    Role::User => USER_BUBBLE_TEXT,
+                    Role::System => SYSTEM_TEXT_COLOR,
+                    Role::Agent => style.color,
+                }
             };
             SetTextColor(hdc, text_color);
             let wide = to_wide(line_text);
@@ -376,11 +406,131 @@ fn draw_message(
                 &mut text_rect as LPRECT,
                 draw_format,
             );
+
+            // Measure text width
+            let mut sz = POINT { x: 0, y: 0 };
+            GetTextExtentPoint32W(hdc, wide.as_ptr(), wide.len() as i32 - 1, &mut sz);
+
+            // Underline + register clickable rect for links
+            if style.is_link {
+                let underline_y = text_y + line_height - 1;
+                let underline_rect = RECT {
+                    left: text_rect.left,
+                    top: underline_y,
+                    right: text_rect.left + sz.x,
+                    bottom: underline_y + 1,
+                };
+                let underline_brush = CreateSolidBrush(text_color);
+                FillRect(hdc, &underline_rect, underline_brush);
+                DeleteObject(underline_brush as HGDIOBJ);
+
+                link_rects.borrow_mut().push((
+                    text_rect.left,
+                    text_y,
+                    text_rect.left + sz.x,
+                    text_y + line_height,
+                    line_text.clone(),
+                ));
+                local_link_idx += 1;
+            }
+
             SelectObject(hdc, style_font as HGDIOBJ);
             text_y += line_height;
         }
 
+        // Handle code block that extends to end of message
+        if in_code_block {
+            finish_code_block(
+                hdc,
+                fonts,
+                code_block_start_y,
+                code_block_left,
+                code_block_right,
+                &code_block_lang,
+                &code_block_lines,
+                hover_code_copy == Some(code_block_global_idx),
+                code_block_rects,
+                line_height,
+                scale,
+            );
+        }
+
         SelectObject(hdc, old_font as HGDIOBJ);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_code_block(
+    hdc: HDC,
+    fonts: &Fonts,
+    start_y: i32,
+    left: i32,
+    right: i32,
+    lang: &Option<String>,
+    code_lines: &[String],
+    is_hover: bool,
+    code_block_rects: &std::cell::RefCell<Vec<crate::app::ClickableRect>>,
+    line_height: i32,
+    scale: f32,
+) {
+    unsafe {
+        // Draw language label at top-right
+        if let Some(ref l) = *lang {
+            let old_font = SelectObject(hdc, fonts.caption as HGDIOBJ);
+            SetTextColor(hdc, TEXT_TERTIARY);
+            let label_wide = to_wide(&l.to_uppercase());
+            let mut label_rect = RECT {
+                left,
+                top: start_y,
+                right: right - (SPACE_2 as f32 * scale) as i32,
+                bottom: start_y + line_height,
+            };
+            DrawTextW(
+                hdc,
+                label_wide.as_ptr(),
+                label_wide.len() as i32 - 1,
+                &mut label_rect as LPRECT,
+                DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_NOCLIP,
+            );
+            SelectObject(hdc, old_font as HGDIOBJ);
+        }
+
+        // Draw copy button at top-right (below language label if present)
+        let btn_size = (14.0 * scale).max(12.0) as i32;
+        let btn_right = right - (SPACE_1 as f32 * scale) as i32;
+        let btn_top = start_y + (SPACE_1 as f32 * scale) as i32;
+        let copy_color = if is_hover {
+            TEXT_PRIMARY
+        } else {
+            TEXT_TERTIARY
+        };
+        let old_font = SelectObject(hdc, fonts.caption as HGDIOBJ);
+        SetTextColor(hdc, copy_color);
+        let copy_icon = to_wide("\u{2398}");
+        let mut btn_rect = RECT {
+            left: btn_right - btn_size,
+            top: btn_top,
+            right: btn_right,
+            bottom: btn_top + btn_size,
+        };
+        DrawTextW(
+            hdc,
+            copy_icon.as_ptr(),
+            copy_icon.len() as i32 - 1,
+            &mut btn_rect as LPRECT,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
+        );
+        SelectObject(hdc, old_font as HGDIOBJ);
+
+        // Register clickable rect with the full code text
+        let code_text = code_lines.join("\n");
+        code_block_rects.borrow_mut().push((
+            btn_rect.left,
+            btn_rect.top,
+            btn_rect.right,
+            btn_rect.bottom,
+            code_text,
+        ));
     }
 }
 
@@ -407,25 +557,8 @@ pub fn compute_message_heights(
 
         for msg in &mut chat.messages {
             // Main text height
-            let mut total_text_height = 0i32;
-            for run in &msg.runs {
-                let style_font = if run.style.code {
-                    fonts.code
-                } else if run.style.bold {
-                    fonts.bold
-                } else {
-                    fonts.normal
-                };
-                SelectObject(hdc, style_font as HGDIOBJ);
-                for line_text in run.text.split('\n') {
-                    if line_text.is_empty() {
-                        total_text_height += line_height;
-                        continue;
-                    }
-                    let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
-                    total_text_height += wrapped.len() as i32 * line_height;
-                }
-            }
+            let wrapped = wrap_runs(hdc, &msg.runs, text_width, fonts);
+            let mut total_text_height = wrapped.len() as i32 * line_height;
             if total_text_height == 0 {
                 total_text_height = line_height;
             }
@@ -436,25 +569,8 @@ pub fn compute_message_heights(
             if has_thinking && msg.role == Role::Agent {
                 thinking_section_h += thinking_header_h;
                 if !msg.thinking_collapsed {
-                    let mut th = 0i32;
-                    for run in &msg.thinking_runs {
-                        let style_font = if run.style.code {
-                            fonts.code
-                        } else if run.style.bold {
-                            fonts.bold
-                        } else {
-                            fonts.normal
-                        };
-                        SelectObject(hdc, style_font as HGDIOBJ);
-                        for line_text in run.text.split('\n') {
-                            if line_text.is_empty() {
-                                th += line_height;
-                                continue;
-                            }
-                            let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
-                            th += wrapped.len() as i32 * line_height;
-                        }
-                    }
+                    let wrapped = wrap_runs(hdc, &msg.thinking_runs, text_width, fonts);
+                    let mut th = wrapped.len() as i32 * line_height;
                     if th == 0 {
                         th = line_height;
                     }
@@ -495,8 +611,11 @@ pub fn draw_message_scrollbar(
     area_top: i32,
     scale: f32,
 ) {
-    let idx = ctx.active_session.min(ctx.sessions.len().saturating_sub(1));
-    let chat = &ctx.sessions[idx].chat;
+    let idx = ctx
+        .app
+        .active_session
+        .min(ctx.app.sessions.len().saturating_sub(1));
+    let chat = &ctx.app.sessions[idx].chat;
     let total = chat.total_content_height;
     let viewport = area_bottom - area_top;
     if total <= viewport {
@@ -531,7 +650,7 @@ pub fn draw_message_scrollbar(
             right: chat_right,
             bottom: (thumb_y + thumb_h).min(area_bottom),
         };
-        let thumb_color = if ctx.hover_scrollbar {
+        let thumb_color = if ctx.app.hover.scrollbar {
             SCROLLBAR_THUMB_HOVER
         } else {
             SCROLLBAR_THUMB

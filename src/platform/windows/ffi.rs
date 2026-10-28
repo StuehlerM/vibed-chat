@@ -116,6 +116,8 @@ pub const WM_DPICHANGED: UINT = 0x02E0;
 pub const WM_SETCURSOR: UINT = 0x0020;
 pub const WM_COPYDATA: UINT = 0x004A;
 pub const WM_GETMINMAXINFO: UINT = 0x0024;
+pub const WM_MOVE: UINT = 0x0003;
+pub const SIZE_MINIMIZED: WPARAM = 1;
 
 // ── Virtual key codes ────────────────────────────────────────
 pub const VK_BACK: u8 = 0x08;
@@ -206,6 +208,14 @@ pub const MB_YESNO: UINT = 0x0000_0004;
 pub const IDYES: UINT = 6;
 pub const IDNO: UINT = 7;
 pub const MB_ICONINFORMATION: UINT = 0x0000_0040;
+
+// Menus
+pub const MF_STRING: UINT = 0x0000_0000;
+pub const TPM_LEFTALIGN: UINT = 0x0000_0000;
+pub const TPM_TOPALIGN: UINT = 0x0000_0000;
+pub const TPM_RETURNCMD: UINT = 0x0100;
+pub const TPM_NONOTIFY: UINT = 0x0080;
+pub const TPM_RIGHTBUTTON: UINT = 0x0002;
 
 // ── Cursor ───────────────────────────────────────────────────
 pub const IDC_ARROW: LPCWSTR = 32512 as LPCWSTR;
@@ -525,6 +535,24 @@ extern "system" {
     pub fn GetCapture() -> HWND;
     pub fn DragDetect(hwnd: HWND, pt: POINT) -> BOOL;
     pub fn GetCaretBlinkTime() -> UINT;
+    pub fn CreatePopupMenu() -> HMENU;
+    pub fn AppendMenuW(
+        hMenu: HMENU,
+        uFlags: UINT,
+        uIDNewItem: UINT_PTR,
+        lpNewItem: LPCWSTR,
+    ) -> BOOL;
+    pub fn TrackPopupMenu(
+        hMenu: HMENU,
+        uFlags: UINT,
+        x: i32,
+        y: i32,
+        nReserved: i32,
+        hWnd: HWND,
+        prcRect: *const RECT,
+    ) -> i32;
+    pub fn DestroyMenu(hMenu: HMENU) -> BOOL;
+    pub fn SetForegroundWindow(hWnd: HWND) -> BOOL;
 }
 
 // ── gdi32.dll ────────────────────────────────────────────────
@@ -822,6 +850,14 @@ pub type LPBROWSEINFOW = *mut BROWSEINFOW;
 extern "system" {
     pub fn SHBrowseForFolderW(lpbi: LPBROWSEINFOW) -> LPITEMIDLIST;
     pub fn SHGetPathFromIDListW(pidl: LPCITEMIDLIST, pszPath: LPWSTR) -> BOOL;
+    pub fn ShellExecuteW(
+        hwnd: HWND,
+        lpOperation: LPCWSTR,
+        lpFile: LPCWSTR,
+        lpParameters: LPCWSTR,
+        lpDirectory: LPCWSTR,
+        nShowCmd: i32,
+    ) -> HINSTANCE;
 }
 
 #[link(name = "ole32")]

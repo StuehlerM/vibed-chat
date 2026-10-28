@@ -172,6 +172,12 @@ pub const SEND_BTN_PRESSED: u32 = ACCENT_PRESSED;
 pub const SEND_BTN_DISABLED: u32 = SURFACE_4;
 pub const SEND_BTN_ICON: u32 = TEXT_ON_ACCENT;
 
+// ── Stop button (shown when agent is streaming) ──
+pub const STOP_BTN_BG: u32 = ERROR_COLOR;
+pub const STOP_BTN_HOVER: u32 = rgb(240, 100, 90);
+pub const STOP_BTN_PRESSED: u32 = rgb(180, 60, 50);
+pub const STOP_BTN_ICON: u32 = CREAM;
+
 // ── Settings button (sidebar footer) ─────────────────────────
 pub const SETTINGS_BTN_BG: u32 = SURFACE_3;
 pub const SETTINGS_BTN_HOVER: u32 = SURFACE_4;
@@ -240,6 +246,8 @@ pub const MD_CODE_BLOCK: u32 = TEXT_SECONDARY;
 pub const MD_BOLD: u32 = TEXT_EMPHASIS;
 pub const MD_INLINE_CODE: u32 = ACCENT_HOVER;
 pub const MD_HEADING: u32 = rgb(255, 180, 100);
+pub const MD_LINK: u32 = ACCENT_HOVER;
+pub const MD_LINK_HOVER: u32 = rgb(255, 175, 80);
 
 // ── Legacy alias (used in a few places, maps to ACCENT) ──────
 pub const ACCENT_COLOR: u32 = ACCENT;

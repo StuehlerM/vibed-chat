@@ -70,7 +70,6 @@ pub struct ChatState {
     pub is_waiting_for_agent: bool,
     pub input_height: i32,
     pub input_scroll_offset: i32,
-    pub has_error: bool,
 }
 
 impl ChatState {
@@ -89,7 +88,6 @@ impl ChatState {
             is_waiting_for_agent: false,
             input_height: 44,
             input_scroll_offset: 0,
-            has_error: false,
         }
     }
 
@@ -133,7 +131,6 @@ impl ChatState {
     pub fn finish_streaming(&mut self) {
         self.streaming_message_idx = None;
         self.is_waiting_for_agent = false;
-        self.has_error = false;
     }
 
     pub fn trim_history(&mut self) {
@@ -334,26 +331,6 @@ impl ChatState {
         pos
     }
 
-    pub fn line_end_pos(&self, byte_pos: usize) -> usize {
-        let buf = &self.input_buffer;
-        let mut pos = byte_pos.min(buf.len());
-        while pos < buf.len() && buf.as_bytes()[pos] != b'\n' {
-            let mut p = pos + 1;
-            while p < buf.len() && !buf.is_char_boundary(p) {
-                p += 1;
-            }
-            pos = p;
-        }
-        pos
-    }
-
-    pub fn input_line_count(&self) -> usize {
-        if self.input_buffer.is_empty() {
-            return 1;
-        }
-        self.input_buffer.bytes().filter(|&b| b == b'\n').count() + 1
-    }
-
     pub fn select_all(&mut self) {
         self.selection_start = Some(0);
         self.cursor_pos = self.input_buffer.len();
@@ -432,38 +409,6 @@ impl ChatState {
         let max_scroll = (self.total_content_height - viewport_height).max(0);
         self.scroll_offset = max_scroll;
         self.is_at_bottom = true;
-    }
-
-    pub fn compute_message_height(msg: &Message, content_width: i32, line_height: i32) -> i32 {
-        use crate::theme::{MESSAGE_INNER_PADDING, MESSAGE_PADDING, MESSAGE_SPACING};
-        let usable_width =
-            (content_width - 2 * MESSAGE_PADDING - 2 * MESSAGE_INNER_PADDING).max(50);
-        let chars_per_line = (usable_width / 7).max(10);
-        let mut total_lines = 0i32;
-        for run in &msg.runs {
-            for line in run.text.split('\n') {
-                let char_count = line.chars().count() as i32;
-                let lines_needed = if char_count == 0 {
-                    1
-                } else {
-                    (char_count + chars_per_line - 1) / chars_per_line
-                };
-                total_lines += lines_needed.max(1);
-            }
-        }
-        if total_lines == 0 {
-            total_lines = 1;
-        }
-        total_lines * line_height + 2 * MESSAGE_INNER_PADDING + MESSAGE_SPACING
-    }
-
-    pub fn recompute_layout(&mut self, content_width: i32, line_height: i32) {
-        let mut total = 0i32;
-        for msg in &mut self.messages {
-            msg.height = Self::compute_message_height(msg, content_width, line_height);
-            total += msg.height;
-        }
-        self.total_content_height = total;
     }
 
     pub fn visible_messages(&self, viewport_height: i32, scroll_offset: i32) -> Vec<(usize, i32)> {
