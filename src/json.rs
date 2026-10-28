@@ -175,12 +175,13 @@ fn parse_value(bytes: &[char], pos: &mut usize) -> Result<Json, String> {
 }
 
 fn parse_literal(bytes: &[char], pos: &mut usize, lit: &str, val: Json) -> Result<Json, String> {
-    for (i, c) in lit.chars().enumerate() {
-        if *pos + i >= bytes.len() || bytes[*pos + i] != c {
+    let lit_chars: Vec<char> = lit.chars().collect();
+    for (i, c) in lit_chars.iter().enumerate() {
+        if *pos + i >= bytes.len() || bytes[*pos + i] != *c {
             return Err(format!("Expected '{}' at position {}", lit, pos));
         }
     }
-    *pos += lit.len();
+    *pos += lit_chars.len();
     Ok(val)
 }
 
