@@ -31,7 +31,6 @@ pub const SIDEBAR_ITEM_HEIGHT: i32 = 56;
 pub const SIDEBAR_ITEM_MARGIN: i32 = SPACE_1;
 pub const SIDEBAR_FOOTER_HEIGHT: i32 = 48;
 pub const SIDEBAR_PADDING: i32 = SPACE_2;
-pub const SIDEBAR_GROUP_HEIGHT: i32 = 28;
 pub const SIDEBAR_ACCENT_BAR_W: i32 = 3;
 
 pub const SETTINGS_PANEL_WIDTH: i32 = 296;
@@ -253,6 +252,9 @@ pub const MD_LINK_HOVER: u32 = rgb(255, 175, 80);
 pub const ACCENT_COLOR: u32 = ACCENT;
 
 // ── Settings ─────────────────────────────────────────────────
+// Four independent toggles mirror the settings UI rows one-to-one; grouping
+// them into a bitflags struct would obscure the mapping.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub dark_theme: bool,

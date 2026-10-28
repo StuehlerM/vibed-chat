@@ -16,8 +16,7 @@ impl Project {
     pub fn new(path: &str) -> Self {
         let name = std::path::Path::new(path)
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string());
+            .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
         Self {
             path: path.to_string(),
             name,
@@ -58,7 +57,7 @@ impl Session {
                 if !text.is_empty() {
                     let name: String = text.chars().take(30).collect();
                     let name = if text.chars().count() > 30 {
-                        format!("{}...", name)
+                        format!("{name}...")
                     } else {
                         name
                     };
@@ -74,8 +73,7 @@ fn generate_local_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let pid = std::process::id();
-    format!("sess_{}_{}", nanos, pid)
+    format!("sess_{nanos}_{pid}")
 }

@@ -34,10 +34,11 @@ pub const TOAST_DURATION_MS: u64 = 4000;
 /// A clickable rectangle with associated text (URL for links, code for copy buttons).
 pub type ClickableRect = (i32, i32, i32, i32, String);
 
-/// Cached result of `sidebar_layout()`. The layout only changes when the
+/// Cached result of `with_sidebar_layout()`. The layout only changes when the
 /// session/project structure, DPI, window height, or archived-visibility
 /// setting changes — none of which happen on mouse-move — so we cache it and
-/// avoid rebuilding (and re-allocating) the entry vector on every mouse event.
+/// hand out borrows instead of rebuilding (and re-allocating) the entry
+/// vector on every mouse event.
 #[derive(Debug, Clone, Default)]
 pub struct SidebarLayoutCache {
     /// Structure version this layout was computed at.
@@ -48,6 +49,10 @@ pub struct SidebarLayoutCache {
 }
 
 /// All transient hover state (which element the mouse is over).
+// Many independent bools are deliberate here: each tracks a distinct
+// hoverable widget, and an enum-per-widget state machine would obscure
+// the "which element is hovered" lookup more than it would help.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HoverState {
     pub sidebar_item: Option<usize>,
@@ -71,6 +76,10 @@ pub struct HoverState {
 }
 
 /// Shared application state stored in the window's user data.
+// The handful of bools (show_settings, acp_connected, should_quit, ...) are
+// independent flags on a UI-state bag, not a state machine; grouping them
+// into enums would hurt readability.
+#[allow(clippy::struct_excessive_bools)]
 pub struct AppState {
     pub projects: Vec<Project>,
     pub sessions: Vec<Session>,
@@ -129,8 +138,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(caret_blink_ms: u32) -> Self {
         let default_wd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string());
+            .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
         Self {
             projects: Vec::new(),
             sessions: Vec::new(),
@@ -179,7 +187,7 @@ impl AppState {
 
     /// Invalidate the cached sidebar layout. Call after any change that can
     /// affect the sidebar's structure or geometry.
-    pub fn invalidate_sidebar_cache(&mut self) {
+    pub const fn invalidate_sidebar_cache(&mut self) {
         self.sidebar_version = self.sidebar_version.wrapping_add(1);
     }
 
@@ -318,7 +326,7 @@ impl AppState {
         self.create_local_session(&wd);
     }
 
-    pub fn switch_session(&mut self, idx: usize) {
+    pub const fn switch_session(&mut self, idx: usize) {
         if idx < self.sessions.len() {
             self.active_session = idx;
         }
@@ -384,10 +392,7 @@ impl AppState {
     /// Backspace in the rename buffer.
     pub fn rename_backspace(&mut self) {
         if self.rename_target.is_some() && self.rename_cursor > 0 {
-            let mut pos = self.rename_cursor - 1;
-            while pos > 0 && !self.rename_buffer.is_char_boundary(pos) {
-                pos -= 1;
-            }
+            let pos = crate::chat::prev_char_boundary(&self.rename_buffer, self.rename_cursor);
             self.rename_buffer.remove(pos);
             self.rename_cursor = pos;
         }
@@ -396,22 +401,16 @@ impl AppState {
     /// Move rename cursor left.
     pub fn rename_cursor_left(&mut self) {
         if self.rename_target.is_some() && self.rename_cursor > 0 {
-            let mut pos = self.rename_cursor - 1;
-            while pos > 0 && !self.rename_buffer.is_char_boundary(pos) {
-                pos -= 1;
-            }
-            self.rename_cursor = pos;
+            self.rename_cursor =
+                crate::chat::prev_char_boundary(&self.rename_buffer, self.rename_cursor);
         }
     }
 
     /// Move rename cursor right.
     pub fn rename_cursor_right(&mut self) {
         if self.rename_target.is_some() && self.rename_cursor < self.rename_buffer.len() {
-            let mut pos = self.rename_cursor + 1;
-            while pos < self.rename_buffer.len() && !self.rename_buffer.is_char_boundary(pos) {
-                pos += 1;
-            }
-            self.rename_cursor = pos;
+            self.rename_cursor =
+                crate::chat::next_char_boundary(&self.rename_buffer, self.rename_cursor);
         }
     }
 
@@ -471,7 +470,7 @@ impl AppState {
         from_idx.min(self.sessions.len().saturating_sub(1))
     }
 
-    /// Get indices of sessions visible in the sidebar (respects show_archived setting).
+    /// Get indices of sessions visible in the sidebar (respects `show_archived` setting).
     pub fn visible_session_indices(&self) -> Vec<usize> {
         if self.settings.show_archived {
             (0..self.sessions.len()).collect()
@@ -491,6 +490,8 @@ impl AppState {
     }
 
     /// Poll ACP events and update chat state.
+    // One match arm per AcpEvent variant keeps the dispatch table readable.
+    #[allow(clippy::too_many_lines)]
     pub fn poll_acp(&mut self) {
         let events: Vec<AcpEvent> = {
             let mut collected = Vec::new();
@@ -523,7 +524,7 @@ impl AppState {
                 AcpEvent::SessionReady { session_id } => {
                     if self.pending_new_session && !self.sessions.is_empty() {
                         let idx = self.sessions.len() - 1;
-                        self.sessions[idx].acp_session_id = session_id.clone();
+                        self.sessions[idx].acp_session_id.clone_from(&session_id);
                         self.pending_new_session = false;
                         self.pending_working_dir.clear();
                         self.add_system_message_to_active(
@@ -583,7 +584,7 @@ impl AppState {
                     name,
                     input,
                 } => {
-                    let msg = format!("[Tool: {}] {}", name, truncate_cow(&input, 200));
+                    let msg = format!("[Tool: {name}] {}", truncate_cow(&input, 200));
                     self.add_system_message_to_session(&session_id, &msg);
                     if let Some(idx) = self.find_session_by_acp_id(&session_id) {
                         self.save_session(idx);
@@ -607,15 +608,14 @@ impl AppState {
                     params: _,
                 } => {
                     if self.settings.auto_approve {
-                        let msg = format!("[Permission: {} (id={}) - auto-approved]", method, id);
+                        let msg = format!("[Permission: {method} (id={id}) - auto-approved]");
                         self.add_system_message_to_session(&session_id, &msg);
                         if let Some(ref acp) = self.acp {
                             acp.respond_permission(id, true);
                         }
                     } else {
                         let msg = format!(
-                            "[Permission requested: {} (id={}) - auto-approve is OFF]",
-                            method, id
+                            "[Permission requested: {method} (id={id}) - auto-approve is OFF]"
                         );
                         self.add_system_message_to_session(&session_id, &msg);
                     }
@@ -625,17 +625,17 @@ impl AppState {
                 }
                 AcpEvent::ProcessDied { code } => {
                     self.acp_connected = false;
-                    let msg = match code {
-                        Some(c) => format!("Agent process exited (code {})", c),
-                        None => "Agent process died".to_string(),
-                    };
+                    let msg = code.map_or_else(
+                        || "Agent process died".to_string(),
+                        |c| format!("Agent process exited (code {c})"),
+                    );
                     self.show_toast(&msg, ToastKind::Error);
                     // Auto-reconnect: schedule a retry
                     self.reconnect_attempts += 1;
                     self.last_reconnect_attempt = Some(std::time::Instant::now());
                 }
                 AcpEvent::Error(msg) => {
-                    self.show_toast(&format!("Error: {}", msg), ToastKind::Error);
+                    self.show_toast(&format!("Error: {msg}"), ToastKind::Error);
                 }
             }
         }
@@ -672,7 +672,7 @@ impl AppState {
         }
     }
 
-    pub fn send_message(&mut self, text: String) {
+    pub fn send_message(&mut self, text: &str) {
         if self.sessions.is_empty() {
             return;
         }
@@ -682,7 +682,7 @@ impl AppState {
         let acp_session_id;
         {
             let session = &mut self.sessions[idx];
-            session.chat.add_message(Role::User, &text);
+            session.chat.add_message(Role::User, text);
             session.auto_name();
             acp_session_id = session.acp_session_id.clone();
         }
@@ -692,7 +692,7 @@ impl AppState {
         if let Some(ref acp) = self.acp {
             if self.acp_connected && !acp_session_id.is_empty() {
                 self.sessions[idx].chat.start_streaming();
-                acp.send_prompt(&acp_session_id, &text);
+                acp.send_prompt(&acp_session_id, text);
             } else {
                 self.show_toast(
                     "Not connected to agent. Press F5 to reconnect",
@@ -715,7 +715,7 @@ impl AppState {
                 self.show_toast("Connecting to agent...", ToastKind::Info);
             }
             Err(e) => {
-                self.show_toast(&format!("Failed to start agent: {}", e), ToastKind::Error);
+                self.show_toast(&format!("Failed to start agent: {e}"), ToastKind::Error);
             }
         }
     }
@@ -768,7 +768,7 @@ impl AppState {
             &self.sessions,
             window.as_ref(),
         ) {
-            self.show_toast(&format!("Save failed: {}", e), ToastKind::Error);
+            self.show_toast(&format!("Save failed: {e}"), ToastKind::Error);
         }
     }
 
@@ -779,7 +779,7 @@ impl AppState {
             .get(idx)
             .map(|session| crate::persistence::save_session(&self.config_dir, session));
         if let Some(Err(e)) = result {
-            self.show_toast(&format!("Save failed: {}", e), ToastKind::Error);
+            self.show_toast(&format!("Save failed: {e}"), ToastKind::Error);
         }
     }
 
@@ -793,7 +793,7 @@ impl AppState {
             &self.sessions,
             window.as_ref(),
         ) {
-            self.show_toast(&format!("Save failed: {}", e), ToastKind::Error);
+            self.show_toast(&format!("Save failed: {e}"), ToastKind::Error);
         }
     }
 
@@ -848,10 +848,9 @@ impl AppState {
             self.reconnect_attempts = 0;
             return false;
         }
-        let should_retry = match self.last_reconnect_attempt {
-            Some(t) => t.elapsed().as_secs() >= RECONNECT_DELAY_SECS,
-            None => false,
-        };
+        let should_retry = self
+            .last_reconnect_attempt
+            .is_some_and(|t| t.elapsed().as_secs() >= RECONNECT_DELAY_SECS);
         if should_retry {
             self.show_toast(
                 &format!("Reconnecting... (attempt {})", self.reconnect_attempts),
@@ -864,7 +863,7 @@ impl AppState {
     }
 
     /// Reset reconnect counter (call on successful connection).
-    pub fn reset_reconnect(&mut self) {
+    pub const fn reset_reconnect(&mut self) {
         self.reconnect_attempts = 0;
         self.last_reconnect_attempt = None;
     }
@@ -874,10 +873,7 @@ pub fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        let mut end = max_len;
-        while end > 0 && !s.is_char_boundary(end) {
-            end -= 1;
-        }
+        let end = crate::chat::prev_char_boundary(s, max_len + 1);
         format!("{}...", &s[..end])
     }
 }

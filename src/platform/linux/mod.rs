@@ -11,7 +11,7 @@ pub struct LinuxPlatform {
 }
 
 impl LinuxPlatform {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             clipboard: LinuxClipboard,
             dialogs: LinuxDialogs,
@@ -63,15 +63,15 @@ impl Dialogs for LinuxDialogs {
         false
     }
 
-    fn show_error(&self, _title: &str, _message: &str) {
+    fn show_error(&self, _title: &str, message: &str) {
         // TODO: implement via zenity/kdialog or native dialog
-        eprintln!("Error: {}", _message);
+        eprintln!("Error: {message}");
     }
 }
 
 /// Create the platform instance for use by the core app.
 #[allow(dead_code)]
-pub fn create_platform() -> LinuxPlatform {
+pub const fn create_platform() -> LinuxPlatform {
     LinuxPlatform::new()
 }
 

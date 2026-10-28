@@ -47,7 +47,7 @@ pub enum InputResult {
     Repaint,
 }
 
-/// Handle a key press. Returns an InputResult if something happened.
+/// Handle a key press. Returns an `InputResult` if something happened.
 pub fn handle_key(chat: &mut ChatState, key: Key, mods: Modifiers) -> InputResult {
     match key {
         Key::Return => {
@@ -133,8 +133,8 @@ pub fn handle_key(chat: &mut ChatState, key: Key, mods: Modifiers) -> InputResul
             chat.select_all();
             InputResult::Repaint
         }
-        Key::Char(b'X') if mods.ctrl => InputResult::None, // cut handled by platform
-        Key::Char(b'C') if mods.ctrl => InputResult::None, // copy handled by platform
+        // Cut/copy are handled by the platform layer (they need clipboard access)
+        Key::Char(b'X' | b'C') if mods.ctrl => InputResult::None,
         Key::Char(b'V') if mods.ctrl => InputResult::Repaint, // paste handled by platform
         _ => InputResult::None,
     }

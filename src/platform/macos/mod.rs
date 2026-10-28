@@ -65,7 +65,7 @@ impl Dialogs for MacosDialogs {
 
     fn show_error(&self, _title: &str, message: &str) {
         // TODO: implement via NSAlert
-        eprintln!("Error: {}", message);
+        eprintln!("Error: {message}");
     }
 }
 

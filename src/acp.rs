@@ -84,7 +84,7 @@ pub struct AcpClient {
 struct AcpState {
     next_id: i64,
     /// Maps JSON-RPC request IDs to session IDs for prompt responses
-    /// (PromptResponse does not include sessionId)
+    /// (`PromptResponse` does not include `sessionId`)
     pending_prompts: std::collections::HashMap<i64, String>,
 }
 
@@ -110,7 +110,7 @@ impl AcpClient {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to spawn {}: {}", program, e))?;
+            .map_err(|e| format!("Failed to spawn {program}: {e}"))?;
 
         let stdin = child.stdin.take().ok_or("Failed to open stdin")?;
         let stdout = child.stdout.take().ok_or("Failed to open stdout")?;
@@ -131,7 +131,7 @@ impl AcpClient {
             let state = Arc::clone(&state);
             let event_tx = event_tx.clone();
             thread::spawn(move || {
-                writer_thread(stdin, cmd_rx, state, event_tx);
+                writer_thread(stdin, &cmd_rx, &state, &event_tx);
             });
         }
 
@@ -141,7 +141,7 @@ impl AcpClient {
             let event_tx_reader = event_tx.clone();
             let died_sent = Arc::clone(&died_sent);
             thread::spawn(move || {
-                reader_thread(stdout, state, event_tx_reader, died_sent);
+                reader_thread(stdout, &state, &event_tx_reader, &died_sent);
             });
         }
 
@@ -150,7 +150,7 @@ impl AcpClient {
             let child_arc = Arc::clone(&child_arc);
             let died_sent = Arc::clone(&died_sent);
             thread::spawn(move || {
-                monitor_thread(child_arc, event_tx, died_sent);
+                monitor_thread(&child_arc, &event_tx, &died_sent);
             });
         }
 
@@ -208,20 +208,20 @@ impl AcpClient {
 
 // ── Writer thread ────────────────────────────────────────────
 
+// Long by design: this is a self-contained thread body (recv loop + command
+// dispatch), splitting it would only add indirection between the match arms.
+#[allow(clippy::too_many_lines)]
 fn writer_thread(
     mut stdin: ChildStdin,
-    cmd_rx: Receiver<AcpCommand>,
-    state: Arc<Mutex<AcpState>>,
-    event_tx: Sender<AcpEvent>,
+    cmd_rx: &Receiver<AcpCommand>,
+    state: &Arc<Mutex<AcpState>>,
+    event_tx: &Sender<AcpEvent>,
 ) {
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
             AcpCommand::InitInternal => {
                 let id = {
-                    let mut s = match state.lock() {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
+                    let Ok(mut s) = state.lock() else { continue };
                     let id = s.next_id;
                     s.next_id += 1;
                     id
@@ -254,10 +254,7 @@ fn writer_thread(
             }
             AcpCommand::NewSessionInternal { cwd } => {
                 let id = {
-                    let mut s = match state.lock() {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
+                    let Ok(mut s) = state.lock() else { continue };
                     let id = s.next_id;
                     s.next_id += 1;
                     id
@@ -277,9 +274,6 @@ fn writer_thread(
                 let _ = send_jsonrpc(&mut stdin, &msg);
             }
             AcpCommand::Prompt { session_id, text } => {
-                // Allocate the request id in a single lock scope (previously
-                // two separate locks). Callers always pass a concrete session
-                // id; an empty one is rejected below.
                 // Reject an empty session id up front: the request would
                 // never be routed to a session, so allocating an id for it
                 // would leak an entry in `pending_prompts` forever.
@@ -291,10 +285,7 @@ fn writer_thread(
                 }
                 let sid = session_id;
                 let id = {
-                    let mut s = match state.lock() {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
+                    let Ok(mut s) = state.lock() else { continue };
                     let id = s.next_id;
                     s.next_id += 1;
                     s.pending_prompts.insert(id, sid.clone());
@@ -358,8 +349,8 @@ fn writer_thread(
 
 fn send_jsonrpc(stdin: &mut ChildStdin, msg: &Json) -> bool {
     let line = msg.to_string();
-    match writeln!(stdin, "{}", line) {
-        Ok(_) => {
+    match writeln!(stdin, "{line}") {
+        Ok(()) => {
             let _ = stdin.flush();
             true
         }
@@ -371,16 +362,13 @@ fn send_jsonrpc(stdin: &mut ChildStdin, msg: &Json) -> bool {
 
 fn reader_thread(
     stdout: ChildStdout,
-    state: Arc<Mutex<AcpState>>,
-    event_tx: Sender<AcpEvent>,
-    died_sent: Arc<AtomicBool>,
+    state: &Arc<Mutex<AcpState>>,
+    event_tx: &Sender<AcpEvent>,
+    died_sent: &Arc<AtomicBool>,
 ) {
     let reader = BufReader::new(stdout);
     for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
+        let Ok(line) = line else { break };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -389,12 +377,12 @@ fn reader_thread(
         let msg = match json::parse(trimmed) {
             Ok(m) => m,
             Err(e) => {
-                let _ = event_tx.send(AcpEvent::Error(format!("JSON parse error: {}", e)));
+                let _ = event_tx.send(AcpEvent::Error(format!("JSON parse error: {e}")));
                 continue;
             }
         };
 
-        handle_message(&msg, &state, &event_tx);
+        handle_message(&msg, state, event_tx);
     }
 
     // EOF - process ended. Only send ProcessDied if the monitor thread hasn't already.
@@ -406,7 +394,7 @@ fn reader_thread(
 fn handle_message(msg: &Json, state: &Arc<Mutex<AcpState>>, event_tx: &Sender<AcpEvent>) {
     // Check for requests/notifications first (has "method") - agent→client requests
     // like session/request_permission have both "id" and "method"
-    if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
+    if let Some(method) = msg.get("method").and_then(Json::as_str) {
         let params = msg.get("params").cloned().unwrap_or(Json::Null);
         let request_id = msg.get("id").cloned();
         handle_notification(method, &params, request_id, event_tx);
@@ -414,16 +402,16 @@ fn handle_message(msg: &Json, state: &Arc<Mutex<AcpState>>, event_tx: &Sender<Ac
     }
 
     // Response (has "id" and "result" or "error")
-    if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
+    if let Some(id) = msg.get("id").and_then(Json::as_i64) {
         if let Some(result) = msg.get("result") {
             handle_result(id, result, state, event_tx);
         } else if let Some(error) = msg.get("error") {
             let err_msg = error
                 .get("message")
-                .and_then(|m| m.as_str())
+                .and_then(Json::as_str)
                 .unwrap_or("Unknown error")
                 .to_string();
-            let _ = event_tx.send(AcpEvent::Error(format!("RPC error: {}", err_msg)));
+            let _ = event_tx.send(AcpEvent::Error(format!("RPC error: {err_msg}")));
         }
     }
 }
@@ -435,7 +423,7 @@ fn handle_result(
     event_tx: &Sender<AcpEvent>,
 ) {
     // Check if this is a session/new response
-    if let Some(session_id) = result.get("sessionId").and_then(|s| s.as_str()) {
+    if let Some(session_id) = result.get("sessionId").and_then(Json::as_str) {
         let _ = event_tx.send(AcpEvent::SessionReady {
             session_id: session_id.to_string(),
         });
@@ -444,12 +432,9 @@ fn handle_result(
 
     // Check for stopReason (prompt response) - PromptResponse has no sessionId,
     // so look up the session from the pending_prompts map
-    if let Some(stop_reason) = result.get("stopReason").and_then(|s| s.as_str()) {
+    if let Some(stop_reason) = result.get("stopReason").and_then(Json::as_str) {
         let session_id = {
-            let mut s = match state.lock() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
+            let Ok(mut s) = state.lock() else { return };
             s.pending_prompts.remove(&id).unwrap_or_default()
         };
         let _ = event_tx.send(AcpEvent::TurnComplete {
@@ -474,7 +459,7 @@ fn handle_notification(
     // Extract sessionId from params for routing
     let session_id = params
         .get("sessionId")
-        .and_then(|s| s.as_str())
+        .and_then(Json::as_str)
         .unwrap_or("")
         .to_string();
 
@@ -484,42 +469,46 @@ fn handle_notification(
             if let Some(update) = params.get("update") {
                 let update_type = update
                     .get("sessionUpdate")
-                    .and_then(|t| t.as_str())
+                    .and_then(Json::as_str)
                     .unwrap_or("");
 
                 match update_type {
                     "agent_message_chunk" => {
-                        if let Some(content) = update.get("content") {
-                            if let Some(text) = content.get("text").and_then(|t| t.as_str()) {
-                                let _ = event_tx.send(AcpEvent::StreamChunk {
-                                    session_id: session_id.clone(),
-                                    text: text.to_string(),
-                                });
-                            }
+                        if let Some(text) = update
+                            .get("content")
+                            .and_then(|c| c.get("text"))
+                            .and_then(Json::as_str)
+                        {
+                            let _ = event_tx.send(AcpEvent::StreamChunk {
+                                session_id,
+                                text: text.to_string(),
+                            });
                         }
                     }
                     "agent_thought_chunk" => {
-                        if let Some(content) = update.get("content") {
-                            if let Some(text) = content.get("text").and_then(|t| t.as_str()) {
-                                let _ = event_tx.send(AcpEvent::ThoughtChunk {
-                                    session_id: session_id.clone(),
-                                    text: text.to_string(),
-                                });
-                            }
+                        if let Some(text) = update
+                            .get("content")
+                            .and_then(|c| c.get("text"))
+                            .and_then(Json::as_str)
+                        {
+                            let _ = event_tx.send(AcpEvent::ThoughtChunk {
+                                session_id,
+                                text: text.to_string(),
+                            });
                         }
                     }
                     "tool_call" => {
                         let name = update
                             .get("title")
-                            .and_then(|n| n.as_str())
+                            .and_then(Json::as_str)
                             .unwrap_or("unknown")
                             .to_string();
                         let input = update
                             .get("rawInput")
-                            .map(|i| i.to_string())
+                            .map(ToString::to_string)
                             .unwrap_or_default();
                         let _ = event_tx.send(AcpEvent::ToolCall {
-                            session_id: session_id.clone(),
+                            session_id,
                             name,
                             input,
                         });
@@ -528,15 +517,15 @@ fn handle_notification(
                         let output = update
                             .get("rawOutput")
                             .or_else(|| update.get("content"))
-                            .map(|o| o.to_string())
+                            .map(ToString::to_string)
                             .unwrap_or_default();
                         let call_id = update
                             .get("toolCallId")
-                            .and_then(|c| c.as_str())
+                            .and_then(Json::as_str)
                             .unwrap_or("")
                             .to_string();
                         let _ = event_tx.send(AcpEvent::ToolResult {
-                            session_id: session_id.clone(),
+                            session_id,
                             call_id,
                             output,
                         });
@@ -552,12 +541,12 @@ fn handle_notification(
             let method_name = params
                 .get("toolCall")
                 .and_then(|tc| tc.get("title"))
-                .and_then(|t| t.as_str())
+                .and_then(Json::as_str)
                 .unwrap_or("unknown")
                 .to_string();
             let _ = event_tx.send(AcpEvent::PermissionRequest {
                 id,
-                session_id: session_id.clone(),
+                session_id,
                 method: method_name,
                 params: params.clone(),
             });
@@ -577,36 +566,34 @@ fn handle_notification(
 // ── Monitor thread ───────────────────────────────────────────
 
 fn monitor_thread(
-    child_arc: Arc<Mutex<Option<Child>>>,
-    event_tx: Sender<AcpEvent>,
-    died_sent: Arc<AtomicBool>,
+    child_arc: &Arc<Mutex<Option<Child>>>,
+    event_tx: &Sender<AcpEvent>,
+    died_sent: &Arc<AtomicBool>,
 ) {
     loop {
         thread::sleep(std::time::Duration::from_millis(500));
-        let mut child_lock = match child_arc.lock() {
-            Ok(l) => l,
-            Err(_) => continue,
+        let Ok(mut child_lock) = child_arc.lock() else {
+            continue;
         };
-        if let Some(child) = child_lock.as_mut() {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    if !died_sent.swap(true, Ordering::SeqCst) {
-                        let _ = event_tx.send(AcpEvent::ProcessDied {
-                            code: status.code(),
-                        });
-                    }
-                    return;
-                }
-                Ok(None) => continue,
-                Err(_) => {
-                    if !died_sent.swap(true, Ordering::SeqCst) {
-                        let _ = event_tx.send(AcpEvent::ProcessDied { code: None });
-                    }
-                    return;
-                }
-            }
-        } else {
+        let Some(child) = child_lock.as_mut() else {
             return;
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !died_sent.swap(true, Ordering::SeqCst) {
+                    let _ = event_tx.send(AcpEvent::ProcessDied {
+                        code: status.code(),
+                    });
+                }
+                return;
+            }
+            Ok(None) => {}
+            Err(_) => {
+                if !died_sent.swap(true, Ordering::SeqCst) {
+                    let _ = event_tx.send(AcpEvent::ProcessDied { code: None });
+                }
+                return;
+            }
         }
     }
 }

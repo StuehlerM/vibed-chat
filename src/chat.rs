@@ -1,10 +1,10 @@
 // Chat state: messages, scroll, input buffer.
 #![allow(dead_code)]
 
-use crate::markdown::{parse as parse_markdown, StyledRun};
+use crate::markdown::{parse as parse_markdown, Style, StyledRun};
 use std::collections::VecDeque;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     User,
     Agent,
@@ -12,12 +12,35 @@ pub enum Role {
 }
 
 impl Role {
-    pub fn label(&self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
-            Role::User => "You",
-            Role::Agent => "Agent",
-            Role::System => "System",
+            Self::User => "You",
+            Self::Agent => "Agent",
+            Self::System => "System",
         }
+    }
+}
+
+/// Byte index of the char boundary immediately before `pos` (at most `pos`).
+pub const fn prev_char_boundary(s: &str, pos: usize) -> usize {
+    let mut p = pos.saturating_sub(1);
+    while p > 0 && !s.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
+}
+
+/// Byte index of the char boundary immediately after `pos` (at least `pos`,
+/// at most `s.len()`).
+pub const fn next_char_boundary(s: &str, pos: usize) -> usize {
+    let mut p = pos.saturating_add(1);
+    while p < s.len() && !s.is_char_boundary(p) {
+        p += 1;
+    }
+    if p > s.len() {
+        s.len()
+    } else {
+        p
     }
 }
 
@@ -46,7 +69,7 @@ impl Message {
         } else {
             vec![StyledRun {
                 text: text.to_string(),
-                style: Default::default(),
+                style: Style::default(),
             }]
         };
         Self {
@@ -104,7 +127,7 @@ impl Default for ChatState {
 }
 
 impl ChatState {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             messages: VecDeque::new(),
             scroll_offset: 0,
@@ -198,10 +221,7 @@ impl ChatState {
             return;
         }
         if self.cursor_pos > 0 {
-            let mut pos = self.cursor_pos - 1;
-            while pos > 0 && !self.input_buffer.is_char_boundary(pos) {
-                pos -= 1;
-            }
+            let pos = prev_char_boundary(&self.input_buffer, self.cursor_pos);
             self.input_buffer.remove(pos);
             self.cursor_pos = pos;
         }
@@ -219,22 +239,14 @@ impl ChatState {
     pub fn move_cursor_left(&mut self) {
         self.selection_start = None;
         if self.cursor_pos > 0 {
-            let mut pos = self.cursor_pos - 1;
-            while pos > 0 && !self.input_buffer.is_char_boundary(pos) {
-                pos -= 1;
-            }
-            self.cursor_pos = pos;
+            self.cursor_pos = prev_char_boundary(&self.input_buffer, self.cursor_pos);
         }
     }
 
     pub fn move_cursor_right(&mut self) {
         self.selection_start = None;
         if self.cursor_pos < self.input_buffer.len() {
-            let mut pos = self.cursor_pos + 1;
-            while pos < self.input_buffer.len() && !self.input_buffer.is_char_boundary(pos) {
-                pos += 1;
-            }
-            self.cursor_pos = pos;
+            self.cursor_pos = next_char_boundary(&self.input_buffer, self.cursor_pos);
         }
     }
 
@@ -243,11 +255,7 @@ impl ChatState {
         let buf = &self.input_buffer;
         let mut pos = self.cursor_pos;
         while pos > 0 && buf.as_bytes()[pos - 1] != b'\n' {
-            let mut p = pos - 1;
-            while p > 0 && !buf.is_char_boundary(p) {
-                p -= 1;
-            }
-            pos = p;
+            pos = prev_char_boundary(buf, pos);
         }
         self.cursor_pos = pos;
     }
@@ -257,11 +265,7 @@ impl ChatState {
         let buf = &self.input_buffer;
         let mut pos = self.cursor_pos;
         while pos < buf.len() && buf.as_bytes()[pos] != b'\n' {
-            let mut p = pos + 1;
-            while p < buf.len() && !buf.is_char_boundary(p) {
-                p += 1;
-            }
-            pos = p;
+            pos = next_char_boundary(buf, pos);
         }
         self.cursor_pos = pos;
     }
@@ -271,11 +275,7 @@ impl ChatState {
         let buf = &self.input_buffer;
         let mut line_start = self.cursor_pos;
         while line_start > 0 && buf.as_bytes()[line_start - 1] != b'\n' {
-            let mut p = line_start - 1;
-            while p > 0 && !buf.is_char_boundary(p) {
-                p -= 1;
-            }
-            line_start = p;
+            line_start = prev_char_boundary(buf, line_start);
         }
         if line_start == 0 {
             self.cursor_pos = 0;
@@ -285,11 +285,7 @@ impl ChatState {
         let prev_line_end = line_start - 1;
         let mut prev_line_start = prev_line_end;
         while prev_line_start > 0 && buf.as_bytes()[prev_line_start - 1] != b'\n' {
-            let mut p = prev_line_start - 1;
-            while p > 0 && !buf.is_char_boundary(p) {
-                p -= 1;
-            }
-            prev_line_start = p;
+            prev_line_start = prev_char_boundary(buf, prev_line_start);
         }
         let prev_line_len = prev_line_end - prev_line_start;
         let target_col = col_bytes.min(prev_line_len);
@@ -305,19 +301,11 @@ impl ChatState {
         let buf = &self.input_buffer;
         let mut line_start = self.cursor_pos;
         while line_start > 0 && buf.as_bytes()[line_start - 1] != b'\n' {
-            let mut p = line_start - 1;
-            while p > 0 && !buf.is_char_boundary(p) {
-                p -= 1;
-            }
-            line_start = p;
+            line_start = prev_char_boundary(buf, line_start);
         }
         let mut line_end = self.cursor_pos;
         while line_end < buf.len() && buf.as_bytes()[line_end] != b'\n' {
-            let mut p = line_end + 1;
-            while p < buf.len() && !buf.is_char_boundary(p) {
-                p += 1;
-            }
-            line_end = p;
+            line_end = next_char_boundary(buf, line_end);
         }
         if line_end >= buf.len() {
             self.cursor_pos = buf.len();
@@ -326,11 +314,7 @@ impl ChatState {
         let next_line_start = line_end + 1;
         let mut next_line_end = next_line_start;
         while next_line_end < buf.len() && buf.as_bytes()[next_line_end] != b'\n' {
-            let mut p = next_line_end + 1;
-            while p < buf.len() && !buf.is_char_boundary(p) {
-                p += 1;
-            }
-            next_line_end = p;
+            next_line_end = next_char_boundary(buf, next_line_end);
         }
         let col_bytes = self.cursor_pos - line_start;
         let next_line_len = next_line_end - next_line_start;
@@ -362,16 +346,12 @@ impl ChatState {
         let buf = &self.input_buffer;
         let mut pos = byte_pos.min(buf.len());
         while pos > 0 && buf.as_bytes()[pos - 1] != b'\n' {
-            let mut p = pos - 1;
-            while p > 0 && !buf.is_char_boundary(p) {
-                p -= 1;
-            }
-            pos = p;
+            pos = prev_char_boundary(buf, pos);
         }
         pos
     }
 
-    pub fn select_all(&mut self) {
+    pub const fn select_all(&mut self) {
         self.selection_start = Some(0);
         self.cursor_pos = self.input_buffer.len();
     }
