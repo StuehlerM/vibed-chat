@@ -549,12 +549,8 @@ impl AppState {
         {
             let input_box_top = self.input_box_top();
             let input_margin = (INPUT_MARGIN as f32 * scale) as i32;
-            let chat_left = sidebar_w;
-            let chat_right = if self.show_settings {
-                self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32
-            } else {
-                self.client_width
-            };
+            let chat_left = self.chat_left();
+            let chat_right = self.chat_right();
             let input_left = chat_left + input_margin;
             let input_right = chat_right - input_margin;
             let idx = self
@@ -892,11 +888,7 @@ impl AppState {
 
             // Message scrollbar hover
             if !self.sessions.is_empty() {
-                let chat_right = if self.show_settings {
-                    self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32
-                } else {
-                    self.client_width
-                };
+                let chat_right = self.chat_right();
                 let sb_w = (4.0 * scale).max(3.0) as i32;
                 let idx = self.active_session.min(self.sessions.len() - 1);
                 let viewport_top = self.messages_viewport_top();
@@ -917,12 +909,8 @@ impl AppState {
             // Thinking toggle hover
             if !self.sessions.is_empty() {
                 let idx = self.active_session.min(self.sessions.len() - 1);
-                let chat_left = sidebar_w;
-                let chat_right = if self.show_settings {
-                    self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32
-                } else {
-                    self.client_width
-                };
+                let chat_left = self.chat_left();
+                let chat_right = self.chat_right();
                 let chat_w = chat_right - chat_left;
                 let viewport_top = self.messages_viewport_top();
                 let viewport_bottom = self.messages_viewport_bottom();
@@ -973,16 +961,27 @@ impl AppState {
 
     // ── Layout helpers ───────────────────────────────────────
 
+    /// Left edge of the chat area (right edge of the sidebar), DPI-scaled.
+    pub fn chat_left(&self) -> i32 {
+        (SIDEBAR_WIDTH as f32 * self.dpi as f32 / 96.0) as i32
+    }
+
+    /// Right edge of the chat area - shrinks when the settings panel is open.
+    pub fn chat_right(&self) -> i32 {
+        if self.show_settings {
+            let scale = self.dpi as f32 / 96.0;
+            self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32
+        } else {
+            self.client_width
+        }
+    }
+
     pub fn send_btn_rect(&self) -> Option<(i32, i32, i32, i32)> {
         if self.sessions.is_empty() {
             return None;
         }
         let scale = self.dpi as f32 / 96.0;
-        let chat_right = if self.show_settings {
-            self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32
-        } else {
-            self.client_width
-        };
+        let chat_right = self.chat_right();
         let input_margin = (INPUT_MARGIN as f32 * scale) as i32;
         let hint_row_h = (HINT_ROW_HEIGHT as f32 * scale) as i32;
         let send_btn_size = (SEND_BTN_SIZE as f32 * scale) as i32;
@@ -1004,14 +1003,9 @@ impl AppState {
 
     pub fn session_header_rect(&self) -> (i32, i32, i32, i32) {
         let scale = self.dpi as f32 / 96.0;
-        let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
-        let chat_right = if self.show_settings {
-            self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32
-        } else {
-            self.client_width
-        };
+        let chat_right = self.chat_right();
         let header_h = (SESSION_HEADER_HEIGHT as f32 * scale) as i32;
-        (sidebar_w, 0, chat_right, header_h)
+        (self.chat_left(), 0, chat_right, header_h)
     }
 
     pub fn messages_viewport_top(&self) -> i32 {
@@ -1087,11 +1081,7 @@ impl AppState {
             return false;
         }
         let scale = self.dpi as f32 / 96.0;
-        let chat_right = if self.show_settings {
-            self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32
-        } else {
-            self.client_width
-        };
+        let chat_right = self.chat_right();
         let sb_w = (4.0 * scale).max(3.0) as i32;
         let idx = self.active_session.min(self.sessions.len() - 1);
         let viewport_top = self.messages_viewport_top();
@@ -1193,13 +1183,8 @@ impl AppState {
         }
         let scale = self.dpi as f32 / 96.0;
         let idx = self.active_session.min(self.sessions.len() - 1);
-        let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
-        let chat_left = sidebar_w;
-        let chat_right = if self.show_settings {
-            self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32
-        } else {
-            self.client_width
-        };
+        let chat_left = self.chat_left();
+        let chat_right = self.chat_right();
         let chat_w = chat_right - chat_left;
         let viewport_top = self.messages_viewport_top();
         let viewport_bottom = self.messages_viewport_bottom();
