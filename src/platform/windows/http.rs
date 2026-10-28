@@ -4,10 +4,14 @@
 // FFI declarations live in ffi.rs per project convention.
 #![allow(dead_code)]
 
+use crate::http::ChunkDecoder;
 use crate::responses::HttpTransport;
 use std::ffi::c_void;
 
 use super::ffi::*;
+
+/// WINHTTP_QUERY_TRANSFER_ENCODING = 45 (winhttp.h).
+const WINHTTP_QUERY_TRANSFER_ENCODING: DWORD = 45;
 
 pub struct WinHttpTransport;
 
@@ -24,10 +28,45 @@ impl HttpTransport for WinHttpTransport {
         path: &str,
         headers: &[(String, String)],
         body: &str,
-        on_chunk: &mut dyn FnMut(&[u8]),
+        on_body_bytes: &mut dyn FnMut(&[u8]),
     ) -> Result<u16, String> {
-        unsafe { post_stream_impl(host, path, headers, body, on_chunk) }
+        unsafe { post_stream_impl(host, path, headers, body, on_body_bytes) }
     }
+}
+
+/// Query a string response header. Returns None when absent.
+unsafe fn query_header_string(request: HINTERNET, info_level: DWORD) -> Option<String> {
+    // First call gets the required buffer size in bytes.
+    let mut size: DWORD = 0;
+    let rc = WinHttpQueryHeaders(
+        request,
+        info_level,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+        &mut size,
+        std::ptr::null_mut(),
+    );
+    if rc == 0 || size == 0 {
+        return None;
+    }
+    // size includes the null terminator; allocate u16 slots.
+    let mut buf = vec![0u16; (size as usize / 2).max(1)];
+    let rc = WinHttpQueryHeaders(
+        request,
+        info_level,
+        std::ptr::null(),
+        buf.as_mut_ptr() as *mut c_void,
+        &mut size,
+        std::ptr::null_mut(),
+    );
+    if rc == 0 {
+        return None;
+    }
+    // Trim trailing NULs.
+    while buf.last() == Some(&0) {
+        buf.pop();
+    }
+    Some(String::from_utf16_lossy(&buf))
 }
 
 unsafe fn post_stream_impl(
@@ -35,7 +74,7 @@ unsafe fn post_stream_impl(
     path: &str,
     headers: &[(String, String)],
     body: &str,
-    on_chunk: &mut dyn FnMut(&[u8]),
+    on_body_bytes: &mut dyn FnMut(&[u8]),
 ) -> Result<u16, String> {
     let agent = to_wide("vibe-chat/1.0");
     let session = WinHttpOpen(
@@ -136,6 +175,16 @@ unsafe fn post_stream_impl(
         return Err("WinHttpQueryHeaders failed".to_string());
     }
 
+    // Chunked transfer coding is decoded here (the transport owns the
+    // response headers) so the core receives plain body bytes only.
+    let chunked = query_header_string(request, WINHTTP_QUERY_TRANSFER_ENCODING)
+        .map(|v| v.to_ascii_lowercase().contains("chunked"))
+        .unwrap_or(false);
+    let mut decoder = ChunkDecoder::new();
+    if chunked {
+        decoder.enable();
+    }
+
     // Read the body in 8 KiB chunks, streaming to the callback.
     let mut buf = vec![0u8; 8192];
     loop {
@@ -152,7 +201,15 @@ unsafe fn post_stream_impl(
         if bytes_read == 0 {
             break;
         }
-        on_chunk(&buf[..bytes_read as usize]);
+        if chunked {
+            decoder.extend(&buf[..bytes_read as usize]);
+            let decoded = decoder.take();
+            if !decoded.is_empty() {
+                on_body_bytes(&decoded);
+            }
+        } else {
+            on_body_bytes(&buf[..bytes_read as usize]);
+        }
     }
 
     WinHttpCloseHandle(request);

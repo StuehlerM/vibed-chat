@@ -803,7 +803,13 @@ impl AppState {
                 }
                 ResponsesEvent::Failed { message, .. } => {
                     self.sessions[idx].chat.finish_streaming();
+                    // Persist the failure in the conversation: a 4-second
+                    // toast is too easy to miss when debugging.
+                    self.sessions[idx]
+                        .chat
+                        .add_system_message(&format!("Direct mode error: {}", message));
                     self.show_toast(&format!("Direct mode error: {}", message), ToastKind::Error);
+                    self.save_session(idx);
                 }
                 ResponsesEvent::Incomplete { .. } => {
                     self.sessions[idx].chat.finish_streaming();

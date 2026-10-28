@@ -4,7 +4,7 @@
 // transport is injected via the HttpTransport trait (platform backend).
 #![allow(dead_code)]
 
-use crate::http::{ChunkDecoder, SseParser};
+use crate::http::SseParser;
 use crate::json::{self, Json};
 use crate::session::{HistoryItem, ReasoningEffort};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -45,19 +45,44 @@ pub enum ResponsesCommand {
     Abort { session_id: String },
 }
 
+/// Result of one HTTP exchange: status code plus body bytes. The transport
+/// decodes chunked transfer coding before invoking callbacks, so the core
+/// only ever sees plain body bytes.
+pub struct HttpResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
 /// Pluggable HTTPS transport, implemented by the platform backend.
 pub trait HttpTransport {
     /// POST `body` to `https://host/path` with `headers`.
-    /// Calls `on_chunk` for each raw body byte group as it arrives.
-    /// Returns the HTTP status code.
+    /// Calls `on_body_bytes` for each group of decoded body bytes as it
+    /// arrives. Returns the HTTP status code. Chunked transfer coding is
+    /// decoded by the transport (it owns the response headers), so the
+    /// callback only ever sees plain body bytes.
     fn post_stream(
         &self,
         host: &str,
         path: &str,
         headers: &[(String, String)],
         body: &str,
-        on_chunk: &mut dyn FnMut(&[u8]),
+        on_body_bytes: &mut dyn FnMut(&[u8]),
     ) -> Result<u16, String>;
+
+    /// POST `body` and return the complete decoded response. Default
+    /// implementation buffers `post_stream`.
+    fn post(
+        &self,
+        host: &str,
+        path: &str,
+        headers: &[(String, String)],
+        body: &str,
+    ) -> Result<HttpResponse, String> {
+        let mut buf = Vec::new();
+        let status =
+            self.post_stream(host, path, headers, body, &mut |b| buf.extend_from_slice(b))?;
+        Ok(HttpResponse { status, body: buf })
+    }
 }
 
 pub const API_HOST: &str = "api.mistral.ai";
@@ -118,6 +143,14 @@ fn worker(
                 history,
                 reasoning,
             } => {
+                if api_key().is_none() {
+                    let _ = event_tx.send(ResponsesEvent::Failed {
+                        session_id,
+                        message: "No API key found. Set API_KEY or MISTRAL_API_KEY and restart."
+                            .to_string(),
+                    });
+                    continue;
+                }
                 let body = build_request_body(&history, reasoning, true);
                 let result = do_stream(transport.as_ref(), &body, &session_id, &event_tx);
                 match result {
@@ -137,34 +170,36 @@ fn worker(
                 history,
             } => {
                 let body = build_request_body(&history, ReasoningEffort::Low, false);
-                let mut full = Vec::new();
-                let res = transport.post_stream(
-                    API_HOST,
-                    INPUT_TOKENS_PATH,
-                    &auth_headers(),
-                    &body,
-                    &mut |chunk| full.extend_from_slice(chunk),
-                );
+                let res = transport.post(API_HOST, INPUT_TOKENS_PATH, &auth_headers(), &body);
                 match res {
-                    Ok(200) => {
-                        if let Ok(j) = json::parse(&String::from_utf8_lossy(&full)) {
-                            if let Some(n) = j.get("input_tokens").and_then(|v| v.as_i64()) {
-                                let _ = event_tx.send(ResponsesEvent::InputTokens {
+                    Ok(resp) if resp.status == 200 => {
+                        match json::parse(&String::from_utf8_lossy(&resp.body)) {
+                            Ok(j) => {
+                                if let Some(n) = j.get("input_tokens").and_then(|v| v.as_i64()) {
+                                    let _ = event_tx.send(ResponsesEvent::InputTokens {
+                                        session_id,
+                                        tokens: n.max(0) as u64,
+                                    });
+                                } else {
+                                    let _ = event_tx.send(ResponsesEvent::Failed {
+                                        session_id,
+                                        message: "input_tokens response missing count".to_string(),
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(ResponsesEvent::Failed {
                                     session_id,
-                                    tokens: n.max(0) as u64,
+                                    message: format!("Bad input_tokens JSON: {}", e),
                                 });
-                                continue;
                             }
                         }
-                        let _ = event_tx.send(ResponsesEvent::Failed {
-                            session_id,
-                            message: "Bad input_tokens response".to_string(),
-                        });
                     }
-                    Ok(code) => {
+                    Ok(resp) => {
+                        let msg = error_message_from_body(resp.status, &resp.body);
                         let _ = event_tx.send(ResponsesEvent::Failed {
                             session_id,
-                            message: format!("HTTP {}", code),
+                            message: msg,
                         });
                     }
                     Err(e) => {
@@ -260,22 +295,18 @@ fn do_stream(
     event_tx: &Sender<ResponsesEvent>,
 ) -> Result<(), String> {
     let mut sse = SseParser::new();
-    let mut decoder = ChunkDecoder::new();
+    // Raw body copy: non-200 responses carry a JSON error document instead
+    // of an SSE stream, so keep the bytes for error_message_from_body().
+    let mut raw_body: Vec<u8> = Vec::new();
     let mut saw_completed = false;
     let mut incomplete = false;
     let mut failure: Option<String> = None;
 
     let mut on_chunk = |chunk: &[u8]| {
-        // WinHTTP delivers the raw body after headers; SSE streams are
-        // chunked. Enable the decoder lazily: with Connection: close the
-        // body may also arrive unchunked, in which case pass through.
-        decoder.extend(chunk);
-        let decoded = if decoder.is_enabled() {
-            decoder.take()
-        } else {
-            chunk.to_vec()
-        };
-        for (_name, data) in sse.extend(&decoded) {
+        // The transport has already decoded chunked transfer coding; these
+        // bytes are the plain SSE body.
+        raw_body.extend_from_slice(chunk);
+        for (_name, data) in sse.extend(chunk) {
             if data == "[DONE]" {
                 continue;
             }
@@ -339,7 +370,7 @@ fn do_stream(
     )?;
 
     if status != 200 {
-        return Err(format!("HTTP {}", status));
+        return Err(error_message_from_body(status, &raw_body));
     }
     if let Some(msg) = failure {
         return Err(msg);
@@ -358,8 +389,138 @@ fn do_stream(
     Ok(())
 }
 
+/// Build a human-readable error from a non-200 body. The API returns JSON
+/// like {"message": "..."} or {"error": {"message": "..."}} - surface that
+/// instead of a bare status code so failures are diagnosable.
+pub fn error_message_from_body(status: u16, body: &[u8]) -> String {
+    let text = String::from_utf8_lossy(body);
+    if let Ok(j) = json::parse(&text) {
+        if let Some(m) = j.get("message").and_then(|m| m.as_str()) {
+            return format!("HTTP {}: {}", status, m);
+        }
+        if let Some(m) = j
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            return format!("HTTP {}: {}", status, m);
+        }
+        if let Some(m) = j.get("detail").and_then(|m| m.as_str()) {
+            return format!("HTTP {}: {}", status, m);
+        }
+    }
+    let snippet: String = text.chars().take(200).collect();
+    format!("HTTP {}: {}", status, snippet)
+}
+
 #[cfg(test)]
 mod tests {
+    struct MockTransport {
+        status: u16,
+        body: Vec<u8>,
+    }
+    impl HttpTransport for MockTransport {
+        fn post_stream(
+            &self,
+            _host: &str,
+            _path: &str,
+            _headers: &[(String, String)],
+            _body: &str,
+            on_body_bytes: &mut dyn FnMut(&[u8]),
+        ) -> Result<u16, String> {
+            on_body_bytes(&self.body);
+            Ok(self.status)
+        }
+    }
+
+    #[test]
+    fn error_body_becomes_readable_message() {
+        let msg = error_message_from_body(
+            401,
+            b"{\"message\": \"Unauthorized\", \"request_id\": \"abc123\"}",
+        );
+        assert_eq!(msg, "HTTP 401: Unauthorized");
+    }
+
+    #[test]
+    fn sse_stream_produces_text_deltas() {
+        // Simulates the full Direct-mode request path with a mocked wire.
+        use std::sync::mpsc::channel;
+        let (tx, rx) = channel::<ResponsesEvent>();
+        let body = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n\ndata: {\"type\":\"response.completed\"}\n\n".to_vec();
+        let transport = MockTransport { status: 200, body };
+        let event_tx = tx.clone();
+        std::thread::spawn(move || {
+            let result = do_stream(&transport, "{}", "sess", &event_tx);
+            match result {
+                Ok(()) => {
+                    let _ = event_tx.send(ResponsesEvent::Completed {
+                        session_id: "sess".to_string(),
+                    });
+                }
+                Err(m) => {
+                    let _ = event_tx.send(ResponsesEvent::Failed {
+                        session_id: "sess".to_string(),
+                        message: m,
+                    });
+                }
+            }
+        });
+        let mut deltas = 0;
+        let mut completed = false;
+        for ev in rx
+            .try_recv()
+            .into_iter()
+            .chain(std::iter::from_fn(|| rx.recv().ok()))
+        {
+            match ev {
+                ResponsesEvent::TextDelta { text, .. } => {
+                    assert_eq!(text, "Hi");
+                    deltas += 1;
+                }
+                ResponsesEvent::Completed { .. } => {
+                    completed = true;
+                    break;
+                }
+                ResponsesEvent::Failed { message, .. } => {
+                    panic!("stream failed: {}", message);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(deltas, 1);
+        assert!(completed);
+    }
+
+    #[test]
+    fn non_200_stream_surfaces_api_message() {
+        use std::sync::mpsc::channel;
+        let (tx, rx) = channel::<ResponsesEvent>();
+        let body = b"{\"message\": \"model not found\"}".to_vec();
+        let transport = MockTransport { status: 404, body };
+        let event_tx = tx.clone();
+        std::thread::spawn(move || {
+            let result = do_stream(&transport, "{}", "sess", &event_tx);
+            let _ = event_tx.send(match result {
+                Ok(()) => ResponsesEvent::Completed {
+                    session_id: "sess".to_string(),
+                },
+                Err(m) => ResponsesEvent::Failed {
+                    session_id: "sess".to_string(),
+                    message: m,
+                },
+            });
+        });
+        let ev = rx.recv().expect("event");
+        match ev {
+            ResponsesEvent::Failed { message, .. } => {
+                assert!(message.contains("model not found"), "got: {}", message);
+                assert!(message.starts_with("HTTP 404"), "got: {}", message);
+            }
+            other => panic!("expected failure, got {:?}", other),
+        }
+    }
+
     use super::*;
 
     fn hist() -> Vec<HistoryItem> {
