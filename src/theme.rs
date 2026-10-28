@@ -42,6 +42,10 @@ pub const SEND_BTN_SIZE: i32 = 36;
 pub const SEND_BTN_MARGIN: i32 = SPACE_2;
 pub const HINT_ROW_HEIGHT: i32 = 24;
 pub const SESSION_HEADER_HEIGHT: i32 = 48;
+/// Width of one radio option in the header (device px, DPI-scaled at use).
+pub const MODE_RADIO_OPTION_W: i32 = 64;
+pub const MODE_RADIO_H: i32 = 24;
+pub const MODE_RADIO_GAP: i32 = SPACE_1;
 
 pub const MESSAGE_MAX_WIDTH_RATIO: f32 = 0.75;
 
@@ -390,3 +394,41 @@ pub const SESSION_ACTION_ARCHIVE_HOVER: u32 = ACCENT_HOVER;
 pub const SESSION_ACTION_DELETE: u32 = TEXT_TERTIARY;
 pub const SESSION_ACTION_DELETE_HOVER: u32 = ERROR_COLOR;
 pub const SESSION_ARCHIVED_LABEL: u32 = TEXT_DISABLED;
+
+// ── Mode radio layout (header) ───────────────────────────────────────────
+//
+// Shared by render/header.rs (paint) and interaction.rs (hit-testing) so
+// the two never drift apart. The radio sits at header center.
+
+/// Rects of the radio control, in device pixels.
+#[derive(Debug, Clone, Copy)]
+pub struct ModeRadioLayout {
+    pub left: i32,
+    pub top: i32,
+    pub w: i32,
+    pub h: i32,
+    pub direct_left: i32,
+    pub code_left: i32,
+}
+
+pub fn compute_mode_radio_layout(
+    chat_left: i32,
+    chat_right: i32,
+    header_h: i32,
+    scale: f32,
+) -> ModeRadioLayout {
+    let option_w = (MODE_RADIO_OPTION_W as f32 * scale) as i32;
+    let h = (MODE_RADIO_H as f32 * scale) as i32;
+    let gap = (MODE_RADIO_GAP as f32 * scale) as i32;
+    let w = option_w * 2 + gap;
+    let left = chat_left + ((chat_right - chat_left) / 2) - (w / 2);
+    let top = (header_h - h) / 2;
+    ModeRadioLayout {
+        left,
+        top,
+        w,
+        h,
+        direct_left: left,
+        code_left: left + option_w + gap,
+    }
+}

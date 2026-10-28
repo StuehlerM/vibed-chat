@@ -4,6 +4,71 @@
 
 use crate::chat::{ChatState, Role};
 
+/// Which backend a session uses for its turns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionMode {
+    /// Default mode: plain chat via the Mistral Responses API.
+    /// No agent process required.
+    Direct,
+    /// Code mode: agentic work via vibe-acp (tools, permissions).
+    Code,
+}
+
+impl SessionMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SessionMode::Direct => "direct",
+            SessionMode::Code => "code",
+        }
+    }
+
+    pub fn from_str(s: &str) -> SessionMode {
+        match s {
+            "code" => SessionMode::Code,
+            _ => SessionMode::Direct,
+        }
+    }
+}
+
+/// Reasoning effort for Responses API requests.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReasoningEffort {
+    None,
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReasoningEffort::None => "none",
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+        }
+    }
+}
+
+/// One item of conversation history for a Responses API request.
+#[derive(Debug, Clone)]
+pub enum HistoryItem {
+    UserText {
+        text: String,
+    },
+    ModelMessage {
+        text: String,
+    },
+    ModelReasoning {
+        text: String,
+    },
+    /// Tool calls/results from Code mode, summarized as user text so the
+    /// conversation stays coherent after a mode switch.
+    ToolSummary {
+        text: String,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct Project {
     pub path: String,
@@ -35,6 +100,7 @@ pub struct Session {
     pub chat: ChatState,
     pub created_at: std::time::Instant,
     pub archived: bool,
+    pub mode: SessionMode,
 }
 
 impl Session {
@@ -47,7 +113,36 @@ impl Session {
             chat: ChatState::new(),
             created_at: std::time::Instant::now(),
             archived: false,
+            mode: SessionMode::Direct,
         }
+    }
+
+    /// Build the Responses API history for the next Direct-mode request.
+    /// System messages are skipped (UI-only); the new user message is
+    /// included by the caller. Thinking text travels as reasoning items.
+    pub fn responses_history(&self) -> Vec<HistoryItem> {
+        let mut items = Vec::new();
+        for msg in &self.chat.messages {
+            match msg.role {
+                Role::User => items.push(HistoryItem::UserText {
+                    text: msg.text.clone(),
+                }),
+                Role::Agent => {
+                    if !msg.thinking.is_empty() {
+                        items.push(HistoryItem::ModelReasoning {
+                            text: msg.thinking.clone(),
+                        });
+                    }
+                    if !msg.text.is_empty() {
+                        items.push(HistoryItem::ModelMessage {
+                            text: msg.text.clone(),
+                        });
+                    }
+                }
+                Role::System => {}
+            }
+        }
+        items
     }
 
     pub fn auto_name(&mut self) {

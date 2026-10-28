@@ -129,6 +129,7 @@ pub unsafe extern "system" fn wnd_proc(
                 let app_state = get_app_state(hwnd);
                 if !app_state.is_null() {
                     (*app_state).poll_acp();
+                    (*app_state).poll_responses();
                     (*app_state).try_auto_reconnect();
 
                     // Cursor blink
