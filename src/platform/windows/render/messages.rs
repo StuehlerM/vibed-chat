@@ -35,6 +35,9 @@ pub fn draw_messages(
         chat.visible_messages(viewport, scroll_offset)
     };
 
+    ctx.link_rects.borrow_mut().clear();
+    ctx.code_block_rects.borrow_mut().clear();
+
     for (msg_idx, y_top) in visible {
         if msg_idx >= messages_len {
             break;
@@ -57,6 +60,10 @@ pub fn draw_messages(
             ctx.fonts,
             is_streaming,
             is_thinking_hover,
+            ctx.hover_link,
+            ctx.hover_code_copy,
+            ctx.link_rects,
+            ctx.code_block_rects,
         );
     }
 }
@@ -74,6 +81,10 @@ fn draw_message(
     fonts: &Fonts,
     is_streaming: bool,
     hover_thinking: bool,
+    hover_link: Option<usize>,
+    hover_code_copy: Option<usize>,
+    link_rects: &std::cell::RefCell<Vec<crate::app::ClickableRect>>,
+    code_block_rects: &std::cell::RefCell<Vec<crate::app::ClickableRect>>,
 ) {
     unsafe {
         let label_height = (SPACE_4 as f32 * scale) as i32;
@@ -129,7 +140,7 @@ fn draw_message(
             for line_text in run.text.split('\n') {
                 if line_text.is_empty() {
                     total_text_height += line_height;
-                    lines.push((String::new(), run.style, 0));
+                    lines.push((String::new(), run.style.clone(), 0));
                     continue;
                 }
                 let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
@@ -343,18 +354,68 @@ fn draw_message(
             }
         }
 
-        // Draw main text lines
+        // Draw main text lines, register link rects, detect code blocks
         let mut text_y = content_y;
+        let mut local_link_idx = link_rects.borrow().len();
+        let mut in_code_block = false;
+        let mut code_block_start_y = 0i32;
+        let mut code_block_lines: Vec<String> = Vec::new();
+        let mut code_block_lang: Option<String> = None;
+        let code_block_left = bubble_left + bubble_padding;
+        let code_block_right = bubble_left + bubble_width - bubble_padding;
+        let mut code_block_global_idx = code_block_rects.borrow().len();
+
         for (line_text, style, _width) in &lines {
             if line_text.is_empty() {
+                if in_code_block {
+                    code_block_lines.push(String::new());
+                }
                 text_y += line_height;
                 continue;
             }
             let style_font = select_font_for_style(hdc, style, fonts);
-            let text_color = match msg.role {
-                Role::User => USER_BUBBLE_TEXT,
-                Role::System => SYSTEM_TEXT_COLOR,
-                Role::Agent => style.color,
+
+            // Code block tracking
+            if style.is_code_block {
+                if !in_code_block {
+                    in_code_block = true;
+                    code_block_start_y = text_y;
+                    code_block_lines.clear();
+                    code_block_lang = style.code_lang.clone();
+                }
+                code_block_lines.push(line_text.clone());
+            } else if in_code_block {
+                in_code_block = false;
+                finish_code_block(
+                    hdc,
+                    fonts,
+                    code_block_start_y,
+                    text_y,
+                    code_block_left,
+                    code_block_right,
+                    &code_block_lang,
+                    &code_block_lines,
+                    hover_code_copy == Some(code_block_global_idx),
+                    code_block_rects,
+                    line_height,
+                    scale,
+                );
+                code_block_global_idx = code_block_rects.borrow().len();
+            }
+
+            let is_link_hover = style.is_link && hover_link == Some(local_link_idx);
+            let text_color = if style.is_link {
+                if is_link_hover {
+                    MD_LINK_HOVER
+                } else {
+                    MD_LINK
+                }
+            } else {
+                match msg.role {
+                    Role::User => USER_BUBBLE_TEXT,
+                    Role::System => SYSTEM_TEXT_COLOR,
+                    Role::Agent => style.color,
+                }
             };
             SetTextColor(hdc, text_color);
             let wide = to_wide(line_text);
@@ -376,11 +437,135 @@ fn draw_message(
                 &mut text_rect as LPRECT,
                 draw_format,
             );
+
+            // Measure text width
+            let mut sz = POINT { x: 0, y: 0 };
+            GetTextExtentPoint32W(hdc, wide.as_ptr(), wide.len() as i32 - 1, &mut sz);
+
+            // Underline + register clickable rect for links
+            if style.is_link {
+                let underline_y = text_y + line_height - 1;
+                let underline_rect = RECT {
+                    left: text_rect.left,
+                    top: underline_y,
+                    right: text_rect.left + sz.x,
+                    bottom: underline_y + 1,
+                };
+                let underline_brush = CreateSolidBrush(text_color);
+                FillRect(hdc, &underline_rect, underline_brush);
+                DeleteObject(underline_brush as HGDIOBJ);
+
+                link_rects.borrow_mut().push((
+                    text_rect.left,
+                    text_y,
+                    text_rect.left + sz.x,
+                    text_y + line_height,
+                    line_text.clone(),
+                ));
+                local_link_idx += 1;
+            }
+
             SelectObject(hdc, style_font as HGDIOBJ);
             text_y += line_height;
         }
 
+        // Handle code block that extends to end of message
+        if in_code_block {
+            finish_code_block(
+                hdc,
+                fonts,
+                code_block_start_y,
+                text_y,
+                code_block_left,
+                code_block_right,
+                &code_block_lang,
+                &code_block_lines,
+                hover_code_copy == Some(code_block_global_idx),
+                code_block_rects,
+                line_height,
+                scale,
+            );
+        }
+
         SelectObject(hdc, old_font as HGDIOBJ);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_code_block(
+    hdc: HDC,
+    fonts: &Fonts,
+    start_y: i32,
+    end_y: i32,
+    left: i32,
+    right: i32,
+    lang: &Option<String>,
+    code_lines: &[String],
+    is_hover: bool,
+    code_block_rects: &std::cell::RefCell<Vec<crate::app::ClickableRect>>,
+    line_height: i32,
+    scale: f32,
+) {
+    unsafe {
+        // Draw language label at top-right
+        if let Some(ref l) = *lang {
+            let old_font = SelectObject(hdc, fonts.caption as HGDIOBJ);
+            SetTextColor(hdc, TEXT_TERTIARY);
+            let label_wide = to_wide(&l.to_uppercase());
+            let mut label_rect = RECT {
+                left,
+                top: start_y,
+                right: right - (SPACE_2 as f32 * scale) as i32,
+                bottom: start_y + line_height,
+            };
+            DrawTextW(
+                hdc,
+                label_wide.as_ptr(),
+                label_wide.len() as i32 - 1,
+                &mut label_rect as LPRECT,
+                DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_NOCLIP,
+            );
+            SelectObject(hdc, old_font as HGDIOBJ);
+        }
+
+        // Draw copy button at top-right (below language label if present)
+        let btn_size = (14.0 * scale).max(12.0) as i32;
+        let btn_right = right - (SPACE_1 as f32 * scale) as i32;
+        let btn_top = start_y + (SPACE_1 as f32 * scale) as i32;
+        let copy_color = if is_hover {
+            TEXT_PRIMARY
+        } else {
+            TEXT_TERTIARY
+        };
+        let old_font = SelectObject(hdc, fonts.caption as HGDIOBJ);
+        SetTextColor(hdc, copy_color);
+        let copy_icon = to_wide("\u{2398}");
+        let mut btn_rect = RECT {
+            left: btn_right - btn_size,
+            top: btn_top,
+            right: btn_right,
+            bottom: btn_top + btn_size,
+        };
+        DrawTextW(
+            hdc,
+            copy_icon.as_ptr(),
+            copy_icon.len() as i32 - 1,
+            &mut btn_rect as LPRECT,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
+        );
+        SelectObject(hdc, old_font as HGDIOBJ);
+
+        // Register clickable rect with the full code text
+        let code_text = code_lines.join("\n");
+        code_block_rects.borrow_mut().push((
+            btn_rect.left,
+            btn_rect.top,
+            btn_rect.right,
+            btn_rect.bottom,
+            code_text,
+        ));
+
+        let _ = end_y;
     }
 }
 

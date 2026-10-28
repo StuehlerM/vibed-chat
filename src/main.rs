@@ -10,6 +10,7 @@ mod input;
 mod interaction;
 mod json;
 mod markdown;
+mod persistence;
 mod platform;
 mod session;
 mod text;
@@ -47,9 +48,16 @@ pub fn app_entry() {
         let caret_blink = GetCaretBlinkTime();
         let mut app_state = Box::new(AppState::new(caret_blink));
 
-        app_state.as_mut().create_local_session_default();
+        if !app_state.as_mut().load_state() || app_state.sessions.is_empty() {
+            app_state.as_mut().create_local_session_default();
+        }
 
-        let hwnd = window::create_window(hinstance, &mut *app_state, 1100, 700);
+        let (win_w, win_h) = if let Some(ref w) = app_state.saved_window {
+            (w.width.max(720), w.height.max(480))
+        } else {
+            (1100, 700)
+        };
+        let hwnd = window::create_window(hinstance, &mut *app_state, win_w, win_h);
 
         if hwnd.is_null() {
             MessageBoxW(
@@ -89,6 +97,8 @@ pub fn app_entry() {
                 break;
             }
         }
+
+        app_state.save_all();
 
         if let Some(a) = app_state.acp.take() {
             a.shutdown();

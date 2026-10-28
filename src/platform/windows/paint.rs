@@ -43,6 +43,13 @@ pub struct PaintContext<'a> {
     pub hover_session_header: bool,
     pub hover_session_archive: Option<usize>,
     pub hover_session_delete: Option<usize>,
+    pub renaming_session: Option<usize>,
+    pub rename_buffer: &'a str,
+    pub rename_cursor: usize,
+    pub hover_link: Option<usize>,
+    pub link_rects: &'a std::cell::RefCell<Vec<crate::app::ClickableRect>>,
+    pub code_block_rects: &'a std::cell::RefCell<Vec<crate::app::ClickableRect>>,
+    pub hover_code_copy: Option<usize>,
 }
 
 impl<'a> PaintContext<'a> {

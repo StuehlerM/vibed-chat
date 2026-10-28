@@ -29,6 +29,7 @@ impl Project {
 
 #[derive(Debug)]
 pub struct Session {
+    pub local_id: String,
     pub acp_session_id: String,
     pub name: String,
     pub working_dir: String,
@@ -40,6 +41,7 @@ pub struct Session {
 impl Session {
     pub fn new(acp_session_id: &str, name: &str, working_dir: &str) -> Self {
         Self {
+            local_id: generate_local_id(),
             acp_session_id: acp_session_id.to_string(),
             name: name.to_string(),
             working_dir: working_dir.to_string(),
@@ -66,4 +68,14 @@ impl Session {
             }
         }
     }
+}
+
+fn generate_local_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    format!("sess_{}_{}", nanos, pid)
 }

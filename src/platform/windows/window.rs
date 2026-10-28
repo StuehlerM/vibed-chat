@@ -74,6 +74,44 @@ pub unsafe extern "system" fn wnd_proc(
             if !app_state.is_null() {
                 (*app_state).client_width = (lparam & 0xFFFF) as i32;
                 (*app_state).client_height = ((lparam >> 16) & 0xFFFF) as i32;
+
+                // Save window size to state (only when not minimized and has real size)
+                let state = &mut *app_state;
+                if wparam != SIZE_MINIMIZED && state.client_width > 0 && state.client_height > 0 {
+                    let mut rect = RECT {
+                        left: 0,
+                        top: 0,
+                        right: 0,
+                        bottom: 0,
+                    };
+                    GetWindowRect(hwnd, &mut rect);
+                    state.saved_window = Some(crate::persistence::WindowState {
+                        width: state.client_width,
+                        height: state.client_height,
+                        x: rect.left,
+                        y: rect.top,
+                    });
+                }
+            }
+            return 0;
+        }
+        WM_MOVE => {
+            let app_state = get_app_state(hwnd);
+            if !app_state.is_null() {
+                let state = &mut *app_state;
+                let x = (lparam & 0xFFFF) as i16 as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
+                if let Some(ref mut w) = state.saved_window {
+                    w.x = x;
+                    w.y = y;
+                } else if state.client_width > 0 && state.client_height > 0 {
+                    state.saved_window = Some(crate::persistence::WindowState {
+                        width: state.client_width,
+                        height: state.client_height,
+                        x,
+                        y,
+                    });
+                }
             }
             return 0;
         }
@@ -82,6 +120,7 @@ pub unsafe extern "system" fn wnd_proc(
                 let app_state = get_app_state(hwnd);
                 if !app_state.is_null() {
                     (*app_state).poll_acp();
+                    (*app_state).try_auto_reconnect();
 
                     // Cursor blink
                     let now = std::time::Instant::now();
@@ -166,6 +205,13 @@ pub unsafe extern "system" fn wnd_proc(
                     hover_session_header: state.hover_session_header,
                     hover_session_archive: state.hover_session_archive,
                     hover_session_delete: state.hover_session_delete,
+                    renaming_session: state.renaming_session,
+                    rename_buffer: &state.rename_buffer,
+                    rename_cursor: state.rename_cursor,
+                    hover_link: state.hover_link,
+                    link_rects: &state.link_rects,
+                    code_block_rects: &state.code_block_rects,
+                    hover_code_copy: state.hover_code_copy,
                 };
                 render::paint(hwnd, &mut ctx);
 
@@ -180,6 +226,53 @@ pub unsafe extern "system" fn wnd_proc(
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
                 let state = &mut *app_state;
+
+                // Handle rename mode keys
+                if state.renaming_session.is_some() {
+                    match wparam as u8 {
+                        VK_RETURN => {
+                            state.commit_rename();
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                            return 0;
+                        }
+                        VK_ESCAPE => {
+                            state.cancel_rename();
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                            return 0;
+                        }
+                        VK_BACK => {
+                            state.rename_backspace();
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                            return 0;
+                        }
+                        VK_LEFT => {
+                            state.rename_cursor_left();
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                            return 0;
+                        }
+                        VK_RIGHT => {
+                            state.rename_cursor_right();
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                            return 0;
+                        }
+                        VK_HOME => {
+                            if state.renaming_session.is_some() {
+                                state.rename_cursor = 0;
+                                InvalidateRect(hwnd, std::ptr::null(), 0);
+                            }
+                            return 0;
+                        }
+                        VK_END => {
+                            if state.renaming_session.is_some() {
+                                state.rename_cursor = state.rename_buffer.len();
+                                InvalidateRect(hwnd, std::ptr::null(), 0);
+                            }
+                            return 0;
+                        }
+                        _ => {}
+                    }
+                    return 0;
+                }
 
                 // F5 to reconnect
                 if wparam as u8 == VK_F5 {
@@ -256,16 +349,20 @@ pub unsafe extern "system" fn wnd_proc(
                     return 0;
                 }
 
-                // Send button keyboard activation
+                // Send/Stop button keyboard activation
                 if state.focused_element == Some(FocusedElement::SendButton)
                     && (wparam as u8 == VK_RETURN || wparam as u8 == VK_SPACE)
                 {
                     if !state.sessions.is_empty() {
                         let idx = state.active_session.min(state.sessions.len() - 1);
-                        let text = state.sessions[idx].chat.input_buffer.trim().to_string();
-                        if !text.is_empty() && !state.sessions[idx].chat.is_waiting_for_agent {
-                            let text = state.sessions[idx].chat.take_input();
-                            state.send_message(text);
+                        if state.sessions[idx].chat.is_waiting_for_agent {
+                            state.cancel_turn();
+                        } else {
+                            let text = state.sessions[idx].chat.input_buffer.trim().to_string();
+                            if !text.is_empty() {
+                                let text = state.sessions[idx].chat.take_input();
+                                state.send_message(text);
+                            }
                         }
                     }
                     InvalidateRect(hwnd, std::ptr::null(), 0);
@@ -326,7 +423,11 @@ pub unsafe extern "system" fn wnd_proc(
                 {
                     return DefWindowProcW(hwnd, msg, wparam, lparam);
                 }
-                if !state.sessions.is_empty() {
+                if state.renaming_session.is_some() {
+                    if let Some(c) = char::from_u32(wparam as u32) {
+                        state.rename_insert_char(c);
+                    }
+                } else if !state.sessions.is_empty() {
                     if let Some(chat) = state.active_chat() {
                         if let Some(c) = char::from_u32(wparam as u32) {
                             let _ = input::handle_char_input(chat, c);
@@ -360,7 +461,36 @@ pub unsafe extern "system" fn wnd_proc(
                 let state = &mut *app_state;
                 let x = (lparam & 0xFFFF) as i16 as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-                state.handle_click(x, y);
+                if let Some(url) = state.click_link(x, y) {
+                    let url_wide = to_wide(&url);
+                    let open_wide = to_wide("open");
+                    unsafe {
+                        ShellExecuteW(
+                            hwnd,
+                            open_wide.as_ptr(),
+                            url_wide.as_ptr(),
+                            std::ptr::null(),
+                            std::ptr::null(),
+                            SW_SHOW,
+                        );
+                    }
+                } else if let Some(code) = state.click_code_copy(x, y) {
+                    let clipboard = WinClipboard;
+                    crate::platform::backend::Clipboard::set_text(&clipboard, &code);
+                } else {
+                    state.handle_click(x, y);
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+            }
+            return 0;
+        }
+        WM_LBUTTONDBLCLK => {
+            let app_state = get_app_state(hwnd);
+            if !app_state.is_null() {
+                let state = &mut *app_state;
+                let x = (lparam & 0xFFFF) as i16 as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
+                state.handle_double_click(x, y);
                 InvalidateRect(hwnd, std::ptr::null(), 0);
             }
             return 0;
@@ -404,7 +534,10 @@ pub unsafe extern "system" fn wnd_proc(
                 let old_hover_sh = state.hover_session_header;
                 let old_hover_arch = state.hover_session_archive;
                 let old_hover_del = state.hover_session_delete;
+                let old_hover_link = state.hover_link;
+                let old_hover_code = state.hover_code_copy;
                 state.update_hover(x, y);
+                state.update_link_hover(x, y);
                 if state.hover_sidebar_item != old_hover_item
                     || state.hover_new_chat != old_hover_new
                     || state.hover_new_project != old_hover_new_proj
@@ -419,6 +552,8 @@ pub unsafe extern "system" fn wnd_proc(
                     || state.hover_session_header != old_hover_sh
                     || state.hover_session_archive != old_hover_arch
                     || state.hover_session_delete != old_hover_del
+                    || state.hover_link != old_hover_link
+                    || state.hover_code_copy != old_hover_code
                 {
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                 }
@@ -451,7 +586,7 @@ pub unsafe extern "system" fn wnd_proc(
                 if x < sidebar_w {
                     let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
                     let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
-                    let (list_top, total_list_height, _) = state.sidebar_layout();
+                    let (list_top, total_list_height, _) = state.date_grouped_sidebar_layout();
                     let list_bottom = state.client_height - footer_h - pad;
                     let avail_height = list_bottom - list_top;
                     let max_scroll = (total_list_height - avail_height).max(0);
@@ -510,6 +645,8 @@ pub unsafe extern "system" fn wnd_proc(
                     || state.hover_settings_toggle.is_some()
                     || state.hover_scrollbar
                     || state.hover_send_btn
+                    || state.hover_link.is_some()
+                    || state.hover_code_copy.is_some()
                 {
                     let hcursor = LoadCursorW(std::ptr::null_mut(), IDC_HAND);
                     SetCursor(hcursor);
@@ -589,7 +726,7 @@ pub fn register_class(hinstance: HINSTANCE) -> bool {
         let class_name = to_wide(WINDOW_CLASS_NAME);
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as UINT,
-            style: CS_HREDRAW | CS_VREDRAW,
+            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
             lpfnWndProc: Some(wnd_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
@@ -623,13 +760,20 @@ pub fn create_window(
         };
         AdjustWindowRectEx(&mut rect, WS_OVERLAPPEDWINDOW, 0, 0);
 
+        // Use saved window position if available
+        let (pos_x, pos_y) = if let Some(ref w) = (*app_state).saved_window {
+            (w.x, w.y)
+        } else {
+            (CW_USEDEFAULT, CW_USEDEFAULT)
+        };
+
         let hwnd = CreateWindowExW(
             0,
             class_name.as_ptr(),
             title.as_ptr(),
             WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
+            pos_x,
+            pos_y,
             rect.right - rect.left,
             rect.bottom - rect.top,
             std::ptr::null_mut(),

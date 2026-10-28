@@ -370,8 +370,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                 } else {
                     SIDEBAR_TEXT
                 };
-                let old_font = SelectObject(hdc, name_font as HGDIOBJ);
-                SetTextColor(hdc, name_color);
+
                 let name_wide = to_wide(&display_name);
                 let name_line_h = (item_h / 2) - (SPACE_1 as f32 * scale) as i32;
                 let mut name_rect = RECT {
@@ -380,14 +379,87 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     right: name_left + max_name_w,
                     bottom: item_rect.top + name_line_h,
                 };
-                DrawTextW(
-                    hdc,
-                    name_wide.as_ptr(),
-                    name_wide.len() as i32 - 1,
-                    &mut name_rect as LPRECT,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP | DT_END_ELLIPSIS,
-                );
-                SelectObject(hdc, old_font as HGDIOBJ);
+
+                // Inline rename: draw editable text field instead of static name
+                if ctx.renaming_session == Some(i) {
+                    let edit_bg = SURFACE_2;
+                    let edit_rect = RECT {
+                        left: name_left - (SPACE_1 as f32 * scale) as i32,
+                        top: item_rect.top + (SPACE_1 as f32 * scale) as i32,
+                        right: item_rect.right - pad,
+                        bottom: item_rect.top + (item_h / 2) - (SPACE_1 as f32 * scale) as i32,
+                    };
+                    let edit_brush = CreateSolidBrush(edit_bg);
+                    FillRect(hdc, &edit_rect, edit_brush);
+                    DeleteObject(edit_brush as HGDIOBJ);
+                    let edit_pen = CreatePen(PS_SOLID, (1.0 * scale).max(1.0) as i32, ACCENT_HOVER);
+                    let old_ep = SelectObject(hdc, edit_pen as HGDIOBJ);
+                    let old_eb = SelectObject(hdc, GetStockObject(NULL_BRUSH as i32) as HGDIOBJ);
+                    Rectangle(
+                        hdc,
+                        edit_rect.left,
+                        edit_rect.top,
+                        edit_rect.right,
+                        edit_rect.bottom,
+                    );
+                    SelectObject(hdc, old_ep as HGDIOBJ);
+                    SelectObject(hdc, old_eb as HGDIOBJ);
+                    DeleteObject(edit_pen as HGDIOBJ);
+
+                    let old_font = SelectObject(hdc, ctx.fonts.sidebar_medium as HGDIOBJ);
+                    SetTextColor(hdc, TEXT_PRIMARY);
+                    let buf_wide = to_wide(ctx.rename_buffer);
+                    let mut edit_text_rect = RECT {
+                        left: edit_rect.left + (SPACE_1 as f32 * scale) as i32,
+                        top: edit_rect.top,
+                        right: edit_rect.right - (SPACE_1 as f32 * scale) as i32,
+                        bottom: edit_rect.bottom,
+                    };
+                    DrawTextW(
+                        hdc,
+                        buf_wide.as_ptr(),
+                        buf_wide.len() as i32 - 1,
+                        &mut edit_text_rect as LPRECT,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
+                    );
+
+                    // Draw cursor
+                    if ctx.cursor_visible {
+                        let cursor_byte_pos = ctx.rename_cursor.min(ctx.rename_buffer.len());
+                        let before_cursor = &ctx.rename_buffer[..cursor_byte_pos];
+                        let before_wide = to_wide(before_cursor);
+                        let mut cursor_sz = POINT { x: 0, y: 0 };
+                        GetTextExtentPoint32W(
+                            hdc,
+                            before_wide.as_ptr(),
+                            before_wide.len() as i32 - 1,
+                            &mut cursor_sz,
+                        );
+                        let cursor_x = edit_text_rect.left + cursor_sz.x;
+                        let cursor_w = (1.0 * scale).max(1.0) as i32;
+                        let cursor_rect = RECT {
+                            left: cursor_x,
+                            top: edit_rect.top + (SPACE_1 as f32 * scale) as i32,
+                            right: cursor_x + cursor_w,
+                            bottom: edit_rect.bottom - (SPACE_1 as f32 * scale) as i32,
+                        };
+                        let cursor_brush = CreateSolidBrush(CURSOR_COLOR);
+                        FillRect(hdc, &cursor_rect, cursor_brush);
+                        DeleteObject(cursor_brush as HGDIOBJ);
+                    }
+                    SelectObject(hdc, old_font as HGDIOBJ);
+                } else {
+                    let old_font = SelectObject(hdc, name_font as HGDIOBJ);
+                    SetTextColor(hdc, name_color);
+                    DrawTextW(
+                        hdc,
+                        name_wide.as_ptr(),
+                        name_wide.len() as i32 - 1,
+                        &mut name_rect as LPRECT,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP | DT_END_ELLIPSIS,
+                    );
+                    SelectObject(hdc, old_font as HGDIOBJ);
+                }
 
                 // Status dot (streaming) - next to name
                 if is_streaming && !show_actions {

@@ -47,6 +47,8 @@ impl AppState {
         self.hover_session_header = false;
         self.hover_session_archive = None;
         self.hover_session_delete = None;
+        self.hover_link = None;
+        self.hover_code_copy = None;
     }
 
     pub fn cycle_focus(&mut self, shift: bool) {
@@ -223,6 +225,29 @@ impl AppState {
     // ── Click handling ───────────────────────────────────────
 
     pub fn handle_click(&mut self, x: i32, y: i32) -> bool {
+        if let Some(renaming_idx) = self.renaming_session {
+            let scale = self.dpi as f32 / 96.0;
+            let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
+            let is_in_sidebar = x < sidebar_w;
+            if !is_in_sidebar {
+                self.cancel_rename();
+            } else {
+                let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
+                let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
+                let (list_top, total_list_height, session_items) =
+                    self.date_grouped_sidebar_layout();
+                let list_bottom = self.client_height - footer_h - pad;
+                let avail_height = list_bottom - list_top;
+                let max_scroll = (total_list_height - avail_height).max(0);
+                let sidebar_scroll = self.sidebar_scroll_offset.min(max_scroll).max(0);
+                let click_on_renaming = session_items.iter().any(|&(idx, top, bottom)| {
+                    idx == renaming_idx && y >= top - sidebar_scroll && y <= bottom - sidebar_scroll
+                });
+                if !click_on_renaming {
+                    self.cancel_rename();
+                }
+            }
+        }
         let scale = self.dpi as f32 / 96.0;
         let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
         let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
@@ -259,6 +284,7 @@ impl AppState {
                         3 => self.settings.show_archived = !self.settings.show_archived,
                         _ => {}
                     }
+                    self.save_index();
                     return true;
                 }
                 return true;
@@ -350,15 +376,20 @@ impl AppState {
             return true;
         }
 
-        // Send button click
+        // Send/Stop button click
         if let Some((btn_left, btn_top, btn_right, btn_bottom)) = self.send_btn_rect() {
             if x >= btn_left && x <= btn_right && y >= btn_top && y <= btn_bottom {
                 if !self.sessions.is_empty() {
                     let idx = self.active_session.min(self.sessions.len() - 1);
-                    let chat = &mut self.sessions[idx].chat;
-                    if !chat.input_buffer.trim().is_empty() && !chat.is_waiting_for_agent {
-                        let text = chat.take_input();
-                        self.send_message(text);
+                    if self.sessions[idx].chat.is_waiting_for_agent {
+                        self.pressed_element = Some(PressedElement::SendButton);
+                        self.cancel_turn();
+                    } else {
+                        let chat = &mut self.sessions[idx].chat;
+                        if !chat.input_buffer.trim().is_empty() {
+                            let text = chat.take_input();
+                            self.send_message(text);
+                        }
                     }
                 }
                 return true;
@@ -403,6 +434,79 @@ impl AppState {
                 let idx = self.active_session.min(self.sessions.len() - 1);
                 self.sessions[idx].chat.input_focused = true;
                 self.focused_element = Some(FocusedElement::Input);
+            }
+        }
+        false
+    }
+
+    /// Check if a click landed on a link rect. Returns the URL if so.
+    pub fn click_link(&self, x: i32, y: i32) -> Option<String> {
+        for (left, top, right, bottom, url) in self.link_rects.borrow().iter() {
+            if x >= *left && x <= *right && y >= *top && y <= *bottom {
+                return Some(url.clone());
+            }
+        }
+        None
+    }
+
+    /// Check if a click landed on a code block copy button. Returns the code text if so.
+    pub fn click_code_copy(&self, x: i32, y: i32) -> Option<String> {
+        for (left, top, right, bottom, code) in self.code_block_rects.borrow().iter() {
+            if x >= *left && x <= *right && y >= *top && y <= *bottom {
+                return Some(code.clone());
+            }
+        }
+        None
+    }
+
+    /// Update link and code-copy hover states.
+    pub fn update_link_hover(&mut self, x: i32, y: i32) {
+        let mut found_link = None;
+        for (idx, (left, top, right, bottom, _)) in self.link_rects.borrow().iter().enumerate() {
+            if x >= *left && x <= *right && y >= *top && y <= *bottom {
+                found_link = Some(idx);
+                break;
+            }
+        }
+        self.hover_link = found_link;
+
+        let mut found_code = None;
+        for (idx, (left, top, right, bottom, _)) in
+            self.code_block_rects.borrow().iter().enumerate()
+        {
+            if x >= *left && x <= *right && y >= *top && y <= *bottom {
+                found_code = Some(idx);
+                break;
+            }
+        }
+        self.hover_code_copy = found_code;
+    }
+
+    /// Handle a double-click. Returns true if handled.
+    pub fn handle_double_click(&mut self, x: i32, y: i32) -> bool {
+        let scale = self.dpi as f32 / 96.0;
+        let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
+        if x >= sidebar_w {
+            return false;
+        }
+
+        let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
+        let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
+        let (list_top, total_list_height, session_items) = self.date_grouped_sidebar_layout();
+        let list_bottom = self.client_height - footer_h - pad;
+        let avail_height = list_bottom - list_top;
+        let max_scroll = (total_list_height - avail_height).max(0);
+        let sidebar_scroll = self.sidebar_scroll_offset.min(max_scroll).max(0);
+
+        for &(session_idx, item_top, item_bottom) in &session_items {
+            let adj_top = item_top - sidebar_scroll;
+            let adj_bottom = item_bottom - sidebar_scroll;
+            if adj_bottom <= list_top || adj_top >= list_bottom {
+                continue;
+            }
+            if y >= adj_top && y <= adj_bottom {
+                self.start_rename(session_idx);
+                return true;
             }
         }
         false
@@ -548,7 +652,7 @@ impl AppState {
                 self.hover_settings_btn = true;
             }
         } else {
-            // Send button hover
+            // Send/Stop button hover
             if let Some((btn_left, btn_top, btn_right, btn_bottom)) = self.send_btn_rect() {
                 if x >= btn_left
                     && x <= btn_right
@@ -558,7 +662,7 @@ impl AppState {
                 {
                     let idx = self.active_session.min(self.sessions.len() - 1);
                     let chat = &self.sessions[idx].chat;
-                    if !chat.input_buffer.trim().is_empty() && !chat.is_waiting_for_agent {
+                    if chat.is_waiting_for_agent || !chat.input_buffer.trim().is_empty() {
                         self.hover_send_btn = true;
                         return;
                     }

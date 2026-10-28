@@ -185,6 +185,7 @@ pub fn draw_input_box(
             hover_send_btn,
             pressed_element,
             focused_element == Some(FocusedElement::SendButton),
+            is_disabled,
             scale,
         );
 
@@ -469,7 +470,7 @@ pub fn draw_input_box(
     }
 }
 
-/// Draw the send button (circular, with arrow icon).
+/// Draw the send/stop button (circular, with arrow or stop-square icon).
 #[allow(clippy::too_many_arguments)]
 fn draw_send_button(
     hdc: HDC,
@@ -479,12 +480,21 @@ fn draw_send_button(
     hover: bool,
     pressed_element: Option<PressedElement>,
     focused: bool,
+    is_waiting: bool,
     scale: f32,
 ) {
     unsafe {
         let is_pressed = pressed_element == Some(PressedElement::SendButton);
 
-        let btn_color = if !enabled {
+        let btn_color = if is_waiting {
+            if is_pressed {
+                STOP_BTN_PRESSED
+            } else if hover {
+                STOP_BTN_HOVER
+            } else {
+                STOP_BTN_BG
+            }
+        } else if !enabled {
             SEND_BTN_DISABLED
         } else if is_pressed {
             SEND_BTN_PRESSED
@@ -544,23 +554,26 @@ fn draw_send_button(
             DeleteObject(focus_pen as HGDIOBJ);
         }
 
-        // Arrow icon
-        let icon_color = if enabled {
-            SEND_BTN_ICON
+        // Arrow or stop icon
+        let (icon, icon_color) = if is_waiting {
+            ("\u{25A0}", STOP_BTN_ICON)
+        } else if enabled {
+            ("\u{27A4}", SEND_BTN_ICON)
         } else {
-            DISABLED_TEXT
+            ("\u{27A4}", DISABLED_TEXT)
         };
         let old_font = SelectObject(hdc, fonts.bold as HGDIOBJ);
         SetTextColor(hdc, icon_color);
-        let arrow = "\u{27A4}";
-        let arrow_wide = to_wide(arrow);
-        let mut arrow_rect = *btn_rect;
-        arrow_rect.left += (2.0 * scale) as i32;
+        let icon_wide = to_wide(icon);
+        let mut icon_rect = *btn_rect;
+        if !is_waiting {
+            icon_rect.left += (2.0 * scale) as i32;
+        }
         DrawTextW(
             hdc,
-            arrow_wide.as_ptr(),
-            arrow_wide.len() as i32 - 1,
-            &mut arrow_rect as LPRECT,
+            icon_wide.as_ptr(),
+            icon_wide.len() as i32 - 1,
+            &mut icon_rect as LPRECT,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
         );
         SelectObject(hdc, old_font as HGDIOBJ);

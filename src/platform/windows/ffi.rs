@@ -116,6 +116,8 @@ pub const WM_DPICHANGED: UINT = 0x02E0;
 pub const WM_SETCURSOR: UINT = 0x0020;
 pub const WM_COPYDATA: UINT = 0x004A;
 pub const WM_GETMINMAXINFO: UINT = 0x0024;
+pub const WM_MOVE: UINT = 0x0003;
+pub const SIZE_MINIMIZED: WPARAM = 1;
 
 // ── Virtual key codes ────────────────────────────────────────
 pub const VK_BACK: u8 = 0x08;
@@ -822,6 +824,14 @@ pub type LPBROWSEINFOW = *mut BROWSEINFOW;
 extern "system" {
     pub fn SHBrowseForFolderW(lpbi: LPBROWSEINFOW) -> LPITEMIDLIST;
     pub fn SHGetPathFromIDListW(pidl: LPCITEMIDLIST, pszPath: LPWSTR) -> BOOL;
+    pub fn ShellExecuteW(
+        hwnd: HWND,
+        lpOperation: LPCWSTR,
+        lpFile: LPCWSTR,
+        lpParameters: LPCWSTR,
+        lpDirectory: LPCWSTR,
+        nShowCmd: i32,
+    ) -> HINSTANCE;
 }
 
 #[link(name = "ole32")]
