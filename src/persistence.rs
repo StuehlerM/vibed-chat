@@ -7,7 +7,7 @@
 
 use crate::chat::{Message, Role};
 use crate::json::{self, Json};
-use crate::session::{Project, Session};
+use crate::session::{Project, Session, SessionMode};
 use crate::theme::Settings;
 
 pub const STATE_FILE: &str = "state.json";
@@ -129,6 +129,7 @@ pub struct SessionMeta {
     pub name: String,
     pub working_dir: String,
     pub archived: bool,
+    pub mode: SessionMode,
 }
 
 fn session_meta_to_json(m: &SessionMeta) -> Json {
@@ -138,6 +139,7 @@ fn session_meta_to_json(m: &SessionMeta) -> Json {
         ("name", Json::String(m.name.clone())),
         ("working_dir", Json::String(m.working_dir.clone())),
         ("archived", Json::Bool(m.archived)),
+        ("mode", Json::String(m.mode.as_str().to_string())),
         ("file", Json::String(format!("{}.json", m.local_id))),
     ])
 }
@@ -165,6 +167,11 @@ fn session_meta_from_json(j: &Json) -> Option<SessionMeta> {
             .unwrap_or(".")
             .to_string(),
         archived: j.get("archived").and_then(|v| v.as_bool()).unwrap_or(false),
+        mode: j
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .map(SessionMode::from_str)
+            .unwrap_or(SessionMode::Direct),
     })
 }
 
@@ -239,6 +246,7 @@ pub fn save_index(
                 name: s.name.clone(),
                 working_dir: s.working_dir.clone(),
                 archived: s.archived,
+                mode: s.mode,
             })
         })
         .collect();
@@ -351,6 +359,7 @@ pub fn load_all(config_dir: &str) -> Option<LoadedState> {
                     chat: crate::chat::ChatState::new(),
                     created_at: std::time::Instant::now(),
                     archived: meta.archived,
+                    mode: meta.mode,
                 };
 
                 let session_path = session_file_path(config_dir, &meta.local_id);

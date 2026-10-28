@@ -96,6 +96,53 @@ pub fn draw_session_header(
             SelectObject(hdc, old_font as HGDIOBJ);
         }
 
+        // Mode radio: Default (Direct/Responses API) | Code (vibe-acp)
+        {
+            let layout = compute_mode_radio_layout(chat_left, chat_right, header_h, scale);
+            let session_mode = session.mode;
+            let option_w = (MODE_RADIO_OPTION_W as f32 * scale) as i32;
+            for (i, (label, m)) in [
+                ("Default", crate::session::SessionMode::Direct),
+                ("Code", crate::session::SessionMode::Code),
+            ]
+            .iter()
+            .enumerate()
+            {
+                let opt_left = if i == 0 {
+                    layout.direct_left
+                } else {
+                    layout.code_left
+                };
+                let active = *m == session_mode;
+                let (bg, fg) = if active {
+                    (ACCENT, TEXT_ON_ACCENT)
+                } else {
+                    (SURFACE_2, TEXT_SECONDARY)
+                };
+                let bg_brush = CreateSolidBrush(bg);
+                let opt_rect = RECT {
+                    left: opt_left,
+                    top: layout.top,
+                    right: opt_left + option_w,
+                    bottom: layout.top + layout.h,
+                };
+                FillRect(hdc, &opt_rect, bg_brush);
+                DeleteObject(bg_brush as HGDIOBJ);
+                let old_f = SelectObject(hdc, ctx.fonts.caption as HGDIOBJ);
+                SetTextColor(hdc, fg);
+                let label_wide = to_wide(label);
+                let mut tr = opt_rect;
+                DrawTextW(
+                    hdc,
+                    label_wide.as_ptr(),
+                    label_wide.len() as i32 - 1,
+                    &mut tr as LPRECT,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
+                );
+                SelectObject(hdc, old_f as HGDIOBJ);
+            }
+        }
+
         // Connection status indicator (right-aligned)
         let (status_text, status_color, pulse_dot) = if session.chat.is_waiting_for_agent {
             ("Agent responding...".to_string(), ACCENT, true)

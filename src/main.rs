@@ -6,12 +6,14 @@
 mod acp;
 mod app;
 mod chat;
+mod http;
 mod input;
 mod interaction;
 mod json;
 mod markdown;
 mod persistence;
 mod platform;
+mod responses;
 mod session;
 mod text;
 mod theme;
@@ -73,12 +75,17 @@ pub fn app_entry() {
         let fonts = Fonts::new(app_state.dpi);
         app_state.fonts = Some(FontsHandle::new(fonts));
 
-        app_state.as_mut().connect_acp();
+        // Direct mode is the default backend; the agent is spawned lazily on
+        // the first Code-mode turn (or Code session). Install the WinHTTP
+        // transport for the Responses API client.
+        app_state.as_mut().install_responses_transport(Box::new(
+            crate::platform::windows::http::WinHttpTransport::new(),
+        ));
 
         if let Some(session) = app_state.as_mut().sessions.first_mut() {
-            session
-                .chat
-                .add_system_message("ACP Chat started. Connecting to agent...");
+            session.chat.add_system_message(
+                "vibe-chat started. Default mode talks to the Mistral Responses API.",
+            );
         }
 
         let mut msg = MSG {

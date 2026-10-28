@@ -7,6 +7,7 @@ pub mod dialogs;
 pub mod ffi;
 pub mod fonts;
 pub mod gfx;
+pub mod http;
 pub mod paint;
 pub mod render;
 pub mod text;

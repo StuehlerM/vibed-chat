@@ -5,6 +5,8 @@
 // in each backend (e.g., platform/windows/paint.rs).
 #![allow(dead_code)]
 
+use crate::session::SessionMode;
+
 /// Identifies which element is currently pressed (mouse down).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PressedElement {
@@ -21,6 +23,7 @@ pub enum PressedElement {
     SendButton,
     SessionArchive(usize),
     SessionDelete(usize),
+    ModeRadio(SessionMode),
 }
 
 /// Identifies which element has keyboard focus.

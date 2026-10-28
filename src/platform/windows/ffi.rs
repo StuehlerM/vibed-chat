@@ -950,3 +950,72 @@ extern "system" {
     pub fn LoadLibraryA(lpLibFileName: LPCSTR) -> HMODULE;
     pub fn GetProcAddress(hModule: HMODULE, lpProcName: LPCSTR) -> *mut c_void;
 }
+
+// ── WinHTTP (Responses API transport) ────────────────────────────────────────
+// winhttp.dll is a standard system library; declared directly per the FFI
+// convention instead of the dynamic-load pattern used for GDI+.
+pub type HINTERNET = *mut c_void;
+pub const WINHTTP_ACCESS_TYPE_DEFAULT_PROXY: DWORD = 0;
+pub const WINHTTP_FLAG_SECURE: DWORD = 0x0080_0000;
+pub const WINHTTP_FLAG_REFRESH: DWORD = 0x0100;
+pub const WINHTTP_ADDREQ_FLAG_ADD: DWORD = 0x2000_0000;
+pub const WINHTTP_ADDREQ_FLAG_REPLACE: DWORD = 0x8000_0000;
+pub const WINHTTP_QUERY_STATUS_CODE: DWORD = 19;
+pub const WINHTTP_QUERY_FLAG_NUMBER: DWORD = 0x2000_0000;
+
+#[link(name = "winhttp")]
+extern "system" {
+    pub fn WinHttpOpen(
+        agent: LPCWSTR,
+        access_type: DWORD,
+        proxy: LPCWSTR,
+        proxy_bypass: LPCWSTR,
+        flags: DWORD,
+    ) -> HINTERNET;
+    pub fn WinHttpConnect(
+        session: HINTERNET,
+        host: LPCWSTR,
+        port: WORD,
+        reserved: DWORD,
+    ) -> HINTERNET;
+    pub fn WinHttpOpenRequest(
+        connect: HINTERNET,
+        verb: LPCWSTR,
+        object: LPCWSTR,
+        version: LPCWSTR,
+        referrer: LPCWSTR,
+        accept_types: *mut LPCWSTR,
+        flags: DWORD,
+    ) -> HINTERNET;
+    pub fn WinHttpCloseHandle(handle: HINTERNET) -> BOOL;
+    pub fn WinHttpAddRequestHeaders(
+        request: HINTERNET,
+        headers: LPCWSTR,
+        length: DWORD,
+        modifiers: DWORD,
+    ) -> BOOL;
+    pub fn WinHttpSendRequest(
+        request: HINTERNET,
+        headers: LPCWSTR,
+        headers_len: DWORD,
+        optional: *mut c_void,
+        optional_len: DWORD,
+        total_len: DWORD,
+        context: usize,
+    ) -> BOOL;
+    pub fn WinHttpReceiveResponse(request: HINTERNET, reserved: *mut c_void) -> BOOL;
+    pub fn WinHttpQueryHeaders(
+        request: HINTERNET,
+        info_level: DWORD,
+        name: LPCWSTR,
+        buffer: *mut c_void,
+        buffer_len: *mut DWORD,
+        index: *mut DWORD,
+    ) -> BOOL;
+    pub fn WinHttpReadData(
+        request: HINTERNET,
+        buffer: *mut u8,
+        bytes_to_read: DWORD,
+        bytes_read: *mut DWORD,
+    ) -> BOOL;
+}

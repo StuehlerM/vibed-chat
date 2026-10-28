@@ -5,7 +5,8 @@
 
 use crate::acp::{AcpClient, AcpEvent};
 use crate::chat::{ChatState, Role};
-use crate::session::{Project, Session};
+use crate::responses::{ResponsesClient, ResponsesEvent};
+use crate::session::{Project, Session, SessionMode};
 use crate::theme::Settings;
 use crate::ui::{FocusedElement, RenameTarget, Toast, ToastKind};
 
@@ -81,6 +82,13 @@ pub struct AppState {
     pub dpi: u32,
     pub acp: Option<AcpClient>,
     pub acp_connected: bool,
+    /// Direct-mode (Responses API) client. Created once on first use.
+    pub responses: Option<ResponsesClient>,
+    /// Set when the UI requests a transport factory for Direct mode;
+    /// the platform backend installs it on first Direct turn.
+    pub responses_wanted: bool,
+    /// Token count of the active session's Responses history, if known.
+    pub input_tokens: Option<u64>,
     pub client_width: i32,
     pub client_height: i32,
     pub should_quit: bool,
@@ -141,6 +149,9 @@ impl AppState {
             dpi: 96,
             acp: None,
             acp_connected: false,
+            responses: None,
+            responses_wanted: false,
+            input_tokens: None,
             client_width: 1100,
             client_height: 700,
             should_quit: false,
@@ -679,28 +690,145 @@ impl AppState {
 
         let idx = self.active_session.min(self.sessions.len() - 1);
 
+        let mode;
         let acp_session_id;
         {
             let session = &mut self.sessions[idx];
             session.chat.add_message(Role::User, &text);
             session.auto_name();
+            mode = session.mode;
             acp_session_id = session.acp_session_id.clone();
         }
         self.save_session(idx);
         self.save_index();
 
-        if let Some(ref acp) = self.acp {
-            if self.acp_connected && !acp_session_id.is_empty() {
-                self.sessions[idx].chat.start_streaming();
-                acp.send_prompt(&acp_session_id, &text);
-            } else {
-                self.show_toast(
-                    "Not connected to agent. Press F5 to reconnect",
-                    ToastKind::Error,
-                );
+        match mode {
+            SessionMode::Direct => self.send_direct(idx),
+            SessionMode::Code => {
+                if let Some(ref acp) = self.acp {
+                    if self.acp_connected && !acp_session_id.is_empty() {
+                        self.sessions[idx].chat.start_streaming();
+                        acp.send_prompt(&acp_session_id, &text);
+                    } else if self.acp_connected && acp_session_id.is_empty() {
+                        // Lazy agent spawn: connect now, queue the session.
+                        let wd = self.sessions[idx].working_dir.clone();
+                        self.pending_new_session = true;
+                        self.pending_working_dir = wd;
+                        self.sessions[idx].chat.start_streaming();
+                        // The queued prompt is lost this turn; tell the user.
+                        self.show_toast(
+                            "Connecting to agent - send again when ready",
+                            ToastKind::Info,
+                        );
+                    } else {
+                        self.show_toast(
+                            "Not connected to agent. Press F5 to reconnect",
+                            ToastKind::Error,
+                        );
+                    }
+                } else {
+                    self.connect_acp();
+                    self.show_toast("Starting agent - send again when ready", ToastKind::Info);
+                }
             }
-        } else {
-            self.show_toast("Agent not started. Press F5 to connect", ToastKind::Error);
+        }
+    }
+
+    /// Send the next Direct-mode turn for session `idx` via the Responses API.
+    fn send_direct(&mut self, idx: usize) {
+        if self.responses.is_none() {
+            self.responses_wanted = true;
+            self.show_toast(
+                "Direct mode needs an HTTP transport - not available on this platform",
+                ToastKind::Error,
+            );
+            return;
+        }
+        let history = self.sessions[idx].responses_history();
+        let session_id = self.sessions[idx].local_id.clone();
+        self.sessions[idx].chat.start_streaming();
+        if let Some(ref client) = self.responses {
+            client.send(&session_id, history, crate::session::ReasoningEffort::High);
+        }
+    }
+
+    /// Install the Direct-mode transport (called by the platform backend on
+    /// startup). Idempotent.
+    pub fn install_responses_transport(
+        &mut self,
+        transport: Box<dyn crate::responses::HttpTransport + Send>,
+    ) {
+        if self.responses.is_none() {
+            self.responses = Some(ResponsesClient::new(transport));
+        }
+        self.responses_wanted = false;
+    }
+
+    /// Drain pending Responses API events into the UI state. Called from the
+    /// platform timer tick alongside poll_acp.
+    pub fn poll_responses(&mut self) {
+        let events: Vec<ResponsesEvent> = {
+            match self.responses {
+                Some(ref client) => client.try_recv().into_iter().collect(),
+                None => return,
+            }
+        };
+        for event in events {
+            let local_id = match &event {
+                ResponsesEvent::TextDelta { session_id, .. }
+                | ResponsesEvent::ReasoningDelta { session_id, .. }
+                | ResponsesEvent::Completed { session_id }
+                | ResponsesEvent::Failed { session_id, .. }
+                | ResponsesEvent::Incomplete { session_id }
+                | ResponsesEvent::InputTokens { session_id, .. } => session_id.clone(),
+            };
+            let idx = self.sessions.iter().position(|s| s.local_id == local_id);
+            let idx = match idx {
+                Some(i) => i,
+                None => continue,
+            };
+            match event {
+                ResponsesEvent::TextDelta { text, .. } => {
+                    self.sessions[idx].chat.append_stream_chunk(&text);
+                }
+                ResponsesEvent::ReasoningDelta { text, .. } => {
+                    self.sessions[idx].chat.append_thought_chunk(&text);
+                }
+                ResponsesEvent::Completed { .. } => {
+                    self.sessions[idx].chat.finish_streaming();
+                    let history = self.sessions[idx].responses_history();
+                    if let Some(ref client) = self.responses {
+                        client.count_input_tokens(&local_id, history);
+                    }
+                }
+                ResponsesEvent::Failed { message, .. } => {
+                    self.sessions[idx].chat.finish_streaming();
+                    self.show_toast(&format!("Direct mode error: {}", message), ToastKind::Error);
+                }
+                ResponsesEvent::Incomplete { .. } => {
+                    self.sessions[idx].chat.finish_streaming();
+                    self.show_toast("Response stopped early (token limit)", ToastKind::Info);
+                }
+                ResponsesEvent::InputTokens { tokens, .. } => {
+                    self.input_tokens = Some(tokens);
+                }
+            }
+        }
+    }
+
+    /// Switch the active session's mode (radio control in the header).
+    pub fn set_session_mode(&mut self, mode: SessionMode) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        let idx = self.active_session.min(self.sessions.len() - 1);
+        if self.sessions[idx].mode != mode {
+            self.sessions[idx].mode = mode;
+            self.save_index();
+            if mode == SessionMode::Code && self.acp.is_none() {
+                // Lazy spawn: connect the agent on first Code-mode use.
+                self.connect_acp();
+            }
         }
     }
 
@@ -725,10 +853,17 @@ impl AppState {
             return;
         }
         let idx = self.active_session.min(self.sessions.len() - 1);
-        let session_id = self.sessions[idx].acp_session_id.clone();
+        let acp_session_id = self.sessions[idx].acp_session_id.clone();
+        let local_id = self.sessions[idx].local_id.clone();
+        let mode = self.sessions[idx].mode;
         if let Some(ref acp) = self.acp {
-            if !session_id.is_empty() {
-                acp.cancel(&session_id);
+            if mode == SessionMode::Code && !acp_session_id.is_empty() {
+                acp.cancel(&acp_session_id);
+            }
+        }
+        if mode == SessionMode::Direct {
+            if let Some(ref client) = self.responses {
+                client.abort(&local_id);
             }
         }
         self.sessions[idx].chat.finish_streaming();

@@ -6,6 +6,7 @@
 
 use crate::app::{AppState, HoverState};
 use crate::chat::Role;
+use crate::session::SessionMode;
 use crate::theme::*;
 use crate::ui::{FocusedElement, PressedElement, RenameTarget};
 
@@ -507,6 +508,27 @@ impl AppState {
             }
 
             return true;
+        }
+
+        // Mode radio (header): Default | Code
+        {
+            let header_h = (SESSION_HEADER_HEIGHT as f32 * scale) as i32;
+            let sidebar_w_scaled = sidebar_w;
+            let layout =
+                compute_mode_radio_layout(sidebar_w_scaled, self.client_width, header_h, scale);
+            if y >= layout.top && y <= layout.top + layout.h {
+                let option_w = (MODE_RADIO_OPTION_W as f32 * scale) as i32;
+                if x >= layout.direct_left && x < layout.direct_left + option_w {
+                    self.pressed_element = Some(PressedElement::ModeRadio(SessionMode::Direct));
+                    self.set_session_mode(SessionMode::Direct);
+                    return true;
+                }
+                if x >= layout.code_left && x < layout.code_left + option_w {
+                    self.pressed_element = Some(PressedElement::ModeRadio(SessionMode::Code));
+                    self.set_session_mode(SessionMode::Code);
+                    return true;
+                }
+            }
         }
 
         // Send/Stop button click
