@@ -4,27 +4,15 @@
 use crate::platform::windows::ffi::*;
 use crate::platform::windows::paint::PaintContext;
 use crate::theme::*;
-use crate::ui::{Toast, ToastKind};
+use crate::ui::ToastKind;
 
-/// How long a toast stays visible.
-pub const TOAST_DURATION_MS: u64 = 4000;
 const TOAST_MAX_WIDTH: i32 = 380;
 const TOAST_H_PAD: i32 = SPACE_3;
 const TOAST_V_PAD: i32 = SPACE_2;
 
-/// Show a toast, replacing any previous one (only the latest message is shown).
-pub fn show_toast(ctx: &mut PaintContext, text: &str, kind: ToastKind) {
-    ctx.toast = Some(Toast {
-        text: text.to_string(),
-        kind,
-        shown_at: std::time::Instant::now(),
-        duration_ms: TOAST_DURATION_MS,
-    });
-}
-
 /// Draw the toast popup in the top-right corner, if one is active.
 pub fn draw_toast(hdc: HDC, ctx: &PaintContext, scale: f32) {
-    let toast = match &ctx.toast {
+    let toast = match &ctx.app.toast {
         Some(t) => t,
         None => return,
     };
@@ -69,7 +57,7 @@ pub fn draw_toast(hdc: HDC, ctx: &PaintContext, scale: f32) {
         let text_width_used = rect.right.min(text_w).max(40);
         let toast_w = text_width_used + 2 * h_pad;
         let toast_h = rect.bottom.max(line_h) + 2 * v_pad;
-        let toast_right = ctx.width - margin;
+        let toast_right = ctx.app.client_width - margin;
         let toast_left = toast_right - toast_w;
         let toast_top = margin;
         let toast_bottom = toast_top + toast_h;

@@ -31,24 +31,24 @@ pub enum SidebarEntry {
 
 impl AppState {
     pub fn clear_hover(&mut self) {
-        self.hover_sidebar_item = None;
-        self.hover_new_chat = false;
-        self.hover_new_project = false;
-        self.hover_project = None;
-        self.hover_project_menu = None;
-        self.hover_settings_btn = false;
-        self.hover_settings_close = false;
-        self.hover_reconnect = false;
-        self.hover_thinking_toggle = None;
-        self.hover_settings_toggle = None;
-        self.hover_scrollbar = false;
-        self.hover_sidebar_scrollbar = false;
-        self.hover_send_btn = false;
-        self.hover_session_header = false;
-        self.hover_session_archive = None;
-        self.hover_session_delete = None;
-        self.hover_link = None;
-        self.hover_code_copy = None;
+        self.hover.sidebar_item = None;
+        self.hover.new_chat = false;
+        self.hover.new_project = false;
+        self.hover.project = None;
+        self.hover.project_menu = None;
+        self.hover.settings_btn = false;
+        self.hover.settings_close = false;
+        self.hover.reconnect = false;
+        self.hover.thinking_toggle = None;
+        self.hover.settings_toggle = None;
+        self.hover.scrollbar = false;
+        self.hover.sidebar_scrollbar = false;
+        self.hover.send_btn = false;
+        self.hover.session_header = false;
+        self.hover.session_archive = None;
+        self.hover.session_delete = None;
+        self.hover.link = None;
+        self.hover.code_copy = None;
     }
 
     pub fn cycle_focus(&mut self, shift: bool) {
@@ -602,7 +602,7 @@ impl AppState {
                 break;
             }
         }
-        self.hover_link = found_link;
+        self.hover.link = found_link;
 
         let mut found_code = None;
         for (idx, (left, top, right, bottom, _)) in
@@ -613,7 +613,7 @@ impl AppState {
                 break;
             }
         }
-        self.hover_code_copy = found_code;
+        self.hover.code_copy = found_code;
     }
 
     /// Handle a double-click. Returns true if handled.
@@ -684,22 +684,22 @@ impl AppState {
         let header_h = (SIDEBAR_HEADER_HEIGHT as f32 * scale) as i32;
         let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
 
-        self.hover_sidebar_item = None;
-        self.hover_new_chat = false;
-        self.hover_new_project = false;
-        self.hover_project = None;
-        self.hover_project_menu = None;
-        self.hover_settings_btn = false;
-        self.hover_settings_close = false;
-        self.hover_reconnect = false;
-        self.hover_thinking_toggle = None;
-        self.hover_settings_toggle = None;
-        self.hover_scrollbar = false;
-        self.hover_sidebar_scrollbar = false;
-        self.hover_send_btn = false;
-        self.hover_session_header = false;
-        self.hover_session_archive = None;
-        self.hover_session_delete = None;
+        self.hover.sidebar_item = None;
+        self.hover.new_chat = false;
+        self.hover.new_project = false;
+        self.hover.project = None;
+        self.hover.project_menu = None;
+        self.hover.settings_btn = false;
+        self.hover.settings_close = false;
+        self.hover.reconnect = false;
+        self.hover.thinking_toggle = None;
+        self.hover.settings_toggle = None;
+        self.hover.scrollbar = false;
+        self.hover.sidebar_scrollbar = false;
+        self.hover.send_btn = false;
+        self.hover.session_header = false;
+        self.hover.session_archive = None;
+        self.hover.session_delete = None;
 
         // Settings panel hover
         if self.show_settings {
@@ -710,11 +710,11 @@ impl AppState {
                 && y >= spad
                 && y <= spad + close_size
             {
-                self.hover_settings_close = true;
+                self.hover.settings_close = true;
                 return;
             }
             if let Some(idx) = self.settings_toggle_at(x, y) {
-                self.hover_settings_toggle = Some(idx);
+                self.hover.settings_toggle = Some(idx);
                 return;
             }
             let reconnect_y = self.reconnect_button_y();
@@ -725,7 +725,7 @@ impl AppState {
                 && y >= reconnect_y
                 && y <= reconnect_y + btn_h
             {
-                self.hover_reconnect = true;
+                self.hover.reconnect = true;
                 return;
             }
         }
@@ -735,7 +735,7 @@ impl AppState {
             let btn_top = pad;
             let btn_bottom = btn_top + header_h - pad * 2;
             if x >= pad && x <= sidebar_w - pad && y >= btn_top && y <= btn_bottom {
-                self.hover_new_chat = true;
+                self.hover.new_chat = true;
                 return;
             }
 
@@ -751,7 +751,7 @@ impl AppState {
                 let adj_top = top - sidebar_scroll;
                 let adj_bottom = bottom - sidebar_scroll;
                 if y >= adj_top && y <= adj_bottom && x >= pad && x <= sidebar_w - pad {
-                    self.hover_new_project = true;
+                    self.hover.new_project = true;
                     return;
                 }
             }
@@ -760,7 +760,7 @@ impl AppState {
                 let sb_w = (4.0 * scale).max(3.0) as i32;
                 if x >= sidebar_w - sb_w - 1 && x <= sidebar_w && y >= list_top && y <= list_bottom
                 {
-                    self.hover_sidebar_scrollbar = true;
+                    self.hover.sidebar_scrollbar = true;
                     return;
                 }
             }
@@ -790,12 +790,12 @@ impl AppState {
                             let menu_right = sidebar_w - pad - (SPACE_1 as f32 * scale) as i32;
                             let menu_left = menu_right - menu_btn_size;
                             if x >= menu_left && x <= menu_right {
-                                self.hover_project_menu = Some(project_idx);
-                                self.hover_project = Some(project_idx);
+                                self.hover.project_menu = Some(project_idx);
+                                self.hover.project = Some(project_idx);
                                 return;
                             }
                         }
-                        self.hover_project = Some(project_idx);
+                        self.hover.project = Some(project_idx);
                         return;
                     }
                     SidebarEntry::SessionItem {
@@ -827,8 +827,8 @@ impl AppState {
                             archive_rect.2,
                             archive_rect.3,
                         ) {
-                            self.hover_session_archive = Some(session_idx);
-                            self.hover_sidebar_item = Some(session_idx);
+                            self.hover.session_archive = Some(session_idx);
+                            self.hover.sidebar_item = Some(session_idx);
                             return;
                         }
                         if point_in_rect(
@@ -839,14 +839,14 @@ impl AppState {
                             delete_rect.2,
                             delete_rect.3,
                         ) {
-                            self.hover_session_delete = Some(session_idx);
-                            self.hover_sidebar_item = Some(session_idx);
+                            self.hover.session_delete = Some(session_idx);
+                            self.hover.sidebar_item = Some(session_idx);
                             return;
                         }
 
                         // Session item hover
                         if y >= adj_top && y <= adj_bottom {
-                            self.hover_sidebar_item = Some(session_idx);
+                            self.hover.sidebar_item = Some(session_idx);
                             return;
                         }
                     }
@@ -859,7 +859,7 @@ impl AppState {
             let settings_btn_bottom = self.client_height - pad / 2;
             if x >= pad && x <= sidebar_w - pad && y >= settings_btn_top && y <= settings_btn_bottom
             {
-                self.hover_settings_btn = true;
+                self.hover.settings_btn = true;
             }
         } else {
             // Send/Stop button hover
@@ -873,7 +873,7 @@ impl AppState {
                     let idx = self.active_session.min(self.sessions.len() - 1);
                     let chat = &self.sessions[idx].chat;
                     if chat.is_waiting_for_agent || !chat.input_buffer.trim().is_empty() {
-                        self.hover_send_btn = true;
+                        self.hover.send_btn = true;
                         return;
                     }
                 }
@@ -882,7 +882,7 @@ impl AppState {
             // Session header hover
             let (sh_left, sh_top, sh_right, sh_bottom) = self.session_header_rect();
             if x >= sh_left && x <= sh_right && y >= sh_top && y <= sh_bottom {
-                self.hover_session_header = true;
+                self.hover.session_header = true;
                 return;
             }
 
@@ -901,7 +901,7 @@ impl AppState {
                     && y >= viewport_top
                     && y <= viewport_bottom
                 {
-                    self.hover_scrollbar = true;
+                    self.hover.scrollbar = true;
                     return;
                 }
             }
@@ -950,7 +950,7 @@ impl AppState {
                             && y >= toggle_top
                             && y <= toggle_bottom
                         {
-                            self.hover_thinking_toggle = Some(msg_idx);
+                            self.hover.thinking_toggle = Some(msg_idx);
                             return;
                         }
                     }

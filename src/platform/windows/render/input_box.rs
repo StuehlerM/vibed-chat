@@ -307,22 +307,16 @@ pub fn draw_input_box(
         let max_scroll = (total_wrapped - visible_lines).max(0);
 
         // Adjust scroll offset to keep cursor visible
-        let (cursor_raw_line, cursor_col_bytes) = chat.cursor_line_col();
         let mut cursor_wrapped_idx = 0usize;
         for (i, wl) in wrapped_lines.iter().enumerate() {
-            if wl.raw_line_idx == cursor_raw_line {
-                let seg_end = wl.byte_offset + wl.text.len();
-                let cursor_byte = chat.line_start_pos(chat.cursor_pos) + cursor_col_bytes;
-                if cursor_byte >= wl.byte_offset && cursor_byte <= seg_end {
-                    cursor_wrapped_idx = i;
-                    break;
-                }
-                if i + 1 >= wrapped_lines.len()
-                    || wrapped_lines[i + 1].raw_line_idx != cursor_raw_line
-                {
-                    cursor_wrapped_idx = i;
-                    break;
-                }
+            let seg_end = wl.byte_offset + wl.text.len();
+            if chat.cursor_pos >= wl.byte_offset && chat.cursor_pos <= seg_end {
+                cursor_wrapped_idx = i;
+                break;
+            }
+            if i + 1 >= wrapped_lines.len() || wrapped_lines[i + 1].byte_offset > chat.cursor_pos {
+                cursor_wrapped_idx = i;
+                break;
             }
         }
 
@@ -596,8 +590,11 @@ pub fn draw_hint_row(
         let old_font = SelectObject(hdc, ctx.fonts.hint as HGDIOBJ);
         SetTextColor(hdc, INPUT_HINT_TEXT);
 
-        let idx = ctx.active_session.min(ctx.sessions.len().saturating_sub(1));
-        let is_waiting = ctx.sessions[idx].chat.is_waiting_for_agent;
+        let idx = ctx
+            .app
+            .active_session
+            .min(ctx.app.sessions.len().saturating_sub(1));
+        let is_waiting = ctx.app.sessions[idx].chat.is_waiting_for_agent;
 
         let hint_text = if is_waiting {
             "Esc to cancel"

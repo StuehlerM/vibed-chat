@@ -151,10 +151,14 @@ pub unsafe extern "system" fn wnd_proc(
                     state.fonts = Some(FontsHandle::new(fonts));
                 }
 
-                let fonts_ref = match state.fonts.as_ref().and_then(|f| f.downcast_ref::<Fonts>()) {
-                    Some(f) => f,
-                    None => return 0,
-                };
+                let fonts_ptr: *const Fonts =
+                    match state.fonts.as_ref().and_then(|f| f.downcast_ref::<Fonts>()) {
+                        Some(f) => f as *const Fonts,
+                        None => return 0,
+                    };
+                // SAFETY: fonts outlive the paint pass; the AppState borrow for
+                // fonts is released here, and the paint pass only reads fonts.
+                let fonts_ref = unsafe { &*fonts_ptr };
 
                 let mut ps = PAINTSTRUCT {
                     hdc: std::ptr::null_mut(),
@@ -172,45 +176,8 @@ pub unsafe extern "system" fn wnd_proc(
                 BeginPaint(hwnd, &mut ps);
 
                 let mut ctx = PaintContext {
-                    toast: state.toast.clone(),
-                    projects: &state.projects,
-                    sessions: &mut state.sessions,
-                    active_session: state.active_session,
-                    show_settings: state.show_settings,
-                    settings: &state.settings,
+                    app: state,
                     fonts: fonts_ref,
-                    dpi: state.dpi,
-                    width: state.client_width,
-                    height: state.client_height,
-                    cursor_visible: state.cursor_visible,
-                    acp_connected: state.acp_connected,
-                    hover_sidebar_item: state.hover_sidebar_item,
-                    hover_new_chat: state.hover_new_chat,
-                    hover_new_project: state.hover_new_project,
-                    hover_project: state.hover_project,
-                    hover_project_menu: state.hover_project_menu,
-                    hover_settings_btn: state.hover_settings_btn,
-                    hover_settings_close: state.hover_settings_close,
-                    hover_reconnect: state.hover_reconnect,
-                    hover_thinking_toggle: state.hover_thinking_toggle,
-                    hover_settings_toggle: state.hover_settings_toggle,
-                    pressed_element: state.pressed_element,
-                    focused_element: state.focused_element,
-                    sidebar_scroll_offset: state.sidebar_scroll_offset,
-                    hover_scrollbar: state.hover_scrollbar,
-                    hover_sidebar_scrollbar: state.hover_sidebar_scrollbar,
-                    streaming_dots: state.streaming_dots,
-                    hover_send_btn: state.hover_send_btn,
-                    hover_session_header: state.hover_session_header,
-                    hover_session_archive: state.hover_session_archive,
-                    hover_session_delete: state.hover_session_delete,
-                    rename_target: state.rename_target,
-                    rename_buffer: &state.rename_buffer,
-                    rename_cursor: state.rename_cursor,
-                    hover_link: state.hover_link,
-                    link_rects: &state.link_rects,
-                    code_block_rects: &state.code_block_rects,
-                    hover_code_copy: state.hover_code_copy,
                 };
                 render::paint(hwnd, &mut ctx);
 
@@ -534,40 +501,40 @@ pub unsafe extern "system" fn wnd_proc(
                 };
                 TrackMouseEvent(&mut tme);
 
-                let old_hover_item = state.hover_sidebar_item;
-                let old_hover_new = state.hover_new_chat;
-                let old_hover_new_proj = state.hover_new_project;
-                let old_hover_proj = state.hover_project;
-                let old_hover_settings = state.hover_settings_btn;
-                let old_hover_close = state.hover_settings_close;
-                let old_hover_thinking = state.hover_thinking_toggle;
-                let old_hover_toggle = state.hover_settings_toggle;
-                let old_hover_sb = state.hover_scrollbar;
-                let old_hover_sb_sidebar = state.hover_sidebar_scrollbar;
-                let old_hover_send = state.hover_send_btn;
-                let old_hover_sh = state.hover_session_header;
-                let old_hover_arch = state.hover_session_archive;
-                let old_hover_del = state.hover_session_delete;
-                let old_hover_link = state.hover_link;
-                let old_hover_code = state.hover_code_copy;
+                let old_hover_item = state.hover.sidebar_item;
+                let old_hover_new = state.hover.new_chat;
+                let old_hover_new_proj = state.hover.new_project;
+                let old_hover_proj = state.hover.project;
+                let old_hover_settings = state.hover.settings_btn;
+                let old_hover_close = state.hover.settings_close;
+                let old_hover_thinking = state.hover.thinking_toggle;
+                let old_hover_toggle = state.hover.settings_toggle;
+                let old_hover_sb = state.hover.scrollbar;
+                let old_hover_sb_sidebar = state.hover.sidebar_scrollbar;
+                let old_hover_send = state.hover.send_btn;
+                let old_hover_sh = state.hover.session_header;
+                let old_hover_arch = state.hover.session_archive;
+                let old_hover_del = state.hover.session_delete;
+                let old_hover_link = state.hover.link;
+                let old_hover_code = state.hover.code_copy;
                 state.update_hover(x, y);
                 state.update_link_hover(x, y);
-                if state.hover_sidebar_item != old_hover_item
-                    || state.hover_new_chat != old_hover_new
-                    || state.hover_new_project != old_hover_new_proj
-                    || state.hover_project != old_hover_proj
-                    || state.hover_settings_btn != old_hover_settings
-                    || state.hover_settings_close != old_hover_close
-                    || state.hover_thinking_toggle != old_hover_thinking
-                    || state.hover_settings_toggle != old_hover_toggle
-                    || state.hover_scrollbar != old_hover_sb
-                    || state.hover_sidebar_scrollbar != old_hover_sb_sidebar
-                    || state.hover_send_btn != old_hover_send
-                    || state.hover_session_header != old_hover_sh
-                    || state.hover_session_archive != old_hover_arch
-                    || state.hover_session_delete != old_hover_del
-                    || state.hover_link != old_hover_link
-                    || state.hover_code_copy != old_hover_code
+                if state.hover.sidebar_item != old_hover_item
+                    || state.hover.new_chat != old_hover_new
+                    || state.hover.new_project != old_hover_new_proj
+                    || state.hover.project != old_hover_proj
+                    || state.hover.settings_btn != old_hover_settings
+                    || state.hover.settings_close != old_hover_close
+                    || state.hover.thinking_toggle != old_hover_thinking
+                    || state.hover.settings_toggle != old_hover_toggle
+                    || state.hover.scrollbar != old_hover_sb
+                    || state.hover.sidebar_scrollbar != old_hover_sb_sidebar
+                    || state.hover.send_btn != old_hover_send
+                    || state.hover.session_header != old_hover_sh
+                    || state.hover.session_archive != old_hover_arch
+                    || state.hover.session_delete != old_hover_del
+                    || state.hover.link != old_hover_link
+                    || state.hover.code_copy != old_hover_code
                 {
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                 }
@@ -641,26 +608,26 @@ pub unsafe extern "system" fn wnd_proc(
                 let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
 
                 if x < sidebar_w
-                    && (state.hover_new_chat
-                        || state.hover_new_project
-                        || state.hover_project.is_some()
-                        || state.hover_sidebar_item.is_some()
-                        || state.hover_settings_btn
-                        || state.hover_sidebar_scrollbar
-                        || state.hover_session_archive.is_some()
-                        || state.hover_session_delete.is_some())
+                    && (state.hover.new_chat
+                        || state.hover.new_project
+                        || state.hover.project.is_some()
+                        || state.hover.sidebar_item.is_some()
+                        || state.hover.settings_btn
+                        || state.hover.sidebar_scrollbar
+                        || state.hover.session_archive.is_some()
+                        || state.hover.session_delete.is_some())
                 {
                     let hcursor = LoadCursorW(std::ptr::null_mut(), IDC_HAND);
                     SetCursor(hcursor);
                     return 1;
                 }
 
-                if state.hover_thinking_toggle.is_some()
-                    || state.hover_settings_toggle.is_some()
-                    || state.hover_scrollbar
-                    || state.hover_send_btn
-                    || state.hover_link.is_some()
-                    || state.hover_code_copy.is_some()
+                if state.hover.thinking_toggle.is_some()
+                    || state.hover.settings_toggle.is_some()
+                    || state.hover.scrollbar
+                    || state.hover.send_btn
+                    || state.hover.link.is_some()
+                    || state.hover.code_copy.is_some()
                 {
                     let hcursor = LoadCursorW(std::ptr::null_mut(), IDC_HAND);
                     SetCursor(hcursor);

@@ -34,6 +34,29 @@ pub const TOAST_DURATION_MS: u64 = 4000;
 /// A clickable rectangle with associated text (URL for links, code for copy buttons).
 pub type ClickableRect = (i32, i32, i32, i32, String);
 
+/// All transient hover state (which element the mouse is over).
+#[derive(Default)]
+pub struct HoverState {
+    pub sidebar_item: Option<usize>,
+    pub new_chat: bool,
+    pub new_project: bool,
+    pub project: Option<usize>,
+    pub project_menu: Option<usize>,
+    pub settings_btn: bool,
+    pub settings_close: bool,
+    pub reconnect: bool,
+    pub thinking_toggle: Option<usize>,
+    pub settings_toggle: Option<usize>,
+    pub send_btn: bool,
+    pub session_header: bool,
+    pub session_archive: Option<usize>,
+    pub session_delete: Option<usize>,
+    pub scrollbar: bool,
+    pub sidebar_scrollbar: bool,
+    pub link: Option<usize>,
+    pub code_copy: Option<usize>,
+}
+
 /// Shared application state stored in the window's user data.
 pub struct AppState {
     pub projects: Vec<Project>,
@@ -51,25 +74,10 @@ pub struct AppState {
     pub last_cursor_blink: std::time::Instant,
     pub cursor_visible: bool,
     pub caret_blink_ms: u32,
-    pub hover_sidebar_item: Option<usize>,
-    pub hover_new_chat: bool,
-    pub hover_new_project: bool,
-    pub hover_project: Option<usize>,
-    pub hover_project_menu: Option<usize>,
-    pub hover_settings_btn: bool,
-    pub hover_settings_close: bool,
-    pub hover_reconnect: bool,
-    pub hover_thinking_toggle: Option<usize>,
-    pub hover_settings_toggle: Option<usize>,
-    pub hover_send_btn: bool,
-    pub hover_session_header: bool,
-    pub hover_session_archive: Option<usize>,
-    pub hover_session_delete: Option<usize>,
+    pub hover: HoverState,
     pub pressed_element: Option<crate::ui::PressedElement>,
     pub focused_element: Option<FocusedElement>,
     pub sidebar_scroll_offset: i32,
-    pub hover_sidebar_scrollbar: bool,
-    pub hover_scrollbar: bool,
     pub streaming_dots: u8,
     pub pending_new_session: bool,
     pub pending_working_dir: String,
@@ -81,9 +89,7 @@ pub struct AppState {
     pub rename_buffer: String,
     pub rename_cursor: usize,
     pub link_rects: std::cell::RefCell<Vec<ClickableRect>>,
-    pub hover_link: Option<usize>,
     pub code_block_rects: std::cell::RefCell<Vec<ClickableRect>>,
-    pub hover_code_copy: Option<usize>,
     pub saved_window: Option<crate::persistence::WindowState>,
     pub reconnect_attempts: u32,
     pub last_reconnect_attempt: Option<std::time::Instant>,
@@ -120,25 +126,10 @@ impl AppState {
             } else {
                 caret_blink_ms
             },
-            hover_sidebar_item: None,
-            hover_new_chat: false,
-            hover_new_project: false,
-            hover_project: None,
-            hover_project_menu: None,
-            hover_settings_btn: false,
-            hover_settings_close: false,
-            hover_reconnect: false,
-            hover_thinking_toggle: None,
-            hover_settings_toggle: None,
-            hover_send_btn: false,
-            hover_session_header: false,
-            hover_session_archive: None,
-            hover_session_delete: None,
+            hover: HoverState::default(),
             pressed_element: None,
             focused_element: Some(FocusedElement::Input),
             sidebar_scroll_offset: 0,
-            hover_sidebar_scrollbar: false,
-            hover_scrollbar: false,
             streaming_dots: 0,
             pending_new_session: false,
             pending_working_dir: String::new(),
@@ -150,9 +141,7 @@ impl AppState {
             rename_buffer: String::new(),
             rename_cursor: 0,
             link_rects: std::cell::RefCell::new(Vec::new()),
-            hover_link: None,
             code_block_rects: std::cell::RefCell::new(Vec::new()),
-            hover_code_copy: None,
             saved_window: None,
             reconnect_attempts: 0,
             last_reconnect_attempt: None,
@@ -694,34 +683,43 @@ impl AppState {
     // ── Persistence ────────────────────────────────────────────────────────
 
     /// Save the state index (settings, projects, session metadata) to disk.
-    pub fn save_index(&self) {
+    /// Failures surface as a toast — a silent save loss must never look like success.
+    pub fn save_index(&mut self) {
         let window = self.saved_window_state();
-        let _ = crate::persistence::save_index(
+        if let Err(e) = crate::persistence::save_index(
             &self.config_dir,
             &self.settings,
             &self.projects,
             &self.sessions,
             window.as_ref(),
-        );
+        ) {
+            self.show_toast(&format!("Save failed: {}", e), ToastKind::Error);
+        }
     }
 
     /// Save a single session's message history to disk.
-    pub fn save_session(&self, idx: usize) {
-        if let Some(session) = self.sessions.get(idx) {
-            let _ = crate::persistence::save_session(&self.config_dir, session);
+    pub fn save_session(&mut self, idx: usize) {
+        let result = self
+            .sessions
+            .get(idx)
+            .map(|session| crate::persistence::save_session(&self.config_dir, session));
+        if let Some(Err(e)) = result {
+            self.show_toast(&format!("Save failed: {}", e), ToastKind::Error);
         }
     }
 
     /// Save the state index and all session files to disk.
-    pub fn save_all(&self) {
+    pub fn save_all(&mut self) {
         let window = self.saved_window_state();
-        let _ = crate::persistence::save_all(
+        if let Err(e) = crate::persistence::save_all(
             &self.config_dir,
             &self.settings,
             &self.projects,
             &self.sessions,
             window.as_ref(),
-        );
+        ) {
+            self.show_toast(&format!("Save failed: {}", e), ToastKind::Error);
+        }
     }
 
     /// Load persisted state from disk. Returns true if state was loaded.
@@ -731,7 +729,17 @@ impl AppState {
             self.projects = loaded.projects;
             self.sessions = loaded.sessions;
             self.active_session = 0;
-            self.session_counter = self.sessions.len();
+            self.session_counter = self
+                .sessions
+                .iter()
+                .map(|s| {
+                    s.name
+                        .strip_prefix("Chat ")
+                        .and_then(|n| n.parse::<usize>().ok())
+                        .unwrap_or(0)
+                })
+                .max()
+                .unwrap_or(0);
             self.rebuild_project_indices();
             if let Some(w) = loaded.window {
                 self.saved_window = Some(w);

@@ -116,6 +116,21 @@ pub fn parse(text: &str) -> Vec<StyledRun> {
     runs
 }
 
+/// If a URL scheme (http:// or https://) starts at `i`, return its length.
+fn url_scheme_len(chars: &[char], i: usize) -> Option<usize> {
+    if chars.get(i) != Some(&'h') {
+        return None;
+    }
+    let rest = &chars[i..];
+    for (scheme, len) in [("https://", 8usize), ("http://", 7)] {
+        let matches = rest.len() >= len && scheme.chars().zip(rest.iter()).all(|(a, b)| a == *b);
+        if matches {
+            return Some(len);
+        }
+    }
+    None
+}
+
 fn parse_inline(text: &str) -> Vec<StyledRun> {
     let mut runs = Vec::new();
     let chars: Vec<char> = text.chars().collect();
@@ -223,25 +238,9 @@ fn parse_inline(text: &str) -> Vec<StyledRun> {
             continue;
         }
 
-        // URL detection (http:// or https://)
-        if (chars[i] == 'h') && i + 7 <= chars.len() && {
-            let s: String = chars[i..].iter().take(7).collect();
-            s == "http://"
-                || (i + 8 <= chars.len() && {
-                    let s8: String = chars[i..].iter().take(8).collect();
-                    s8 == "https://"
-                })
-        } {
-            let prefix_len = if i + 8 <= chars.len() {
-                let s8: String = chars[i..].iter().take(8).collect();
-                if s8 == "https://" {
-                    8
-                } else {
-                    7
-                }
-            } else {
-                7
-            };
+        // URL detection (http:// or https://) - zero-alloc prefix checks
+        let url_prefix_len = url_scheme_len(&chars, i);
+        if let Some(prefix_len) = url_prefix_len {
             let url_end = find_url_end(&chars, i + prefix_len);
             if url_end > i + prefix_len {
                 flush!();

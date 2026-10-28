@@ -10,13 +10,13 @@ use crate::platform::windows::paint::PaintContext;
 use crate::theme::*;
 
 pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
-    if ctx.sessions.is_empty() {
+    if ctx.app.sessions.is_empty() {
         return;
     }
     let chat_left = ctx.chat_left();
     let chat_right = ctx.chat_right();
     let chat_w = ctx.chat_width();
-    let height = ctx.height;
+    let height = ctx.app.client_height;
 
     unsafe {
         let old_font = SelectObject(hdc, ctx.fonts.normal as HGDIOBJ);
@@ -53,16 +53,19 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         let content_width = chat_w - 2 * msg_padding;
 
         // Compute dynamic input height based on content
-        let idx = ctx.active_session.min(ctx.sessions.len().saturating_sub(1));
+        let idx = ctx
+            .app
+            .active_session
+            .min(ctx.app.sessions.len().saturating_sub(1));
         let logical_input_h = compute_input_height(
             hdc,
             ctx.fonts,
-            &ctx.sessions[idx].chat,
+            &ctx.app.sessions[idx].chat,
             chat_w,
             line_height,
             scale,
         );
-        ctx.sessions[idx].chat.input_height = logical_input_h;
+        ctx.app.sessions[idx].chat.input_height = logical_input_h;
         let input_h = (logical_input_h as f32 * scale) as i32;
 
         let input_area_total_h = input_h + hint_row_h + input_margin;
@@ -78,8 +81,11 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
 
         // Recompute message layout
         {
-            let idx = ctx.active_session.min(ctx.sessions.len().saturating_sub(1));
-            let chat = &mut ctx.sessions[idx].chat;
+            let idx = ctx
+                .app
+                .active_session
+                .min(ctx.app.sessions.len().saturating_sub(1));
+            let chat = &mut ctx.app.sessions[idx].chat;
             let viewport_h = messages_area_bottom - messages_area_top;
             compute_message_heights(hdc, ctx.fonts, chat, content_width, line_height, scale);
             if chat.is_at_bottom {
@@ -97,7 +103,7 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             );
             SelectClipRgn(hdc, clip_rgn);
 
-            if ctx.sessions[idx].chat.messages.is_empty() {
+            if ctx.app.sessions[idx].chat.messages.is_empty() {
                 draw_empty_state(
                     hdc,
                     ctx,
@@ -138,8 +144,8 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         // Draw input box with send button
         draw_input_box(
             hdc,
-            ctx.sessions,
-            ctx.active_session,
+            &mut ctx.app.sessions,
+            ctx.app.active_session,
             ctx.fonts,
             chat_left,
             chat_right,
@@ -147,10 +153,10 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             input_h,
             line_height,
             scale,
-            ctx.cursor_visible,
-            ctx.focused_element,
-            ctx.hover_send_btn,
-            ctx.pressed_element,
+            ctx.app.cursor_visible,
+            ctx.app.focused_element,
+            ctx.app.hover.send_btn,
+            ctx.app.pressed_element,
         );
 
         // Draw hint row below input

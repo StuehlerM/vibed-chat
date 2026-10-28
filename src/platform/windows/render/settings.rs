@@ -8,8 +8,8 @@ use crate::ui::{FocusedElement, PressedElement};
 
 pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
     let panel_w = ctx.settings_w();
-    let width = ctx.width;
-    let height = ctx.height;
+    let width = ctx.app.client_width;
+    let height = ctx.app.client_height;
     let panel_left = width - panel_w;
 
     unsafe {
@@ -66,9 +66,9 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             right: width - pad,
             bottom: pad + close_size,
         };
-        let close_color = if ctx.pressed_element == Some(PressedElement::SettingsClose) {
+        let close_color = if ctx.app.pressed_element == Some(PressedElement::SettingsClose) {
             SETTINGS_CLOSE_PRESSED
-        } else if ctx.hover_settings_close {
+        } else if ctx.app.hover.settings_close {
             SETTINGS_CLOSE_HOVER
         } else {
             SETTINGS_CLOSE_BG
@@ -89,7 +89,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
         );
 
         // Focus ring for close button
-        if ctx.focused_element == Some(FocusedElement::SettingsClose) {
+        if ctx.app.focused_element == Some(FocusedElement::SettingsClose) {
             let focus_pen = CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);
             let old_fp = SelectObject(hdc, focus_pen as HGDIOBJ);
             let old_fb = SelectObject(hdc, GetStockObject(NULL_BRUSH as i32) as HGDIOBJ);
@@ -156,7 +156,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             &mut y,
             scale,
             "Dark theme",
-            ctx.settings.dark_theme,
+            ctx.app.settings.dark_theme,
             0,
         );
         draw_settings_switch(
@@ -167,7 +167,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             &mut y,
             scale,
             "Auto-scroll",
-            ctx.settings.auto_scroll,
+            ctx.app.settings.auto_scroll,
             1,
         );
         y += (SPACE_3 as f32 * scale) as i32;
@@ -190,7 +190,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             &mut y,
             scale,
             "Auto-approve",
-            ctx.settings.auto_approve,
+            ctx.app.settings.auto_approve,
             2,
         );
         y += (SPACE_3 as f32 * scale) as i32;
@@ -213,7 +213,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             &mut y,
             scale,
             "Show archived",
-            ctx.settings.show_archived,
+            ctx.app.settings.show_archived,
             3,
         );
         y += (SPACE_3 as f32 * scale) as i32;
@@ -228,12 +228,12 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             scale,
             "Connection",
         );
-        let conn_status = if ctx.acp_connected {
+        let conn_status = if ctx.app.acp_connected {
             "Connected"
         } else {
             "Disconnected"
         };
-        let conn_color = if ctx.acp_connected {
+        let conn_color = if ctx.app.acp_connected {
             SUCCESS
         } else {
             ERROR_COLOR
@@ -249,11 +249,11 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             conn_status,
             conn_color,
         );
-        let archived = ctx.sessions.iter().filter(|s| s.archived).count();
+        let archived = ctx.app.sessions.iter().filter(|s| s.archived).count();
         let sessions_label = if archived > 0 {
-            format!("{} ({} archived)", ctx.sessions.len(), archived)
+            format!("{} ({} archived)", ctx.app.sessions.len(), archived)
         } else {
-            format!("{}", ctx.sessions.len())
+            format!("{}", ctx.app.sessions.len())
         };
         draw_settings_info(
             hdc,
@@ -310,9 +310,9 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             right: width - pad,
             bottom: y + btn_h,
         };
-        let btn_color = if ctx.pressed_element == Some(PressedElement::Reconnect) {
+        let btn_color = if ctx.app.pressed_element == Some(PressedElement::Reconnect) {
             NEW_CHAT_BTN_PRESSED
-        } else if ctx.hover_reconnect {
+        } else if ctx.app.hover.reconnect {
             NEW_CHAT_BTN_HOVER
         } else {
             NEW_CHAT_BTN_BG
@@ -321,7 +321,9 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
         let gfx = crate::platform::windows::gfx::Gfx::new(hdc);
         match gfx {
             Some(ref g) => {
-                if ctx.hover_reconnect && ctx.pressed_element != Some(PressedElement::Reconnect) {
+                if ctx.app.hover.reconnect
+                    && ctx.app.pressed_element != Some(PressedElement::Reconnect)
+                {
                     g.button_with_ring(btn_rect, btn_radius, btn_color, btn_color);
                 } else {
                     g.fill_round_rect(btn_rect, btn_radius, btn_color);
@@ -349,7 +351,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
         }
 
         // Focus ring for reconnect button
-        if ctx.focused_element == Some(FocusedElement::Reconnect) {
+        if ctx.app.focused_element == Some(FocusedElement::Reconnect) {
             let focus_pen = CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);
             let old_fp = SelectObject(hdc, focus_pen as HGDIOBJ);
             let old_fb = SelectObject(hdc, GetStockObject(NULL_BRUSH as i32) as HGDIOBJ);
@@ -428,11 +430,13 @@ fn draw_settings_switch(
 ) {
     unsafe {
         let row_h = (SPACE_5 as f32 * scale) as i32;
-        let is_pressed = ctx.pressed_element == Some(PressedElement::SettingsToggle(toggle_idx));
-        let is_focused = ctx.focused_element == Some(FocusedElement::SettingsToggle(toggle_idx));
+        let is_pressed =
+            ctx.app.pressed_element == Some(PressedElement::SettingsToggle(toggle_idx));
+        let is_focused =
+            ctx.app.focused_element == Some(FocusedElement::SettingsToggle(toggle_idx));
 
         // Row background on hover/press
-        if ctx.hover_settings_toggle == Some(toggle_idx) || is_pressed {
+        if ctx.app.hover.settings_toggle == Some(toggle_idx) || is_pressed {
             let hover_rect = RECT {
                 left: left - (SPACE_1 as f32 * scale) as i32,
                 top: *y,

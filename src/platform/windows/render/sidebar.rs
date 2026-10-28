@@ -11,7 +11,7 @@ use crate::ui::{FocusedElement, PressedElement, RenameTarget};
 
 pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
     let sidebar_w = ctx.sidebar_w();
-    let height = ctx.height;
+    let height = ctx.app.client_height;
 
     unsafe {
         // Sidebar background
@@ -55,9 +55,9 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             bottom: btn_bottom,
         };
 
-        let btn_color = if ctx.pressed_element == Some(PressedElement::NewChat) {
+        let btn_color = if ctx.app.pressed_element == Some(PressedElement::NewChat) {
             NEW_CHAT_BTN_PRESSED
-        } else if ctx.hover_new_chat {
+        } else if ctx.app.hover.new_chat {
             NEW_CHAT_BTN_HOVER
         } else {
             NEW_CHAT_BTN_BG
@@ -66,7 +66,9 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         let gfx = crate::platform::windows::gfx::Gfx::new(hdc);
         match gfx {
             Some(ref g) => {
-                if ctx.hover_new_chat && ctx.pressed_element != Some(PressedElement::NewChat) {
+                if ctx.app.hover.new_chat
+                    && ctx.app.pressed_element != Some(PressedElement::NewChat)
+                {
                     g.button_with_ring(btn_rect, radius, btn_color, btn_color);
                 } else {
                     g.fill_round_rect(btn_rect, radius, btn_color);
@@ -94,7 +96,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         }
 
         // Focus ring for New Chat button
-        if ctx.focused_element == Some(FocusedElement::NewChat) {
+        if ctx.app.focused_element == Some(FocusedElement::NewChat) {
             let focus_pen = CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);
             let old_fp = SelectObject(hdc, focus_pen as HGDIOBJ);
             let old_fb = SelectObject(hdc, GetStockObject(NULL_BRUSH as i32) as HGDIOBJ);
@@ -142,9 +144,9 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             right: sidebar_w - pad,
             bottom: new_proj_bottom,
         };
-        let new_proj_color = if ctx.pressed_element == Some(PressedElement::NewProject) {
+        let new_proj_color = if ctx.app.pressed_element == Some(PressedElement::NewProject) {
             NEW_PROJECT_BTN_PRESSED
-        } else if ctx.hover_new_project {
+        } else if ctx.app.hover.new_project {
             NEW_PROJECT_BTN_HOVER
         } else {
             NEW_PROJECT_BTN_BG
@@ -153,7 +155,8 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         let np_gfx = crate::platform::windows::gfx::Gfx::new(hdc);
         match np_gfx {
             Some(ref g) => {
-                if ctx.hover_new_project && ctx.pressed_element != Some(PressedElement::NewProject)
+                if ctx.app.hover.new_project
+                    && ctx.app.pressed_element != Some(PressedElement::NewProject)
                 {
                     g.button_with_ring(new_proj_rect, np_radius, new_proj_color, new_proj_color);
                 } else {
@@ -182,7 +185,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         }
 
         // Focus ring for New Project button
-        if ctx.focused_element == Some(FocusedElement::NewProject) {
+        if ctx.app.focused_element == Some(FocusedElement::NewProject) {
             let focus_pen = CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);
             let old_fp = SelectObject(hdc, focus_pen as HGDIOBJ);
             let old_fb = SelectObject(hdc, GetStockObject(NULL_BRUSH as i32) as HGDIOBJ);
@@ -232,31 +235,33 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         let menu_btn_left = menu_btn_right - menu_btn_size;
         let chevron_w = (PROJECT_CHEVRON_SIZE as f32 * scale) as i32;
 
-        let other_idx = ctx.projects.len();
+        let other_idx = ctx.app.projects.len();
 
         let mut grouped: Vec<(usize, bool, String, Vec<usize>)> = Vec::new();
-        for (pidx, project) in ctx.projects.iter().enumerate() {
+        for (pidx, project) in ctx.app.projects.iter().enumerate() {
             let visible: Vec<usize> = project
                 .session_indices
                 .iter()
                 .copied()
                 .filter(|&i| {
-                    ctx.sessions
+                    ctx.app
+                        .sessions
                         .get(i)
-                        .map(|s| ctx.settings.show_archived || !s.archived)
+                        .map(|s| ctx.app.settings.show_archived || !s.archived)
                         .unwrap_or(false)
                 })
                 .collect();
             grouped.push((pidx, project.expanded, project.name.clone(), visible));
         }
-        let show_archived = ctx.settings.show_archived;
+        let show_archived = ctx.app.settings.show_archived;
         let other_sessions: Vec<usize> = ctx
+            .app
             .sessions
             .iter()
             .enumerate()
             .filter(|(_, s)| {
                 (show_archived || !s.archived)
-                    && !ctx.projects.iter().any(|p| p.path == s.working_dir)
+                    && !ctx.app.projects.iter().any(|p| p.path == s.working_dir)
             })
             .map(|(i, _)| i)
             .collect();
@@ -279,7 +284,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
 
         let needs_scroll = total_list_height > avail_height;
         let max_sidebar_scroll = (total_list_height - avail_height).max(0);
-        let sidebar_scroll = ctx.sidebar_scroll_offset.min(max_sidebar_scroll).max(0);
+        let sidebar_scroll = ctx.app.sidebar_scroll_offset.min(max_sidebar_scroll).max(0);
 
         // Clip session list to its area
         let list_clip = RECT {
@@ -305,9 +310,10 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         {
             // ── Project header ──
             if y + proj_h > list_top - proj_h && y < list_bottom + proj_h {
-                let is_hover = ctx.hover_project == Some(pidx);
-                let is_pressed = ctx.pressed_element == Some(PressedElement::ProjectHeader(pidx));
-                let is_menu_hover = ctx.hover_project_menu == Some(pidx);
+                let is_hover = ctx.app.hover.project == Some(pidx);
+                let is_pressed =
+                    ctx.app.pressed_element == Some(PressedElement::ProjectHeader(pidx));
+                let is_menu_hover = ctx.app.hover.project_menu == Some(pidx);
                 let header_color = if is_pressed {
                     PROJECT_HEADER_HOVER_BG
                 } else if is_hover {
@@ -370,7 +376,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                         - (SPACE_2 as f32 * scale) as i32
                 };
 
-                if ctx.rename_target == Some(RenameTarget::Project(pidx)) {
+                if ctx.app.rename_target == Some(RenameTarget::Project(pidx)) {
                     let edit_bg = SURFACE_2;
                     let edit_rect = RECT {
                         left: name_left - (SPACE_1 as f32 * scale) as i32,
@@ -398,7 +404,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
 
                     let old_font = SelectObject(hdc, ctx.fonts.sidebar_medium as HGDIOBJ);
                     SetTextColor(hdc, TEXT_PRIMARY);
-                    let buf_wide = to_wide(ctx.rename_buffer);
+                    let buf_wide = to_wide(&ctx.app.rename_buffer);
                     let mut edit_text_rect = RECT {
                         left: edit_rect.left + (SPACE_1 as f32 * scale) as i32,
                         top: edit_rect.top,
@@ -414,9 +420,10 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     );
 
                     // Draw cursor
-                    if ctx.cursor_visible {
-                        let cursor_byte_pos = ctx.rename_cursor.min(ctx.rename_buffer.len());
-                        let before_cursor = &ctx.rename_buffer[..cursor_byte_pos];
+                    if ctx.app.cursor_visible {
+                        let cursor_byte_pos =
+                            ctx.app.rename_cursor.min(ctx.app.rename_buffer.len());
+                        let before_cursor = &ctx.app.rename_buffer[..cursor_byte_pos];
                         let before_wide = to_wide(before_cursor);
                         let mut cursor_sz = POINT { x: 0, y: 0 };
                         GetTextExtentPoint32W(
@@ -509,7 +516,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                 }
 
                 // Focus ring for project header
-                if ctx.focused_element == Some(FocusedElement::ProjectHeader(pidx)) {
+                if ctx.app.focused_element == Some(FocusedElement::ProjectHeader(pidx)) {
                     let focus_pen = CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);
                     let old_fp = SelectObject(hdc, focus_pen as HGDIOBJ);
                     let old_fb = SelectObject(hdc, GetStockObject(NULL_BRUSH as i32) as HGDIOBJ);
@@ -532,10 +539,11 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                         continue;
                     }
 
-                    let session = &ctx.sessions[i];
-                    let is_active = i == ctx.active_session;
-                    let is_hover = ctx.hover_sidebar_item == Some(i) && !is_active;
-                    let is_pressed = ctx.pressed_element == Some(PressedElement::SidebarItem(i));
+                    let session = &ctx.app.sessions[i];
+                    let is_active = i == ctx.app.active_session;
+                    let is_hover = ctx.app.hover.sidebar_item == Some(i) && !is_active;
+                    let is_pressed =
+                        ctx.app.pressed_element == Some(PressedElement::SidebarItem(i));
                     let is_archived = session.archived;
                     let is_last_in_group = item_idx_in_group == indices.len() - 1;
 
@@ -591,7 +599,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     }
 
                     // Focus ring for sidebar item
-                    if ctx.focused_element == Some(FocusedElement::SidebarItem(i)) {
+                    if ctx.app.focused_element == Some(FocusedElement::SidebarItem(i)) {
                         let focus_pen =
                             CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);
                         let old_fp = SelectObject(hdc, focus_pen as HGDIOBJ);
@@ -683,7 +691,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     };
 
                     // Inline rename: draw editable text field instead of static name
-                    if ctx.rename_target == Some(RenameTarget::Session(i)) {
+                    if ctx.app.rename_target == Some(RenameTarget::Session(i)) {
                         let edit_bg = SURFACE_2;
                         let edit_rect = RECT {
                             left: name_left - (SPACE_1 as f32 * scale) as i32,
@@ -712,7 +720,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
 
                         let old_font = SelectObject(hdc, ctx.fonts.sidebar_medium as HGDIOBJ);
                         SetTextColor(hdc, TEXT_PRIMARY);
-                        let buf_wide = to_wide(ctx.rename_buffer);
+                        let buf_wide = to_wide(&ctx.app.rename_buffer);
                         let mut edit_text_rect = RECT {
                             left: edit_rect.left + (SPACE_1 as f32 * scale) as i32,
                             top: edit_rect.top,
@@ -728,9 +736,10 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                         );
 
                         // Draw cursor
-                        if ctx.cursor_visible {
-                            let cursor_byte_pos = ctx.rename_cursor.min(ctx.rename_buffer.len());
-                            let before_cursor = &ctx.rename_buffer[..cursor_byte_pos];
+                        if ctx.app.cursor_visible {
+                            let cursor_byte_pos =
+                                ctx.app.rename_cursor.min(ctx.app.rename_buffer.len());
+                            let before_cursor = &ctx.app.rename_buffer[..cursor_byte_pos];
                             let before_wide = to_wide(before_cursor);
                             let mut cursor_sz = POINT { x: 0, y: 0 };
                             GetTextExtentPoint32W(
@@ -768,7 +777,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     // Status dot (streaming) - next to name
                     if is_streaming && !show_actions {
                         let dot_r = (3.0 * scale).max(2.0) as i32;
-                        let pulse = (ctx.streaming_dots % 30) < 15;
+                        let pulse = (ctx.app.streaming_dots % 30) < 15;
                         let dot_color = if pulse { ACCENT } else { ACCENT_DIM };
                         let mut name_w = POINT { x: 0, y: 0 };
                         let old_f = SelectObject(hdc, name_font as HGDIOBJ);
@@ -803,9 +812,9 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     // Right side of line 1: action buttons on hover, timestamp otherwise
                     if show_actions {
                         // Archive/unarchive button
-                        let is_archive_hover = ctx.hover_session_archive == Some(i);
+                        let is_archive_hover = ctx.app.hover.session_archive == Some(i);
                         let is_archive_pressed =
-                            ctx.pressed_element == Some(PressedElement::SessionArchive(i));
+                            ctx.app.pressed_element == Some(PressedElement::SessionArchive(i));
                         let archive_color = if is_archive_pressed {
                             ACCENT_PRESSED
                         } else if is_archive_hover {
@@ -833,9 +842,9 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                         SelectObject(hdc, old_font as HGDIOBJ);
 
                         // Delete button
-                        let is_delete_hover = ctx.hover_session_delete == Some(i);
+                        let is_delete_hover = ctx.app.hover.session_delete == Some(i);
                         let is_delete_pressed =
-                            ctx.pressed_element == Some(PressedElement::SessionDelete(i));
+                            ctx.app.pressed_element == Some(PressedElement::SessionDelete(i));
                         let delete_color = if is_delete_pressed {
                             ERROR_COLOR
                         } else if is_delete_hover {
@@ -995,7 +1004,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                 right: sb_x + sb_w,
                 bottom: (thumb_y + thumb_h).min(list_bottom),
             };
-            let thumb_color = if ctx.hover_sidebar_scrollbar {
+            let thumb_color = if ctx.app.hover.sidebar_scrollbar {
                 SCROLLBAR_THUMB_HOVER
             } else {
                 SCROLLBAR_THUMB
@@ -1012,9 +1021,9 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             right: sidebar_w - pad,
             bottom: height - pad / 2,
         };
-        let settings_color = if ctx.pressed_element == Some(PressedElement::SettingsBtn) {
+        let settings_color = if ctx.app.pressed_element == Some(PressedElement::SettingsBtn) {
             SETTINGS_BTN_PRESSED
-        } else if ctx.hover_settings_btn {
+        } else if ctx.app.hover.settings_btn {
             SETTINGS_BTN_HOVER
         } else {
             SETTINGS_BTN_BG
@@ -1023,8 +1032,8 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         let gfx = crate::platform::windows::gfx::Gfx::new(hdc);
         match gfx {
             Some(ref g) => {
-                if ctx.hover_settings_btn
-                    && ctx.pressed_element != Some(PressedElement::SettingsBtn)
+                if ctx.app.hover.settings_btn
+                    && ctx.app.pressed_element != Some(PressedElement::SettingsBtn)
                 {
                     g.button_with_ring(settings_btn_rect, settings_radius, settings_color, ACCENT);
                 } else {
@@ -1053,7 +1062,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         }
 
         // Focus ring for settings button
-        if ctx.focused_element == Some(FocusedElement::SettingsBtn) {
+        if ctx.app.focused_element == Some(FocusedElement::SettingsBtn) {
             let focus_pen = CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);
             let old_fp = SelectObject(hdc, focus_pen as HGDIOBJ);
             let old_fb = SelectObject(hdc, GetStockObject(NULL_BRUSH as i32) as HGDIOBJ);
@@ -1091,7 +1100,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         SelectObject(hdc, old_font as HGDIOBJ);
 
         // Connection status dot
-        let dot_color = if ctx.acp_connected {
+        let dot_color = if ctx.app.acp_connected {
             SUCCESS
         } else {
             ERROR_COLOR

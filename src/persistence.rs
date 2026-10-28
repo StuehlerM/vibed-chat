@@ -211,12 +211,12 @@ pub fn default_config_dir() -> String {
     ".vibe-chat".to_string()
 }
 
-fn sessions_dir(config_dir: &str) -> String {
-    format!("{}/{}", config_dir, SESSIONS_DIR)
+fn sessions_dir(config_dir: &str) -> std::path::PathBuf {
+    std::path::Path::new(config_dir).join(SESSIONS_DIR)
 }
 
-fn session_file_path(config_dir: &str, local_id: &str) -> String {
-    format!("{}/{}.json", sessions_dir(config_dir), local_id)
+fn session_file_path(config_dir: &str, local_id: &str) -> std::path::PathBuf {
+    sessions_dir(config_dir).join(format!("{}.json", local_id))
 }
 
 /// Save the state index (settings, projects, session metadata) to state.json.
@@ -271,7 +271,7 @@ pub fn save_index(
             .collect(),
     );
 
-    let path = format!("{}/{}", config_dir, STATE_FILE);
+    let path = std::path::Path::new(config_dir).join(STATE_FILE);
     std::fs::write(&path, root.to_string())
         .map_err(|e| format!("Failed to write state.json: {}", e))
 }
@@ -321,7 +321,7 @@ pub fn delete_session_file(config_dir: &str, local_id: &str) {
 /// Load the state index and all session message files from disk.
 /// Returns None if state.json doesn't exist or is corrupt.
 pub fn load_all(config_dir: &str) -> Option<LoadedState> {
-    let index_path = format!("{}/{}", config_dir, STATE_FILE);
+    let index_path = std::path::Path::new(config_dir).join(STATE_FILE);
     let content = std::fs::read_to_string(&index_path).ok()?;
     let root = json::parse(&content).ok()?;
 

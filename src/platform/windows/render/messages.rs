@@ -46,25 +46,27 @@ pub fn draw_messages(
     let content_width = chat_w - 2 * (MESSAGE_PADDING as f32 * scale) as i32;
     let max_bubble_width = (content_width as f32 * MESSAGE_MAX_WIDTH_RATIO) as i32;
 
-    let scroll_offset = ctx.sessions[ctx.active_session].chat.scroll_offset;
-    let streaming_idx = ctx.sessions[ctx.active_session].chat.streaming_message_idx;
-    let messages_len = ctx.sessions[ctx.active_session].chat.messages.len();
-    let hover_thinking = ctx.hover_thinking_toggle;
+    let scroll_offset = ctx.app.sessions[ctx.app.active_session].chat.scroll_offset;
+    let streaming_idx = ctx.app.sessions[ctx.app.active_session]
+        .chat
+        .streaming_message_idx;
+    let messages_len = ctx.app.sessions[ctx.app.active_session].chat.messages.len();
+    let hover_thinking = ctx.app.hover.thinking_toggle;
     let viewport = area_bottom - area_top;
 
     let visible = {
-        let chat = &ctx.sessions[ctx.active_session].chat;
+        let chat = &ctx.app.sessions[ctx.app.active_session].chat;
         chat.visible_messages(viewport, scroll_offset)
     };
 
-    ctx.link_rects.borrow_mut().clear();
-    ctx.code_block_rects.borrow_mut().clear();
+    ctx.app.link_rects.borrow_mut().clear();
+    ctx.app.code_block_rects.borrow_mut().clear();
 
     for (msg_idx, y_top) in visible {
         if msg_idx >= messages_len {
             break;
         }
-        let msg = &ctx.sessions[ctx.active_session].chat.messages[msg_idx];
+        let msg = &ctx.app.sessions[ctx.app.active_session].chat.messages[msg_idx];
         let is_streaming = streaming_idx == Some(msg_idx);
         let is_thinking_hover = hover_thinking == Some(msg_idx);
 
@@ -82,10 +84,10 @@ pub fn draw_messages(
             ctx.fonts,
             is_streaming,
             is_thinking_hover,
-            ctx.hover_link,
-            ctx.hover_code_copy,
-            ctx.link_rects,
-            ctx.code_block_rects,
+            ctx.app.hover.link,
+            ctx.app.hover.code_copy,
+            &ctx.app.link_rects,
+            &ctx.app.code_block_rects,
         );
     }
 }
@@ -358,7 +360,6 @@ fn draw_message(
                     hdc,
                     fonts,
                     code_block_start_y,
-                    text_y,
                     code_block_left,
                     code_block_right,
                     &code_block_lang,
@@ -443,7 +444,6 @@ fn draw_message(
                 hdc,
                 fonts,
                 code_block_start_y,
-                text_y,
                 code_block_left,
                 code_block_right,
                 &code_block_lang,
@@ -464,7 +464,6 @@ fn finish_code_block(
     hdc: HDC,
     fonts: &Fonts,
     start_y: i32,
-    end_y: i32,
     left: i32,
     right: i32,
     lang: &Option<String>,
@@ -532,8 +531,6 @@ fn finish_code_block(
             btn_rect.bottom,
             code_text,
         ));
-
-        let _ = end_y;
     }
 }
 
@@ -614,8 +611,11 @@ pub fn draw_message_scrollbar(
     area_top: i32,
     scale: f32,
 ) {
-    let idx = ctx.active_session.min(ctx.sessions.len().saturating_sub(1));
-    let chat = &ctx.sessions[idx].chat;
+    let idx = ctx
+        .app
+        .active_session
+        .min(ctx.app.sessions.len().saturating_sub(1));
+    let chat = &ctx.app.sessions[idx].chat;
     let total = chat.total_content_height;
     let viewport = area_bottom - area_top;
     if total <= viewport {
@@ -650,7 +650,7 @@ pub fn draw_message_scrollbar(
             right: chat_right,
             bottom: (thumb_y + thumb_h).min(area_bottom),
         };
-        let thumb_color = if ctx.hover_scrollbar {
+        let thumb_color = if ctx.app.hover.scrollbar {
             SCROLLBAR_THUMB_HOVER
         } else {
             SCROLLBAR_THUMB

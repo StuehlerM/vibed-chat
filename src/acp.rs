@@ -210,14 +210,6 @@ impl AcpClient {
         }
     }
 
-    pub fn is_connected(&self) -> bool {
-        if let Ok(state) = self.state.lock() {
-            !state.sessions.is_empty()
-        } else {
-            false
-        }
-    }
-
     pub fn active_session(&self) -> Option<String> {
         if let Ok(state) = self.state.lock() {
             state.active_session.clone()
@@ -239,7 +231,10 @@ fn writer_thread(
         match cmd {
             AcpCommand::InitInternal => {
                 let id = {
-                    let mut s = state.lock().unwrap();
+                    let mut s = match state.lock() {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
                     let id = s.next_id;
                     s.next_id += 1;
                     id
@@ -272,7 +267,10 @@ fn writer_thread(
             }
             AcpCommand::NewSessionInternal { cwd } => {
                 let id = {
-                    let mut s = state.lock().unwrap();
+                    let mut s = match state.lock() {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
                     let id = s.next_id;
                     s.next_id += 1;
                     id
@@ -293,7 +291,10 @@ fn writer_thread(
             }
             AcpCommand::Prompt { session_id, text } => {
                 let sid = {
-                    let s = state.lock().unwrap();
+                    let s = match state.lock() {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
                     if session_id.is_empty() {
                         s.active_session.clone().unwrap_or_default()
                     } else {
@@ -309,7 +310,10 @@ fn writer_thread(
                 }
 
                 let id = {
-                    let mut s = state.lock().unwrap();
+                    let mut s = match state.lock() {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
                     let id = s.next_id;
                     s.next_id += 1;
                     s.pending_prompts.insert(id, sid.clone());
@@ -451,7 +455,10 @@ fn handle_result(
 ) {
     // Check if this is a session/new response
     if let Some(session_id) = result.get("sessionId").and_then(|s| s.as_str()) {
-        let mut s = state.lock().unwrap();
+        let mut s = match state.lock() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
         s.sessions.push(session_id.to_string());
         s.active_session = Some(session_id.to_string());
         drop(s);
@@ -465,7 +472,10 @@ fn handle_result(
     // so look up the session from the pending_prompts map
     if let Some(stop_reason) = result.get("stopReason").and_then(|s| s.as_str()) {
         let session_id = {
-            let mut s = state.lock().unwrap();
+            let mut s = match state.lock() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
             s.pending_prompts.remove(&id).unwrap_or_default()
         };
         let _ = event_tx.send(AcpEvent::TurnComplete {
@@ -572,7 +582,9 @@ fn handle_notification(
                 .and_then(|t| t.as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            state.lock().unwrap().pending_permissions.push(id.clone());
+            if let Ok(mut s) = state.lock() {
+                s.pending_permissions.push(id.clone());
+            }
             let _ = event_tx.send(AcpEvent::PermissionRequest {
                 id,
                 session_id: session_id.clone(),
@@ -601,7 +613,10 @@ fn monitor_thread(
 ) {
     loop {
         thread::sleep(std::time::Duration::from_millis(500));
-        let mut child_lock = child_arc.lock().unwrap();
+        let mut child_lock = match child_arc.lock() {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
         if let Some(child) = child_lock.as_mut() {
             match child.try_wait() {
                 Ok(Some(status)) => {

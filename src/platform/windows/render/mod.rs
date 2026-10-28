@@ -26,7 +26,7 @@ pub use settings::draw_settings_panel;
 #[allow(unused_imports)]
 pub use sidebar::draw_sidebar;
 #[allow(unused_imports)]
-pub use toast::{draw_toast, show_toast, TOAST_DURATION_MS};
+pub use toast::draw_toast;
 
 use crate::platform::windows::ffi::*;
 use crate::platform::windows::paint::PaintContext;
@@ -34,9 +34,9 @@ use crate::theme::*;
 
 /// Paint the entire window using double buffering.
 pub fn paint(hwnd: HWND, ctx: &mut PaintContext) {
-    let scale = ctx.dpi as f32 / 96.0;
-    let width = ctx.width;
-    let height = ctx.height;
+    let scale = ctx.app.dpi as f32 / 96.0;
+    let width = ctx.app.client_width;
+    let height = ctx.app.client_height;
 
     unsafe {
         let hdc_screen = GetDC(hwnd);
@@ -64,7 +64,7 @@ pub fn paint(hwnd: HWND, ctx: &mut PaintContext) {
         chat_area::draw_chat_area(hdc_mem, ctx, scale);
 
         // Draw settings panel in the reserved space (push, not overlay)
-        if ctx.show_settings {
+        if ctx.app.show_settings {
             settings::draw_settings_panel(hdc_mem, ctx, scale);
         }
 
