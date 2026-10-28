@@ -34,6 +34,9 @@ pub unsafe extern "system" fn wnd_proc(
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
                 let scale = (*app_state).dpi as f32 / 96.0;
+                // SAFETY: for WM_GETMINMAXINFO, `lparam` points to a valid
+                // MINMAXINFO struct owned by the system for the duration of
+                // this message; we only write the ptMinTrackSize field.
                 let mmi = lparam as *mut MINMAXINFO;
                 (*mmi).ptMinTrackSize.x = (MIN_WINDOW_WIDTH as f32 * scale) as i32;
                 (*mmi).ptMinTrackSize.y = (MIN_WINDOW_HEIGHT as f32 * scale) as i32;
@@ -41,6 +44,9 @@ pub unsafe extern "system" fn wnd_proc(
             return 0;
         }
         WM_CREATE => {
+            // SAFETY: on WM_CREATE, `lparam` points to the CREATESTRUCTW that
+            // CreateWindowExW received; its lpCreateParams is the AppState
+            // pointer we passed, valid for the lifetime of the window.
             let create_struct = lparam as *const CREATESTRUCTW;
             let app_state = (*create_struct).lpCreateParams as *mut AppState;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, app_state as LONG_PTR);
@@ -51,9 +57,12 @@ pub unsafe extern "system" fn wnd_proc(
             if !app_state.is_null() {
                 let new_dpi = (wparam & 0xFFFF) as u32;
                 (*app_state).dpi = new_dpi;
+                (*app_state).invalidate_sidebar_cache();
                 let fonts = Fonts::new(new_dpi);
                 (*app_state).fonts = Some(FontsHandle::new(fonts));
 
+                // SAFETY: for WM_DPICHANGED, `lparam` points to a valid RECT
+                // owned by the system for the duration of this message.
                 let rect = lparam as *const RECT;
                 SetWindowPos(
                     hwnd,
@@ -73,6 +82,7 @@ pub unsafe extern "system" fn wnd_proc(
             if !app_state.is_null() {
                 (*app_state).client_width = (lparam & 0xFFFF) as i32;
                 (*app_state).client_height = ((lparam >> 16) & 0xFFFF) as i32;
+                (*app_state).invalidate_sidebar_cache();
 
                 // Save window size to state (only when not minimized and has real size)
                 let state = &mut *app_state;
@@ -248,7 +258,7 @@ pub unsafe extern "system" fn wnd_proc(
                 }
 
                 // Ctrl+N to open folder picker and create a new chat
-                if wparam as u8 == VK_N as u8
+                if wparam as u8 == VK_N
                     && (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0
                 {
                     let dialogs = WinDialogs;
@@ -263,7 +273,7 @@ pub unsafe extern "system" fn wnd_proc(
                 }
 
                 // Ctrl+Shift+A to toggle archive on the active session
-                if wparam as u8 == 'A' as u8
+                if wparam as u8 == b'A'
                     && (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0
                     && (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0
                 {
@@ -276,7 +286,7 @@ pub unsafe extern "system" fn wnd_proc(
                 }
 
                 // Ctrl+Shift+D to delete the active session (with confirmation)
-                if wparam as u8 == 'D' as u8
+                if wparam as u8 == b'D'
                     && (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0
                     && (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0
                 {
@@ -316,22 +326,22 @@ pub unsafe extern "system" fn wnd_proc(
                 }
 
                 // Enter/Space activates the focused element
-                if wparam as u8 == VK_RETURN || wparam as u8 == VK_SPACE {
-                    if state.activate_focused_element() {
-                        // Handle deferred platform requests from the activation
-                        if state.new_project_requested {
-                            state.new_project_requested = false;
-                            let dialogs = WinDialogs;
-                            if let Some(path) = crate::platform::backend::Dialogs::pick_folder(
-                                &dialogs,
-                                "Select a project folder",
-                            ) {
-                                state.new_chat_in_dir(&path);
-                            }
+                if (wparam as u8 == VK_RETURN || wparam as u8 == VK_SPACE)
+                    && state.activate_focused_element()
+                {
+                    // Handle deferred platform requests from the activation
+                    if state.new_project_requested {
+                        state.new_project_requested = false;
+                        let dialogs = WinDialogs;
+                        if let Some(path) = crate::platform::backend::Dialogs::pick_folder(
+                            &dialogs,
+                            "Select a project folder",
+                        ) {
+                            state.new_chat_in_dir(&path);
                         }
-                        InvalidateRect(hwnd, std::ptr::null(), 0);
-                        return 0;
                     }
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                    return 0;
                 }
 
                 if state.sessions.is_empty() {
@@ -501,41 +511,10 @@ pub unsafe extern "system" fn wnd_proc(
                 };
                 TrackMouseEvent(&mut tme);
 
-                let old_hover_item = state.hover.sidebar_item;
-                let old_hover_new = state.hover.new_chat;
-                let old_hover_new_proj = state.hover.new_project;
-                let old_hover_proj = state.hover.project;
-                let old_hover_settings = state.hover.settings_btn;
-                let old_hover_close = state.hover.settings_close;
-                let old_hover_thinking = state.hover.thinking_toggle;
-                let old_hover_toggle = state.hover.settings_toggle;
-                let old_hover_sb = state.hover.scrollbar;
-                let old_hover_sb_sidebar = state.hover.sidebar_scrollbar;
-                let old_hover_send = state.hover.send_btn;
-                let old_hover_sh = state.hover.session_header;
-                let old_hover_arch = state.hover.session_archive;
-                let old_hover_del = state.hover.session_delete;
-                let old_hover_link = state.hover.link;
-                let old_hover_code = state.hover.code_copy;
+                let old_hover = state.hover.clone();
                 state.update_hover(x, y);
                 state.update_link_hover(x, y);
-                if state.hover.sidebar_item != old_hover_item
-                    || state.hover.new_chat != old_hover_new
-                    || state.hover.new_project != old_hover_new_proj
-                    || state.hover.project != old_hover_proj
-                    || state.hover.settings_btn != old_hover_settings
-                    || state.hover.settings_close != old_hover_close
-                    || state.hover.thinking_toggle != old_hover_thinking
-                    || state.hover.settings_toggle != old_hover_toggle
-                    || state.hover.scrollbar != old_hover_sb
-                    || state.hover.sidebar_scrollbar != old_hover_sb_sidebar
-                    || state.hover.send_btn != old_hover_send
-                    || state.hover.session_header != old_hover_sh
-                    || state.hover.session_archive != old_hover_arch
-                    || state.hover.session_delete != old_hover_del
-                    || state.hover.link != old_hover_link
-                    || state.hover.code_copy != old_hover_code
-                {
+                if state.hover != old_hover {
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                 }
             }
@@ -676,6 +655,10 @@ pub unsafe extern "system" fn wnd_proc(
 // ── Helpers ──────────────────────────────────────────────────
 
 fn get_app_state(hwnd: HWND) -> *mut AppState {
+    // SAFETY: GWLP_USERDATA was set in WM_CREATE to the `*mut AppState` passed
+    // via CREATESTRUCTW::lpCreateParams, and the AppState outlives the window
+    // (it is owned by the message loop in `app_entry`). The pointer is only
+    // dereferenced on the UI thread that owns the window.
     unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState }
 }
 

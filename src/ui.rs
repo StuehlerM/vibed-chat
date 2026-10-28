@@ -46,7 +46,7 @@ pub enum RenameTarget {
 }
 
 /// Transient toast notification (e.g. agent connection status).
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Toast {
     pub text: String,
     pub kind: ToastKind,
@@ -54,7 +54,7 @@ pub struct Toast {
     pub duration_ms: u64,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
     Info,
     Success,

@@ -314,9 +314,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                 let is_pressed =
                     ctx.app.pressed_element == Some(PressedElement::ProjectHeader(pidx));
                 let is_menu_hover = ctx.app.hover.project_menu == Some(pidx);
-                let header_color = if is_pressed {
-                    PROJECT_HEADER_HOVER_BG
-                } else if is_hover {
+                let header_color = if is_pressed || is_hover {
                     PROJECT_HEADER_HOVER_BG
                 } else {
                     PROJECT_HEADER_BG

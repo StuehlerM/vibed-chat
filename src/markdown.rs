@@ -272,7 +272,12 @@ fn find_delimiter(chars: &[char], start: usize, delim: &str) -> Option<usize> {
     }
     let mut i = start;
     while i + d.len() <= chars.len() {
-        if chars[i..i + d.len()] == d[..] {
+        // Compare char-by-char against the delimiter slice — avoids building a
+        // candidate `Vec<char>` window on every probe.
+        if d.iter()
+            .enumerate()
+            .all(|(offset, &dc)| chars[i + offset] == dc)
+        {
             return Some(i);
         }
         i += 1;

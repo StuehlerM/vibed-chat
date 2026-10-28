@@ -54,6 +54,7 @@ pub enum AcpEvent {
 }
 
 /// Commands sent from the UI to the ACP client.
+#[derive(Debug)]
 pub enum AcpCommand {
     /// Send a prompt to the agent
     Prompt { session_id: String, text: String },
@@ -82,9 +83,6 @@ pub struct AcpClient {
 
 struct AcpState {
     next_id: i64,
-    sessions: Vec<String>,
-    active_session: Option<String>,
-    pending_permissions: Vec<Json>,
     /// Maps JSON-RPC request IDs to session IDs for prompt responses
     /// (PromptResponse does not include sessionId)
     pending_prompts: std::collections::HashMap<i64, String>,
@@ -122,9 +120,6 @@ impl AcpClient {
 
         let state = Arc::new(Mutex::new(AcpState {
             next_id: 1,
-            sessions: Vec::new(),
-            active_session: None,
-            pending_permissions: Vec::new(),
             pending_prompts: std::collections::HashMap::new(),
         }));
 
@@ -209,14 +204,6 @@ impl AcpClient {
             }
         }
     }
-
-    pub fn active_session(&self) -> Option<String> {
-        if let Ok(state) = self.state.lock() {
-            state.active_session.clone()
-        } else {
-            None
-        }
-    }
 }
 
 // ── Writer thread ────────────────────────────────────────────
@@ -290,16 +277,18 @@ fn writer_thread(
                 let _ = send_jsonrpc(&mut stdin, &msg);
             }
             AcpCommand::Prompt { session_id, text } => {
-                let sid = {
-                    let s = match state.lock() {
+                // Allocate the request id in a single lock scope (previously
+                // two separate locks). Callers always pass a concrete session
+                // id; an empty one is rejected below.
+                let (sid, id) = {
+                    let mut s = match state.lock() {
                         Ok(s) => s,
                         Err(_) => continue,
                     };
-                    if session_id.is_empty() {
-                        s.active_session.clone().unwrap_or_default()
-                    } else {
-                        session_id
-                    }
+                    let id = s.next_id;
+                    s.next_id += 1;
+                    s.pending_prompts.insert(id, session_id.clone());
+                    (session_id, id)
                 };
 
                 if sid.is_empty() {
@@ -308,17 +297,6 @@ fn writer_thread(
                     ));
                     continue;
                 }
-
-                let id = {
-                    let mut s = match state.lock() {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    let id = s.next_id;
-                    s.next_id += 1;
-                    s.pending_prompts.insert(id, sid.clone());
-                    id
-                };
                 let msg = Json::object(vec![
                     ("jsonrpc", Json::String("2.0".to_string())),
                     ("id", Json::Number(id as f64)),
@@ -428,7 +406,7 @@ fn handle_message(msg: &Json, state: &Arc<Mutex<AcpState>>, event_tx: &Sender<Ac
     if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
         let params = msg.get("params").cloned().unwrap_or(Json::Null);
         let request_id = msg.get("id").cloned();
-        handle_notification(method, &params, request_id, state, event_tx);
+        handle_notification(method, &params, request_id, event_tx);
         return;
     }
 
@@ -455,13 +433,6 @@ fn handle_result(
 ) {
     // Check if this is a session/new response
     if let Some(session_id) = result.get("sessionId").and_then(|s| s.as_str()) {
-        let mut s = match state.lock() {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        s.sessions.push(session_id.to_string());
-        s.active_session = Some(session_id.to_string());
-        drop(s);
         let _ = event_tx.send(AcpEvent::SessionReady {
             session_id: session_id.to_string(),
         });
@@ -495,7 +466,6 @@ fn handle_notification(
     method: &str,
     params: &Json,
     request_id: Option<Json>,
-    state: &Arc<Mutex<AcpState>>,
     event_tx: &Sender<AcpEvent>,
 ) {
     // Extract sessionId from params for routing
@@ -575,16 +545,13 @@ fn handle_notification(
             }
         }
         "session/request_permission" => {
-            let id = request_id.clone().unwrap_or(Json::Null);
-            let tool_call = params.get("toolCall");
-            let method_name = tool_call
+            let id = request_id.unwrap_or(Json::Null);
+            let method_name = params
+                .get("toolCall")
                 .and_then(|tc| tc.get("title"))
                 .and_then(|t| t.as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            if let Ok(mut s) = state.lock() {
-                s.pending_permissions.push(id.clone());
-            }
             let _ = event_tx.send(AcpEvent::PermissionRequest {
                 id,
                 session_id: session_id.clone(),

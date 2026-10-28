@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 use crate::markdown::{parse as parse_markdown, StyledRun};
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Role {
@@ -30,6 +31,12 @@ pub struct Message {
     pub thinking_runs: Vec<StyledRun>,
     pub thinking_collapsed: bool,
     pub thinking_height: i32,
+    /// True when `text` changed since `runs` was last (re)parsed.
+    /// Parsing is deferred to the render path so streaming chunks don't
+    /// re-parse the whole message on every chunk (O(N) per chunk -> O(N^2)).
+    pub runs_dirty: bool,
+    /// Same as `runs_dirty` but for `thinking` / `thinking_runs`.
+    pub thinking_runs_dirty: bool,
 }
 
 impl Message {
@@ -51,13 +58,31 @@ impl Message {
             thinking_runs: Vec::new(),
             thinking_collapsed: true,
             thinking_height: 0,
+            runs_dirty: false,
+            thinking_runs_dirty: false,
+        }
+    }
+
+    /// Re-parse markdown runs if the source text changed since the last parse.
+    /// Called from the render path (which runs at most once per frame) instead
+    /// of on every streaming chunk.
+    pub fn ensure_runs_parsed(&mut self) {
+        if self.runs_dirty {
+            self.runs = parse_markdown(&self.text);
+            self.runs_dirty = false;
+        }
+        if self.thinking_runs_dirty {
+            self.thinking_runs = parse_markdown(&self.thinking);
+            self.thinking_runs_dirty = false;
         }
     }
 }
 
 #[derive(Debug)]
 pub struct ChatState {
-    pub messages: Vec<Message>,
+    /// Message history. A `VecDeque` so trimming old messages from the front
+    /// is O(1) (`pop_front`) instead of O(N) (`Vec::remove(0)`).
+    pub messages: VecDeque<Message>,
     pub scroll_offset: i32,
     pub input_buffer: String,
     pub cursor_pos: usize,
@@ -75,7 +100,7 @@ pub struct ChatState {
 impl ChatState {
     pub fn new() -> Self {
         Self {
-            messages: Vec::new(),
+            messages: VecDeque::new(),
             scroll_offset: 0,
             input_buffer: String::new(),
             cursor_pos: 0,
@@ -93,7 +118,7 @@ impl ChatState {
 
     pub fn add_message(&mut self, role: Role, text: &str) {
         let msg = Message::new(role, text);
-        self.messages.push(msg);
+        self.messages.push_back(msg);
         self.trim_history();
         self.is_at_bottom = true;
     }
@@ -104,8 +129,8 @@ impl ChatState {
 
     pub fn start_streaming(&mut self) {
         let msg = Message::new(Role::Agent, "");
-        self.messages.push(msg);
-        self.streaming_message_idx = Some(self.messages.len() - 1);
+        self.messages.push_back(msg);
+        self.streaming_message_idx = self.last_message_index();
         self.is_waiting_for_agent = true;
         self.is_at_bottom = true;
     }
@@ -114,7 +139,7 @@ impl ChatState {
         if let Some(idx) = self.streaming_message_idx {
             if let Some(msg) = self.messages.get_mut(idx) {
                 msg.text.push_str(text);
-                msg.runs = parse_markdown(&msg.text);
+                msg.runs_dirty = true;
             }
         }
     }
@@ -123,19 +148,28 @@ impl ChatState {
         if let Some(idx) = self.streaming_message_idx {
             if let Some(msg) = self.messages.get_mut(idx) {
                 msg.thinking.push_str(text);
-                msg.thinking_runs = parse_markdown(&msg.thinking);
+                msg.thinking_runs_dirty = true;
             }
         }
     }
 
     pub fn finish_streaming(&mut self) {
+        if let Some(idx) = self.streaming_message_idx {
+            if let Some(msg) = self.messages.get_mut(idx) {
+                msg.ensure_runs_parsed();
+            }
+        }
         self.streaming_message_idx = None;
         self.is_waiting_for_agent = false;
     }
 
     pub fn trim_history(&mut self) {
         while self.messages.len() > self.max_messages {
-            self.messages.remove(0);
+            self.messages.pop_front();
+            // The streaming index shifts down by one for every message
+            // removed from the front; saturate at 0 when it pointed at a
+            // trimmed message.
+            self.streaming_message_idx = self.streaming_message_idx.map(|i| i.saturating_sub(1));
         }
     }
 
@@ -424,5 +458,10 @@ impl ChatState {
             }
         }
         result
+    }
+
+    /// Index of the newest message, or None if the history is empty.
+    pub fn last_message_index(&self) -> Option<usize> {
+        self.messages.len().checked_sub(1)
     }
 }

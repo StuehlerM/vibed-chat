@@ -31,15 +31,11 @@ impl<'a> PaintContext<'a> {
     }
 
     pub fn chat_left(&self) -> i32 {
-        self.sidebar_w()
+        self.app.chat_left()
     }
 
     pub fn chat_right(&self) -> i32 {
-        if self.app.show_settings {
-            self.app.client_width - self.settings_w()
-        } else {
-            self.app.client_width
-        }
+        self.app.chat_right()
     }
 
     pub fn chat_width(&self) -> i32 {

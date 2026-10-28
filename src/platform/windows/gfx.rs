@@ -34,6 +34,10 @@ struct GdiplusState {
 /// handle is only ever dereferenced on the UI thread, after one-time init.
 #[derive(Clone, Copy)]
 struct SendSyncPtr(*mut c_void);
+// SAFETY: the wrapped GDI+ startup token is an opaque handle. It is created
+// once during `load_gdiplus` and only ever dereferenced by GDI+ on the UI
+// thread (all rendering happens on the single UI thread), so moving the
+// handle value between threads never causes a data race in practice.
 unsafe impl Send for SendSyncPtr {}
 unsafe impl Sync for SendSyncPtr {}
 
@@ -52,6 +56,10 @@ unsafe fn get_proc<T: Copy>(module: HMODULE, name: &[u8]) -> Option<T> {
         raw: *mut c_void,
         typed: T,
     }
+    // SAFETY: reading the `typed` union field reinterprets the raw export
+    // pointer as `T`. Every call site passes a `T` that exactly matches the
+    // `extern "system"` signature of the named gdiplus.dll export, so the
+    // transmute is sound. Reading a union field is a raw bit copy (no drop).
     let u = FnPtr { raw: ptr };
     Some(u.typed)
 }

@@ -261,6 +261,86 @@ pub struct Settings {
     pub show_archived: bool,
 }
 
+// ── Settings panel layout ───────────────────────────────────────────────────
+//
+// Single source of truth for the settings panel's vertical layout, shared by
+// the renderer (render/settings.rs) and the hit-tester (interaction.rs).
+// Keeping one definition prevents the two from drifting apart.
+
+/// Vertical extents of the settings panel, in device pixels (DPI-scaled).
+/// All `*_y` / `*_top` / `*_bottom` values are absolute Y coordinates.
+#[derive(Debug, Clone, Copy)]
+pub struct SettingsLayout {
+    /// Y of the top edge of toggle row 0 (Dark theme).
+    pub toggle_tops: [i32; 4],
+    /// Row height of a toggle row.
+    pub toggle_row_h: i32,
+    /// Y of the top edge of the Reconnect button.
+    pub reconnect_y: i32,
+    /// Height of the Reconnect button.
+    pub reconnect_btn_h: i32,
+    /// Height of an info row (Connection/About sections).
+    pub info_row_h: i32,
+    /// Height of a section header.
+    pub section_h: i32,
+}
+
+/// Compute the settings panel layout for a given panel content width.
+/// `scale` is `dpi / 96.0`. This mirrors the exact sequence of `y` advances
+/// performed by the renderer so hit-testing matches what is drawn.
+pub fn compute_settings_layout(scale: f32) -> SettingsLayout {
+    let spad = (SPACE_5 as f32 * scale) as i32;
+    let row_h = (SPACE_5 as f32 * scale) as i32;
+    let section_h = (22.0 * scale) as i32;
+    let gap = (SPACE_1 as f32 * scale) as i32;
+    let extra_gap = (SPACE_3 as f32 * scale) as i32;
+    let info_row_h = (24.0 * scale) as i32;
+
+    // Title block: pad + SPACE_6 (title) + SPACE_1 (divider) + SPACE_4 (gap)
+    let mut ty = spad
+        + (SPACE_6 as f32 * scale) as i32
+        + (SPACE_1 as f32 * scale) as i32
+        + (SPACE_4 as f32 * scale) as i32;
+
+    // Appearance section: header + 2 toggle rows
+    ty += section_h;
+    let t0_top = ty;
+    ty += row_h + gap;
+    let t1_top = ty;
+    ty += row_h + gap + extra_gap;
+
+    // Agent section: header + 1 toggle row
+    ty += section_h;
+    let t2_top = ty;
+    ty += row_h + gap + extra_gap;
+
+    // Sessions section: header + 1 toggle row
+    ty += section_h;
+    let t3_top = ty;
+    ty += row_h + gap + extra_gap;
+
+    // Connection section: header + 2 info rows
+    ty += section_h;
+    ty += info_row_h;
+    ty += info_row_h;
+    ty += extra_gap;
+
+    // About section: header + 2 info rows
+    ty += section_h;
+    ty += info_row_h;
+    ty += info_row_h;
+    ty += (SPACE_4 as f32 * scale) as i32;
+
+    SettingsLayout {
+        toggle_tops: [t0_top, t1_top, t2_top, t3_top],
+        toggle_row_h: row_h,
+        reconnect_y: ty,
+        reconnect_btn_h: (36.0 * scale) as i32,
+        info_row_h,
+        section_h,
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {

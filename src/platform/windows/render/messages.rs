@@ -46,27 +46,32 @@ pub fn draw_messages(
     let content_width = chat_w - 2 * (MESSAGE_PADDING as f32 * scale) as i32;
     let max_bubble_width = (content_width as f32 * MESSAGE_MAX_WIDTH_RATIO) as i32;
 
-    let scroll_offset = ctx.app.sessions[ctx.app.active_session].chat.scroll_offset;
-    let streaming_idx = ctx.app.sessions[ctx.app.active_session]
-        .chat
-        .streaming_message_idx;
-    let messages_len = ctx.app.sessions[ctx.app.active_session].chat.messages.len();
+    let session_idx = ctx
+        .app
+        .active_session
+        .min(ctx.app.sessions.len().saturating_sub(1));
+    let scroll_offset = ctx.app.sessions[session_idx].chat.scroll_offset;
+    let streaming_idx = ctx.app.sessions[session_idx].chat.streaming_message_idx;
+    let messages_len = ctx.app.sessions[session_idx].chat.messages.len();
     let hover_thinking = ctx.app.hover.thinking_toggle;
     let viewport = area_bottom - area_top;
 
     let visible = {
-        let chat = &ctx.app.sessions[ctx.app.active_session].chat;
+        let chat = &ctx.app.sessions[session_idx].chat;
         chat.visible_messages(viewport, scroll_offset)
     };
 
-    ctx.app.link_rects.borrow_mut().clear();
-    ctx.app.code_block_rects.borrow_mut().clear();
+    // Collect clickable rects in local buffers and swap them into AppState at
+    // the end, so a re-entrant borrow of the shared Vecs can never panic and
+    // the hit-test state is only updated after a complete paint pass.
+    let mut link_rects: Vec<crate::app::ClickableRect> = Vec::new();
+    let mut code_block_rects: Vec<crate::app::ClickableRect> = Vec::new();
 
     for (msg_idx, y_top) in visible {
         if msg_idx >= messages_len {
             break;
         }
-        let msg = &ctx.app.sessions[ctx.app.active_session].chat.messages[msg_idx];
+        let msg = &ctx.app.sessions[session_idx].chat.messages[msg_idx];
         let is_streaming = streaming_idx == Some(msg_idx);
         let is_thinking_hover = hover_thinking == Some(msg_idx);
 
@@ -86,10 +91,13 @@ pub fn draw_messages(
             is_thinking_hover,
             ctx.app.hover.link,
             ctx.app.hover.code_copy,
-            &ctx.app.link_rects,
-            &ctx.app.code_block_rects,
+            &mut link_rects,
+            &mut code_block_rects,
         );
     }
+
+    ctx.app.link_rects = link_rects;
+    ctx.app.code_block_rects = code_block_rects;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -107,8 +115,8 @@ fn draw_message(
     hover_thinking: bool,
     hover_link: Option<usize>,
     hover_code_copy: Option<usize>,
-    link_rects: &std::cell::RefCell<Vec<crate::app::ClickableRect>>,
-    code_block_rects: &std::cell::RefCell<Vec<crate::app::ClickableRect>>,
+    link_rects: &mut Vec<crate::app::ClickableRect>,
+    code_block_rects: &mut Vec<crate::app::ClickableRect>,
 ) {
     unsafe {
         let label_height = (SPACE_4 as f32 * scale) as i32;
@@ -326,14 +334,14 @@ fn draw_message(
 
         // Draw main text lines, register link rects, detect code blocks
         let mut text_y = content_y;
-        let mut local_link_idx = link_rects.borrow().len();
+        let mut local_link_idx = link_rects.len();
         let mut in_code_block = false;
         let mut code_block_start_y = 0i32;
         let mut code_block_lines: Vec<String> = Vec::new();
         let mut code_block_lang: Option<String> = None;
         let code_block_left = bubble_left + bubble_padding;
         let code_block_right = bubble_left + bubble_width - bubble_padding;
-        let mut code_block_global_idx = code_block_rects.borrow().len();
+        let mut code_block_global_idx = code_block_rects.len();
 
         for (line_text, style, _width) in &lines {
             if line_text.is_empty() {
@@ -369,7 +377,7 @@ fn draw_message(
                     line_height,
                     scale,
                 );
-                code_block_global_idx = code_block_rects.borrow().len();
+                code_block_global_idx = code_block_rects.len();
             }
 
             let is_link_hover = style.is_link && hover_link == Some(local_link_idx);
@@ -424,7 +432,7 @@ fn draw_message(
                 FillRect(hdc, &underline_rect, underline_brush);
                 DeleteObject(underline_brush as HGDIOBJ);
 
-                link_rects.borrow_mut().push((
+                link_rects.push((
                     text_rect.left,
                     text_y,
                     text_rect.left + sz.x,
@@ -469,7 +477,7 @@ fn finish_code_block(
     lang: &Option<String>,
     code_lines: &[String],
     is_hover: bool,
-    code_block_rects: &std::cell::RefCell<Vec<crate::app::ClickableRect>>,
+    code_block_rects: &mut Vec<crate::app::ClickableRect>,
     line_height: i32,
     scale: f32,
 ) {
@@ -524,7 +532,7 @@ fn finish_code_block(
 
         // Register clickable rect with the full code text
         let code_text = code_lines.join("\n");
-        code_block_rects.borrow_mut().push((
+        code_block_rects.push((
             btn_rect.left,
             btn_rect.top,
             btn_rect.right,
@@ -556,6 +564,10 @@ pub fn compute_message_heights(
         let old_font = SelectObject(hdc, fonts.normal as HGDIOBJ);
 
         for msg in &mut chat.messages {
+            // Materialize deferred markdown parses (streaming marks runs dirty
+            // per chunk; parsing here keeps the per-chunk cost at O(chunk)).
+            msg.ensure_runs_parsed();
+
             // Main text height
             let wrapped = wrap_runs(hdc, &msg.runs, text_width, fonts);
             let mut total_text_height = wrapped.len() as i32 * line_height;

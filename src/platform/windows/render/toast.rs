@@ -123,12 +123,11 @@ pub fn draw_toast(hdc: HDC, ctx: &PaintContext, scale: f32) {
             label_wide.len() as i32 - 1,
             &mut sz,
         );
-        let text_x;
-        if sz.x <= text_rect.right - text_rect.left {
-            text_x = text_rect.left + ((text_rect.right - text_rect.left - sz.x) / 2);
+        let text_x = if sz.x <= text_rect.right - text_rect.left {
+            text_rect.left + ((text_rect.right - text_rect.left - sz.x) / 2)
         } else {
-            text_x = text_rect.left;
-        }
+            text_rect.left
+        };
         text_rect.left = text_x;
         DrawTextW(
             hdc,
