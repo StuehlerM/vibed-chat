@@ -7,9 +7,11 @@
 ## 1. Motivation
 
 The app currently talks to a single backend: `vibe-acp` over ACP (JSON-RPC on
-stdio). The Responses API gives us a second, complementary backend — direct
-model access over HTTPS — with a feature set that maps almost 1:1 onto the
-app's existing message model:
+stdio). The Responses API becomes the **default backend** — plain chat with
+reasoning, no agent process required — while vibe-cli becomes **Code mode**,
+ opt-in for tool-using project work. The user switches between the two with
+a radio button in the UI (see §3.3). The Responses feature set maps almost
+1:1 onto the app's existing message model:
 
 | Responses API feature | Existing vibed-chat concept |
 |---|---|
@@ -26,11 +28,11 @@ conversation history client-side (`persistence.rs`), so a direct-mode client
 needs no server-side session state, no additional protocol machinery — just an
 HTTP request per turn carrying the full history.
 
-Why bother when vibe-cli already wraps the model? Three concrete gains:
+Why make Responses the default and vibe-cli opt-in?
 
-1. **No agent process required.** Direct mode works when `vibe-acp` is not on
-   PATH, is crashing, or when the user only wants a plain chat without
-   tools/permissions. It makes the app a standalone Mistral chat client.
+1. **No agent process required for the common case.** Default mode works
+   without `vibe-acp` on PATH. The app becomes a standalone Mistral chat
+   client out of the box; Code mode is an explicit opt-in for agentic work.
 2. **Reasoning control.** `reasoning.effort` is exposed per-request; the ACP
    path hides it. A settings toggle (low/medium/high) is meaningful here.
 3. **Token accounting.** `/v1/responses/input_tokens` lets us show a live
@@ -38,7 +40,7 @@ Why bother when vibe-cli already wraps the model? Three concrete gains:
 
 ## 2. Non-goals (for this phase)
 
-- Replacing the ACP path. Agent mode stays the default for project sessions.
+- Removing the ACP path. Code mode stays first-class for project sessions.
 - Tool use in direct mode (`tools` / function calling). Direct mode is plain
   chat + reasoning first; client-executed function calling is a later phase
   (it requires a permission UI equivalent and function-registry design).
@@ -120,22 +122,47 @@ Streaming with `WinHttpReadData` in a loop naturally delivers SSE frames to
 `on_chunk`; the core `src/http.rs` SSE parser reassembles `response.*` events.
 Chunked-transfer decoding is handled there too (the API streams SSE).
 
-### 3.3 Session mode
+### 3.3 Session modes + radio switch
 
-`Session` gains a mode field (default `Agent`):
+`Session` gains a mode field, default `Direct` ("Default mode"):
 
 ```rust
-pub enum SessionMode { Agent, Direct }
+pub enum SessionMode {
+    /// Default mode: plain chat via the Responses API. No agent process.
+    Direct,
+    /// Code mode: agentic project work via vibe-acp (tools, permissions).
+    Code,
+}
 ```
-
 - Per-session, persisted (additive field; `persistence.rs` readers default
-  missing field to `Agent` for backward compatibility).
-- Set at session creation; visible as a small badge in the header bar
-  ("Agent" / "Direct API") rendered by `render/header.rs`.
-- Direct sessions skip ACP entirely: no `session/new`, no `session/prompt`,
-  no permission requests. The send path in `app.rs` branches on mode:
-  `Agent` → `AcpCommand::Prompt`; `Direct` → build `Vec<HistoryItem>` from
-  the session's messages, push `ResponsesCommand::Send`.
+  a missing field to `Direct` for backward compatibility).
+- **Radio-button switch** in the header bar (rendered by `render/header.rs`,
+  hit-tested by `interaction.rs`): two options side by side, `Default` and
+  `Code`. Exactly one is selected at a time — radio semantics, not toggles.
+  Selection state lives in the per-session `Settings`-independent layout
+  cache so paint and hit-testing stay in sync (same pattern as
+  `SettingsLayout` in `theme.rs`).
+- Switching is allowed mid-session. Both modes read from the same
+  `Session.chat` message list, so history carries over. Only the *next*
+  turn uses the new backend; the current turn is unaffected.
+  - `Direct → Code`: the next prompt opens/uses an ACP session
+    (`session/new` on first Code turn; cached `acp_session_id` after).
+    ACP does not receive the pre-switch Direct history — the agent's
+    context starts at switch time (keeping ACP's working-dir semantics
+    intact).
+  - `Code → Direct`: the next prompt ships the full message history
+    (including tool calls/results rendered as text summaries) as
+    `HistoryItem`s.
+- Mode is enforced at send time in `app.rs`: `Code` → `AcpCommand::Prompt`;
+  `Direct` → build `Vec<HistoryItem>` from the session's messages, push
+  `ResponsesCommand::Send`.
+- Header also shows the active mode as a small badge next to the session
+  name so the mode is visible without looking at the radio control.
+- `Direct` sessions never touch ACP: no `session/new`, no `session/prompt`,
+  no permission requests. When a session has never used Code mode, the
+  `AcpClient` need not be spawned at all — the app only spawns `vibe-acp`
+  lazily, on the first Code-mode turn (or new Code session).
+
 
 ### 3.4 Event mapping into the UI
 
@@ -162,7 +189,7 @@ logged, never persisted. `MISTRAL_API_KEY` is accepted as a fallback if
 
 | Phase | Scope | Definition of done |
 |---|---|---|
-| **P0** | `http.rs` core + WinHTTP transport, `ResponsesClient` non-streaming, `SessionMode::Direct`, header badge, send-path branch | Type a prompt in a Direct session → full reply renders as one bubble |
+| **P0** | `http.rs` core + WinHTTP transport, `ResponsesClient` non-streaming, `SessionMode` with `Direct` default, header radio switch (Default/Code), lazy ACP spawn, send-path branch | New session opens in Default mode; radio switches a follow-up turn to Code mode and back; full reply renders as one bubble |
 | **P1** | Streaming: `stream=true`, SSE parser, `TextDelta` → live bubble updates | Reply appears progressively, indistinguishable UX from agent streaming |
 | **P2** | `ReasoningDelta` → thinking sections; `reasoning.effort` toggle in settings; `input_tokens` counter in hint row | Thinking section collapses/expands; counter updates per turn |
 | **P3** | Attachments (`input_image`/`input_file` via base64 data URLs) and `text.format` structured output | Image question answered; JSON-mode request returns validated JSON |
@@ -195,7 +222,9 @@ build on its interfaces.
 | `src/platform/backend.rs` | add `HttpTransport` trait |
 | `src/platform/windows/http.rs` | new: WinHTTP transport impl |
 | `src/platform/windows/ffi.rs` | WinHTTP declarations, `link winhttp` |
-| `src/session.rs` | `SessionMode` enum + `Session.mode` |
-| `src/app.rs` | mode branch on send, `ResponsesClient` ownership |
-| `src/persistence.rs` | serialize/deserialize `mode` (default `Agent`) |
-| `src/platform/windows/render/header.rs` | mode badge |
+| `src/session.rs` | `SessionMode` enum (`Direct` default) + `Session.mode` |
+| `src/app.rs` | mode branch on send, lazy ACP spawn, `ResponsesClient` ownership |
+| `src/persistence.rs` | serialize/deserialize `mode` (default `Direct`) |
+| `src/platform/windows/render/header.rs` | radio switch (Default/Code) + mode badge |
+| `src/interaction.rs` | hit-testing for the radio control |
+| `src/theme.rs` | radio layout constants (paint/hit-test shared source) |
