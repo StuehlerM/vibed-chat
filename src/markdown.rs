@@ -2,9 +2,12 @@
 // Outputs Vec<StyledRun> for render.rs to draw.
 #![allow(dead_code)]
 
-use crate::theme::*;
+use crate::theme::{ACCENT_HOVER, MD_BOLD, MD_CODE_BLOCK, MD_HEADING, MD_INLINE_CODE, MD_TEXT};
 
-#[derive(Debug, Clone, PartialEq)]
+// Style is a plain data carrier for the GDI renderer; a bitflags type would
+// hurt readability for seven independent style attributes.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Style {
     pub bold: bool,
     pub italic: bool,
@@ -37,7 +40,7 @@ pub struct StyledRun {
 
 /// Find the end of a URL in a character slice starting at `start`.
 /// URLs end at whitespace or certain punctuation.
-fn find_url_end(chars: &[char], start: usize) -> usize {
+const fn find_url_end(chars: &[char], start: usize) -> usize {
     let mut i = start;
     while i < chars.len() {
         let c = chars[i];
@@ -57,7 +60,7 @@ fn find_url_end(chars: &[char], start: usize) -> usize {
 }
 
 /// Parse markdown text into styled runs.
-/// Also returns any code block language labels found: Vec<(start_line_idx_in_runs, lang)>.
+/// Also returns any code block language labels found: `Vec<(start_line_idx_in_runs, lang)>`.
 pub fn parse(text: &str) -> Vec<StyledRun> {
     let mut runs = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
@@ -89,7 +92,7 @@ pub fn parse(text: &str) -> Vec<StyledRun> {
                 color: MD_CODE_BLOCK,
                 ..Default::default()
             };
-            style.code_lang = current_code_lang.clone();
+            style.code_lang.clone_from(&current_code_lang);
             runs.push(StyledRun {
                 text: line.to_string(),
                 style,
@@ -131,6 +134,8 @@ fn url_scheme_len(chars: &[char], i: usize) -> Option<usize> {
     None
 }
 
+// Sequential inline-markdown scanner; each branch handles one delimiter pair.
+#[allow(clippy::too_many_lines)]
 fn parse_inline(text: &str) -> Vec<StyledRun> {
     let mut runs = Vec::new();
     let chars: Vec<char> = text.chars().collect();
@@ -215,7 +220,7 @@ fn parse_inline(text: &str) -> Vec<StyledRun> {
             }
             if level <= 6 && i + level < chars.len() && chars[i + level] == ' ' {
                 flush!();
-                let mut header_style = current_style.clone();
+                let mut header_style = current_style;
                 header_style.bold = true;
                 header_style.color = MD_HEADING;
                 let header_text: String = chars[i + level + 1..].iter().collect();

@@ -9,35 +9,35 @@ pub enum Json {
     Bool(bool),
     Number(f64),
     String(String),
-    Array(Vec<Json>),
-    Object(Vec<(String, Json)>),
+    Array(Vec<Self>),
+    Object(Vec<(String, Self)>),
 }
 
 impl Json {
-    pub fn get(&self, key: &str) -> Option<&Json> {
+    pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
-            Json::Object(pairs) => pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            Self::Object(pairs) => pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v),
             _ => None,
         }
     }
 
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            Json::String(s) => Some(s),
+            Self::String(s) => Some(s),
             _ => None,
         }
     }
 
-    pub fn as_array(&self) -> Option<&[Json]> {
+    pub fn as_array(&self) -> Option<&[Self]> {
         match self {
-            Json::Array(a) => Some(a),
+            Self::Array(a) => Some(a),
             _ => None,
         }
     }
 
-    pub fn as_f64(&self) -> Option<f64> {
+    pub const fn as_f64(&self) -> Option<f64> {
         match self {
-            Json::Number(n) => Some(*n),
+            Self::Number(n) => Some(*n),
             _ => None,
         }
     }
@@ -46,37 +46,37 @@ impl Json {
         self.as_f64().map(|n| n as i64)
     }
 
-    pub fn as_bool(&self) -> Option<bool> {
+    pub const fn as_bool(&self) -> Option<bool> {
         match self {
-            Json::Bool(b) => Some(*b),
+            Self::Bool(b) => Some(*b),
             _ => None,
         }
     }
 
-    pub fn as_object(&self) -> Option<&[(String, Json)]> {
+    pub fn as_object(&self) -> Option<&[(String, Self)]> {
         match self {
-            Json::Object(o) => Some(o),
+            Self::Object(o) => Some(o),
             _ => None,
         }
     }
 
-    pub fn is_null(&self) -> bool {
-        matches!(self, Json::Null)
+    pub const fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
     }
 
     fn write_to(&self, out: &mut String) {
         match self {
-            Json::Null => out.push_str("null"),
-            Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Json::Number(n) => {
+            Self::Null => out.push_str("null"),
+            Self::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Self::Number(n) => {
                 if n.fract() == 0.0 && n.abs() < 1e15 {
                     let _ = write!(out, "{}", *n as i64);
                 } else {
-                    let _ = write!(out, "{}", n);
+                    let _ = write!(out, "{n}");
                 }
             }
-            Json::String(s) => write_json_string(s, out),
-            Json::Array(arr) => {
+            Self::String(s) => write_json_string(s, out),
+            Self::Array(arr) => {
                 out.push('[');
                 for (i, v) in arr.iter().enumerate() {
                     if i > 0 {
@@ -86,7 +86,7 @@ impl Json {
                 }
                 out.push(']');
             }
-            Json::Object(pairs) => {
+            Self::Object(pairs) => {
                 out.push('{');
                 for (i, (k, v)) in pairs.iter().enumerate() {
                     if i > 0 {
@@ -102,8 +102,8 @@ impl Json {
     }
 
     /// Create a JSON object from key-value pairs
-    pub fn object(pairs: Vec<(&str, Json)>) -> Json {
-        Json::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    pub fn object(pairs: Vec<(&str, Self)>) -> Self {
+        Self::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
     }
 }
 
@@ -143,12 +143,12 @@ pub fn parse(input: &str) -> Result<Json, String> {
     let val = parse_value(&bytes, &mut pos)?;
     skip_ws(&bytes, &mut pos);
     if pos < bytes.len() {
-        return Err(format!("Trailing characters at position {}", pos));
+        return Err(format!("Trailing characters at position {pos}"));
     }
     Ok(val)
 }
 
-fn skip_ws(bytes: &[char], pos: &mut usize) {
+const fn skip_ws(bytes: &[char], pos: &mut usize) {
     while *pos < bytes.len() {
         match bytes[*pos] {
             ' ' | '\t' | '\n' | '\r' => *pos += 1,
@@ -170,7 +170,7 @@ fn parse_value(bytes: &[char], pos: &mut usize) -> Result<Json, String> {
         'f' => parse_literal(bytes, pos, "false", Json::Bool(false)),
         'n' => parse_literal(bytes, pos, "null", Json::Null),
         '-' | '0'..='9' => parse_number(bytes, pos),
-        c => Err(format!("Unexpected character '{}' at position {}", c, pos)),
+        c => Err(format!("Unexpected character '{c}' at position {pos}")),
     }
 }
 
@@ -178,7 +178,7 @@ fn parse_literal(bytes: &[char], pos: &mut usize, lit: &str, val: Json) -> Resul
     let lit_chars: Vec<char> = lit.chars().collect();
     for (i, c) in lit_chars.iter().enumerate() {
         if *pos + i >= bytes.len() || bytes[*pos + i] != *c {
-            return Err(format!("Expected '{}' at position {}", lit, pos));
+            return Err(format!("Expected '{lit}' at position {pos}"));
         }
     }
     *pos += lit_chars.len();
@@ -211,7 +211,7 @@ fn parse_number(bytes: &[char], pos: &mut usize) -> Result<Json, String> {
     let s: String = bytes[start..*pos].iter().collect();
     s.parse::<f64>()
         .map(Json::Number)
-        .map_err(|e| format!("Invalid number '{}': {}", s, e))
+        .map_err(|e| format!("Invalid number '{s}': {e}"))
 }
 
 fn parse_string(bytes: &[char], pos: &mut usize) -> Result<String, String> {
@@ -245,7 +245,7 @@ fn parse_string(bytes: &[char], pos: &mut usize) -> Result<String, String> {
                         }
                         let hex: String = bytes[*pos..*pos + 4].iter().collect();
                         let code = u32::from_str_radix(&hex, 16)
-                            .map_err(|e| format!("Invalid hex in unicode escape: {}", e))?;
+                            .map_err(|e| format!("Invalid hex in unicode escape: {e}"))?;
                         // Handle surrogate pairs
                         if (0xD800..=0xDBFF).contains(&code)
                             && *pos + 10 <= bytes.len()
@@ -270,7 +270,7 @@ fn parse_string(bytes: &[char], pos: &mut usize) -> Result<String, String> {
                         }
                         *pos += 3;
                     }
-                    c => return Err(format!("Invalid escape character '{}'", c)),
+                    c => return Err(format!("Invalid escape character '{c}'")),
                 }
                 *pos += 1;
             }
@@ -303,12 +303,7 @@ fn parse_array(bytes: &[char], pos: &mut usize) -> Result<Json, String> {
                 *pos += 1;
                 return Ok(Json::Array(arr));
             }
-            c => {
-                return Err(format!(
-                    "Expected ',' or ']' in array, got '{}' at {}",
-                    c, pos
-                ))
-            }
+            c => return Err(format!("Expected ',' or ']' in array, got '{c}' at {pos}")),
         }
     }
 }
@@ -324,12 +319,12 @@ fn parse_object(bytes: &[char], pos: &mut usize) -> Result<Json, String> {
     loop {
         skip_ws(bytes, pos);
         if *pos >= bytes.len() || bytes[*pos] != '"' {
-            return Err(format!("Expected string key at position {}", pos));
+            return Err(format!("Expected string key at position {pos}"));
         }
         let key = parse_string(bytes, pos)?;
         skip_ws(bytes, pos);
         if *pos >= bytes.len() || bytes[*pos] != ':' {
-            return Err(format!("Expected ':' at position {}", pos));
+            return Err(format!("Expected ':' at position {pos}"));
         }
         *pos += 1;
         let val = parse_value(bytes, pos)?;
@@ -346,8 +341,7 @@ fn parse_object(bytes: &[char], pos: &mut usize) -> Result<Json, String> {
             }
             c => {
                 return Err(format!(
-                    "Expected ',' or '}}' in object, got '{}' at {}",
-                    c, pos
+                    "Expected ',' or '}}' in object, got '{c}' at {pos}"
                 ))
             }
         }

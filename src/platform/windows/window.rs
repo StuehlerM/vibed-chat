@@ -374,7 +374,7 @@ pub unsafe extern "system" fn wnd_proc(
                     };
                     match result {
                         InputResult::Submit(text) => {
-                            state.send_message(text);
+                            state.send_message(&text);
                         }
                         InputResult::Cancel => {
                             state.cancel_turn();
@@ -546,10 +546,12 @@ pub unsafe extern "system" fn wnd_proc(
                 if x < sidebar_w {
                     let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
                     let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
-                    let (list_top, total_list_height, _) = state.sidebar_layout();
-                    let list_bottom = state.client_height - footer_h - pad;
-                    let avail_height = list_bottom - list_top;
-                    let max_scroll = (total_list_height - avail_height).max(0);
+                    let client_height = state.client_height;
+                    let max_scroll = state.with_sidebar_layout(|list_top, total_list_height, _| {
+                        let list_bottom = client_height - footer_h - pad;
+                        let avail_height = list_bottom - list_top;
+                        (total_list_height - avail_height).max(0)
+                    });
                     if scroll_amount > 0 {
                         state.sidebar_scroll_offset =
                             (state.sidebar_scroll_offset - scroll_amount).max(0);

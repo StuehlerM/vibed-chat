@@ -2,6 +2,14 @@
 // Entry point: dispatches to the platform backend.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
+// Every DPI-scaled pixel value is computed as `(base as f32 * scale) as i32`
+// (see AGENTS.md). These casts are intentional and saturate at the f32->i32
+// boundary; allowing them crate-wide is clearer than 160+ inline allows.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 
 mod acp;
 mod app;

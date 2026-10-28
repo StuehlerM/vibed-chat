@@ -3,7 +3,6 @@
 // UI state types from crate::ui.
 #![allow(dead_code)]
 
-use crate::chat::ChatState;
 use crate::platform::windows::fonts::Fonts;
 use crate::theme::*;
 
@@ -18,10 +17,6 @@ pub struct PaintContext<'a> {
 }
 
 impl<'a> PaintContext<'a> {
-    pub fn active_chat(&mut self) -> Option<&mut ChatState> {
-        self.app.active_chat()
-    }
-
     pub fn sidebar_w(&self) -> i32 {
         (SIDEBAR_WIDTH as f32 * self.app.dpi as f32 / 96.0) as i32
     }
@@ -40,18 +35,6 @@ impl<'a> PaintContext<'a> {
 
     pub fn chat_width(&self) -> i32 {
         self.chat_right() - self.chat_left()
-    }
-
-    pub fn session_header_h(&self) -> i32 {
-        (SESSION_HEADER_HEIGHT as f32 * self.app.dpi as f32 / 96.0) as i32
-    }
-
-    pub fn hint_row_h(&self) -> i32 {
-        (HINT_ROW_HEIGHT as f32 * self.app.dpi as f32 / 96.0) as i32
-    }
-
-    pub fn send_btn_size(&self) -> i32 {
-        (SEND_BTN_SIZE as f32 * self.app.dpi as f32 / 96.0) as i32
     }
 
     pub fn input_margin(&self) -> i32 {
