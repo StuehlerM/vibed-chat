@@ -10,6 +10,12 @@ Constraints: std-only (no new dependencies), no unit tests, no `unwrap()`/`expec
 Verification for every fix: `cargo check`, `cargo check --target x86_64-pc-windows-msvc`,
 `cargo fmt --check`, and a manual UI pass per `AGENTS.md`.
 
+> **Status: ALL ITEMS DONE.** Every finding below is implemented on branch
+> `vibe/plan-p0-fixes-47dbf5` (commits `91fe34c` through `3596539`).
+> Verified with `cargo check`, `cargo check --target x86_64-pc-windows-msvc`,
+> and `cargo fmt --check` (all clean, zero warnings). Manual UI pass on Windows
+> still recommended per AGENTS.md.
+
 ---
 
 ## P0 — Critical bugs (fix first)
