@@ -15,7 +15,7 @@ pub const SESSIONS_DIR: &str = "sessions";
 
 // ── Serialization ──────────────────────────────────────────────────────────
 
-fn role_to_str(role: Role) -> &'static str {
+const fn role_to_str(role: Role) -> &'static str {
     match role {
         Role::User => "user",
         Role::Agent => "agent",
@@ -43,22 +43,21 @@ fn message_to_json(m: &Message) -> Json {
 fn message_from_json(j: &Json) -> Message {
     let role = j
         .get("role")
-        .and_then(|v| v.as_str())
-        .map(str_to_role)
-        .unwrap_or(Role::System);
+        .and_then(Json::as_str)
+        .map_or(Role::System, str_to_role);
     let text = j
         .get("text")
-        .and_then(|v| v.as_str())
+        .and_then(Json::as_str)
         .unwrap_or("")
         .to_string();
     let thinking = j
         .get("thinking")
-        .and_then(|v| v.as_str())
+        .and_then(Json::as_str)
         .unwrap_or("")
         .to_string();
     let collapsed = j
         .get("thinking_collapsed")
-        .and_then(|v| v.as_bool())
+        .and_then(Json::as_bool)
         .unwrap_or(true);
 
     let mut msg = Message::new(role, &text);
@@ -81,16 +80,16 @@ fn settings_to_json(s: &Settings) -> Json {
 
 fn settings_from_json(j: &Json) -> Settings {
     let mut s = Settings::default();
-    if let Some(v) = j.get("dark_theme").and_then(|v| v.as_bool()) {
+    if let Some(v) = j.get("dark_theme").and_then(Json::as_bool) {
         s.dark_theme = v;
     }
-    if let Some(v) = j.get("auto_scroll").and_then(|v| v.as_bool()) {
+    if let Some(v) = j.get("auto_scroll").and_then(Json::as_bool) {
         s.auto_scroll = v;
     }
-    if let Some(v) = j.get("auto_approve").and_then(|v| v.as_bool()) {
+    if let Some(v) = j.get("auto_approve").and_then(Json::as_bool) {
         s.auto_approve = v;
     }
-    if let Some(v) = j.get("show_archived").and_then(|v| v.as_bool()) {
+    if let Some(v) = j.get("show_archived").and_then(Json::as_bool) {
         s.show_archived = v;
     }
     s
@@ -108,10 +107,10 @@ fn project_from_json(j: &Json) -> Option<Project> {
     let path = j.get("path")?.as_str()?.to_string();
     let name = j
         .get("name")
-        .and_then(|v| v.as_str())
+        .and_then(Json::as_str)
         .unwrap_or("")
         .to_string();
-    let expanded = j.get("expanded").and_then(|v| v.as_bool()).unwrap_or(true);
+    let expanded = j.get("expanded").and_then(Json::as_bool).unwrap_or(true);
     if path.is_empty() {
         return None;
     }
@@ -153,23 +152,23 @@ fn session_meta_from_json(j: &Json) -> Option<SessionMeta> {
         local_id,
         acp_session_id: j
             .get("acp_session_id")
-            .and_then(|v| v.as_str())
+            .and_then(Json::as_str)
             .unwrap_or("")
             .to_string(),
         name: j
             .get("name")
-            .and_then(|v| v.as_str())
+            .and_then(Json::as_str)
             .unwrap_or("New Chat")
             .to_string(),
         working_dir: j
             .get("working_dir")
-            .and_then(|v| v.as_str())
+            .and_then(Json::as_str)
             .unwrap_or(".")
             .to_string(),
-        archived: j.get("archived").and_then(|v| v.as_bool()).unwrap_or(false),
+        archived: j.get("archived").and_then(Json::as_bool).unwrap_or(false),
         mode: j
             .get("mode")
-            .and_then(|v| v.as_str())
+            .and_then(Json::as_str)
             .map(SessionMode::from_str)
             .unwrap_or(SessionMode::Direct),
     })
@@ -197,22 +196,22 @@ pub fn default_config_dir() -> String {
     #[cfg(windows)]
     {
         if let Ok(appdata) = std::env::var("APPDATA") {
-            return format!("{}\\vibe-chat", appdata);
+            return format!("{appdata}\\vibe-chat");
         }
     }
     #[cfg(target_os = "macos")]
     {
         if let Ok(home) = std::env::var("HOME") {
-            return format!("{}/Library/Application Support/vibe-chat", home);
+            return format!("{home}/Library/Application Support/vibe-chat");
         }
     }
     #[cfg(target_os = "linux")]
     {
         if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-            return format!("{}/vibe-chat", xdg);
+            return format!("{xdg}/vibe-chat");
         }
         if let Ok(home) = std::env::var("HOME") {
-            return format!("{}/.config/vibe-chat", home);
+            return format!("{home}/.config/vibe-chat");
         }
     }
     ".vibe-chat".to_string()
@@ -223,7 +222,7 @@ fn sessions_dir(config_dir: &str) -> std::path::PathBuf {
 }
 
 fn session_file_path(config_dir: &str, local_id: &str) -> std::path::PathBuf {
-    sessions_dir(config_dir).join(format!("{}.json", local_id))
+    sessions_dir(config_dir).join(format!("{local_id}.json"))
 }
 
 /// Save the state index (settings, projects, session metadata) to state.json.
@@ -234,8 +233,7 @@ pub fn save_index(
     sessions: &[Session],
     window: Option<&WindowState>,
 ) -> Result<(), String> {
-    std::fs::create_dir_all(config_dir)
-        .map_err(|e| format!("Failed to create config dir: {}", e))?;
+    std::fs::create_dir_all(config_dir).map_err(|e| format!("Failed to create config dir: {e}"))?;
 
     let session_metas: Vec<Json> = sessions
         .iter()
@@ -264,10 +262,10 @@ pub fn save_index(
         root_pairs.push((
             "window",
             Json::object(vec![
-                ("width", Json::Number(w.width as f64)),
-                ("height", Json::Number(w.height as f64)),
-                ("x", Json::Number(w.x as f64)),
-                ("y", Json::Number(w.y as f64)),
+                ("width", Json::Number(f64::from(w.width))),
+                ("height", Json::Number(f64::from(w.height))),
+                ("x", Json::Number(f64::from(w.x))),
+                ("y", Json::Number(f64::from(w.y))),
             ]),
         ));
     }
@@ -280,14 +278,13 @@ pub fn save_index(
     );
 
     let path = std::path::Path::new(config_dir).join(STATE_FILE);
-    std::fs::write(&path, root.to_string())
-        .map_err(|e| format!("Failed to write state.json: {}", e))
+    std::fs::write(&path, root.to_string()).map_err(|e| format!("Failed to write state.json: {e}"))
 }
 
-/// Save a single session's message history to sessions/<local_id>.json.
+/// Save a single session's message history to `sessions/<local_id>.json`.
 pub fn save_session(config_dir: &str, session: &Session) -> Result<(), String> {
     let dir = sessions_dir(config_dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {e}"))?;
 
     let messages_json: Vec<Json> = session.chat.messages.iter().map(message_to_json).collect();
 
@@ -302,7 +299,7 @@ pub fn save_session(config_dir: &str, session: &Session) -> Result<(), String> {
 
     let path = session_file_path(config_dir, &session.local_id);
     std::fs::write(&path, root.to_string())
-        .map_err(|e| format!("Failed to write session file: {}", e))
+        .map_err(|e| format!("Failed to write session file: {e}"))
 }
 
 /// Save the full state: index + all session files.
@@ -339,7 +336,7 @@ pub fn load_all(config_dir: &str) -> Option<LoadedState> {
         .unwrap_or_default();
 
     let mut projects = Vec::new();
-    if let Some(arr) = root.get("projects").and_then(|v| v.as_array()) {
+    if let Some(arr) = root.get("projects").and_then(Json::as_array) {
         for item in arr {
             if let Some(p) = project_from_json(item) {
                 projects.push(p);
@@ -348,7 +345,7 @@ pub fn load_all(config_dir: &str) -> Option<LoadedState> {
     }
 
     let mut sessions = Vec::new();
-    if let Some(arr) = root.get("sessions").and_then(|v| v.as_array()) {
+    if let Some(arr) = root.get("sessions").and_then(Json::as_array) {
         for item in arr {
             if let Some(meta) = session_meta_from_json(item) {
                 let mut session = Session {
@@ -365,8 +362,7 @@ pub fn load_all(config_dir: &str) -> Option<LoadedState> {
                 let session_path = session_file_path(config_dir, &meta.local_id);
                 if let Ok(content) = std::fs::read_to_string(&session_path) {
                     if let Ok(session_json) = json::parse(&content) {
-                        if let Some(msgs) = session_json.get("messages").and_then(|v| v.as_array())
-                        {
+                        if let Some(msgs) = session_json.get("messages").and_then(Json::as_array) {
                             for m in msgs {
                                 session.chat.messages.push_back(message_from_json(m));
                             }
@@ -381,10 +377,10 @@ pub fn load_all(config_dir: &str) -> Option<LoadedState> {
 
     let window = root.get("window").and_then(|w| {
         Some(WindowState {
-            width: w.get("width").and_then(|v| v.as_i64())? as i32,
-            height: w.get("height").and_then(|v| v.as_i64())? as i32,
-            x: w.get("x").and_then(|v| v.as_i64())? as i32,
-            y: w.get("y").and_then(|v| v.as_i64())? as i32,
+            width: w.get("width").and_then(Json::as_i64)? as i32,
+            height: w.get("height").and_then(Json::as_i64)? as i32,
+            x: w.get("x").and_then(Json::as_i64)? as i32,
+            y: w.get("y").and_then(Json::as_i64)? as i32,
         })
     });
 

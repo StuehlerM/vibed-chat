@@ -8,7 +8,7 @@
 use crate::session::SessionMode;
 
 /// Identifies which element is currently pressed (mouse down).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PressedElement {
     NewChat,
     NewProject,
@@ -27,7 +27,7 @@ pub enum PressedElement {
 }
 
 /// Identifies which element has keyboard focus.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusedElement {
     NewChat,
     NewProject,
@@ -42,7 +42,7 @@ pub enum FocusedElement {
 }
 
 /// Identifies which sidebar element is being inline-renamed.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenameTarget {
     Session(usize),
     Project(usize),

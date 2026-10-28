@@ -244,7 +244,3 @@ impl Drop for Gfx {
         }
     }
 }
-
-// Silence unused-import warning for c_void (used in FFI type definitions).
-#[allow(unused)]
-fn _t(_: *mut c_void) {}

@@ -33,16 +33,15 @@ pub fn last_message_preview(chat: &ChatState) -> String {
             let first_line: String = text.chars().take_while(|&c| c != '\n').collect();
             let preview = if first_line.chars().count() > 60 {
                 let truncated: String = first_line.chars().take(60).collect();
-                format!("{}...", truncated)
+                format!("{truncated}...")
             } else {
                 first_line
             };
             let prefix = match msg.role {
                 crate::chat::Role::User => "You: ",
-                crate::chat::Role::Agent => "",
-                crate::chat::Role::System => "",
+                _ => "",
             };
-            return format!("{}{}", prefix, preview);
+            return format!("{prefix}{preview}");
         }
     }
     String::new()

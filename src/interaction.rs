@@ -7,11 +7,18 @@
 use crate::app::{AppState, HoverState};
 use crate::chat::Role;
 use crate::session::SessionMode;
-use crate::theme::*;
+use crate::theme::{
+    compute_mode_radio_layout, compute_settings_layout, HINT_ROW_HEIGHT, INPUT_MARGIN,
+    MESSAGE_INNER_PADDING, MESSAGE_MAX_WIDTH_RATIO, MESSAGE_PADDING, MODE_RADIO_OPTION_W,
+    PROJECT_HEADER_HEIGHT, PROJECT_MENU_BTN_SIZE, SEND_BTN_MARGIN, SEND_BTN_SIZE,
+    SESSION_ACTION_BTN_GAP, SESSION_ACTION_BTN_SIZE, SESSION_HEADER_HEIGHT, SETTINGS_PANEL_WIDTH,
+    SIDEBAR_FOOTER_HEIGHT, SIDEBAR_HEADER_HEIGHT, SIDEBAR_ITEM_HEIGHT, SIDEBAR_ITEM_MARGIN,
+    SIDEBAR_PADDING, SIDEBAR_WIDTH, SPACE_1, SPACE_4, SPACE_5, THINKING_HEADER_HEIGHT,
+};
 use crate::ui::{FocusedElement, PressedElement, RenameTarget};
 
 /// A sidebar list entry - either a project header or a session item.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarEntry {
     ProjectHeader {
         project_idx: usize,
@@ -28,6 +35,40 @@ pub enum SidebarEntry {
         top: i32,
         bottom: i32,
     },
+}
+
+/// What a click on the sidebar list hit, computed inside
+/// `with_sidebar_layout` (which borrows the layout entries) and applied
+/// afterwards so `&mut self` mutations don't conflict with the borrow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidebarHit {
+    NewProject,
+    ProjectMenu(usize),
+    ProjectHeader(usize),
+    SessionArchive(usize),
+    SessionDelete(usize),
+    SessionItem(usize),
+}
+
+/// What a double-click on the sidebar list hit, computed inside
+/// `with_sidebar_layout` and applied afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DoubleClickHit {
+    ProjectHeader(usize),
+    SessionItem(usize),
+}
+
+/// What a mouse-move hover hit on the sidebar list, computed inside
+/// `with_sidebar_layout` and applied to `HoverState` afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoverHit {
+    NewProject,
+    SidebarScrollbar,
+    ProjectMenu(usize),
+    Project(usize),
+    SessionArchive(usize),
+    SessionDelete(usize),
+    SessionItem(usize),
 }
 
 impl AppState {
@@ -65,8 +106,15 @@ impl AppState {
         let current = self.focused_element;
         let pos = current.and_then(|c| order.iter().position(|f| *f == c));
 
-        let next = match pos {
-            Some(p) => {
+        let next = pos.map_or_else(
+            || {
+                if shift {
+                    order.len() - 1
+                } else {
+                    0
+                }
+            },
+            |p| {
                 if shift {
                     if p == 0 {
                         order.len() - 1
@@ -76,29 +124,20 @@ impl AppState {
                 } else {
                     (p + 1) % order.len()
                 }
-            }
-            None => {
-                if shift {
-                    order.len() - 1
-                } else {
-                    0
-                }
-            }
-        };
+            },
+        );
 
         self.focused_element = Some(order[next]);
 
-        if let Some(FocusedElement::Input) = self.focused_element {
-            if !self.sessions.is_empty() {
-                let idx = self.active_session.min(self.sessions.len() - 1);
-                self.sessions[idx].chat.input_focused = true;
-            }
+        if self.focused_element == Some(FocusedElement::Input) && !self.sessions.is_empty() {
+            let idx = self.active_session.min(self.sessions.len() - 1);
+            self.sessions[idx].chat.input_focused = true;
         }
     }
 
     /// Activate the currently focused element (Enter/Space).
     /// Returns true if the keypress was consumed.
-    /// Dialog-triggering actions (NewProject folder picker, project menu) are
+    /// Dialog-triggering actions (`NewProject` folder picker, project menu) are
     /// deferred via request flags that the platform backend handles.
     pub fn activate_focused_element(&mut self) -> bool {
         match self.focused_element {
@@ -154,7 +193,7 @@ impl AppState {
                         let chat = &mut self.sessions[idx].chat;
                         if !chat.input_buffer.trim().is_empty() {
                             let text = chat.take_input();
-                            self.send_message(text);
+                            self.send_message(&text);
                         }
                     }
                 }
@@ -166,24 +205,21 @@ impl AppState {
 
     // ── Sidebar layout ───────────────────────────────────────
 
-    /// Compute the project-aware sidebar layout matching the rendering in sidebar.rs.
-    /// Returns (list_top, total_height, entries). Archived sessions are included
-    /// only if show_archived is enabled.
+    /// Compute the project-aware sidebar layout matching the rendering in `sidebar.rs`.
+    /// Returns `(list_top, total_height, entries)`. Archived sessions are included
+    /// only if `show_archived` is enabled.
     ///
     /// Results are cached in `self.sidebar_cache` keyed by `sidebar_version`:
-    /// the layout is pure in (projects, sessions, settings, dpi, client_height),
+    /// the layout is pure in (projects, sessions, settings, dpi, `client_height`),
     /// all of which bump the version when they change, so repeat calls within
-    /// one event are free.
-    pub fn sidebar_layout(&self) -> (i32, i32, Vec<SidebarEntry>) {
-        if self.sidebar_cache.version == self.sidebar_version {
-            return (
-                self.sidebar_cache.list_top,
-                self.sidebar_cache.total_height,
-                self.sidebar_cache.entries.clone(),
-            );
+    /// one event are free. The cached entries are borrowed, not cloned —
+    /// callers must not hold the slice across a mutation of `self`.
+    pub fn with_sidebar_layout<R>(&mut self, f: impl FnOnce(i32, i32, &[SidebarEntry]) -> R) -> R {
+        if self.sidebar_cache.version != self.sidebar_version {
+            self.refresh_sidebar_layout();
         }
-        let (list_top, total_height, entries) = self.compute_sidebar_layout();
-        (list_top, total_height, entries)
+        let cache = &self.sidebar_cache;
+        f(cache.list_top, cache.total_height, &cache.entries)
     }
 
     /// Recompute the sidebar layout and refresh the cache.
@@ -233,8 +269,7 @@ impl AppState {
                 .filter(|&i| {
                     self.sessions
                         .get(i)
-                        .map(|s| self.settings.show_archived || !s.archived)
-                        .unwrap_or(false)
+                        .is_some_and(|s| self.settings.show_archived || !s.archived)
                 })
                 .collect();
             grouped.push((pidx, visible));
@@ -260,7 +295,7 @@ impl AppState {
             let expanded = if *pidx == other_idx {
                 true
             } else {
-                self.projects.get(*pidx).map(|p| p.expanded).unwrap_or(true)
+                self.projects.get(*pidx).is_none_or(|p| p.expanded)
             };
             if expanded {
                 for &sidx in session_indices {
@@ -289,25 +324,26 @@ impl AppState {
 
     // ── Click handling ───────────────────────────────────────
 
+    // Central mouse dispatch: one match arm per UI region/element.
+    #[allow(clippy::too_many_lines)]
     pub fn handle_click(&mut self, x: i32, y: i32) -> bool {
         if self.rename_target.is_some() {
             let scale = self.dpi as f32 / 96.0;
             let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
             let is_in_sidebar = x < sidebar_w;
-            if !is_in_sidebar {
-                self.cancel_rename();
-            } else {
+            if is_in_sidebar {
                 let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
                 let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
-                let (list_top, total_list_height, entries) = self.sidebar_layout();
-                let list_bottom = self.client_height - footer_h - pad;
-                let avail_height = list_bottom - list_top;
-                let max_scroll = (total_list_height - avail_height).max(0);
-                let sidebar_scroll = self.sidebar_scroll_offset.min(max_scroll).max(0);
+                let rename_target = self.rename_target;
+                let sidebar_scroll_offset = self.sidebar_scroll_offset;
+                let client_height = self.client_height;
                 let click_on_renaming =
-                    entries
-                        .iter()
-                        .any(|entry| match (self.rename_target, entry) {
+                    self.with_sidebar_layout(|list_top, total_list_height, entries| {
+                        let list_bottom = client_height - footer_h - pad;
+                        let avail_height = list_bottom - list_top;
+                        let max_scroll = (total_list_height - avail_height).max(0);
+                        let sidebar_scroll = sidebar_scroll_offset.min(max_scroll).max(0);
+                        entries.iter().any(|entry| match (rename_target, entry) {
                             (
                                 Some(RenameTarget::Session(idx)),
                                 SidebarEntry::SessionItem {
@@ -334,10 +370,13 @@ impl AppState {
                                     && y <= bottom - sidebar_scroll
                             }
                             _ => false,
-                        });
+                        })
+                    });
                 if !click_on_renaming {
                     self.cancel_rename();
                 }
+            } else {
+                self.cancel_rename();
             }
         }
         let scale = self.dpi as f32 / 96.0;
@@ -387,114 +426,137 @@ impl AppState {
 
             // Project-aware sidebar list (matches sidebar rendering)
             let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
-            let (list_top, total_list_height, entries) = self.sidebar_layout();
-            let list_bottom = self.client_height - footer_h - pad;
-            let avail_height = list_bottom - list_top;
-            let max_scroll = (total_list_height - avail_height).max(0);
-            let sidebar_scroll = self.sidebar_scroll_offset.min(max_scroll).max(0);
-
             let item_h = (SIDEBAR_ITEM_HEIGHT as f32 * scale) as i32;
             let sidebar_inner_left = pad;
             let sidebar_inner_right = sidebar_w - pad;
+            let client_height = self.client_height;
+            let sidebar_scroll_offset = self.sidebar_scroll_offset;
+            let projects_len = self.projects.len();
+            let hit = self.with_sidebar_layout(|list_top, total_list_height, entries| {
+                let list_bottom = client_height - footer_h - pad;
+                let avail_height = list_bottom - list_top;
+                let max_scroll = (total_list_height - avail_height).max(0);
+                let sidebar_scroll = sidebar_scroll_offset.min(max_scroll).max(0);
 
-            // "+ New Project" button sits above list_top
-            if let Some(SidebarEntry::NewProjectBtn { top, bottom }) = entries.first() {
-                let adj_top = top - sidebar_scroll;
-                let adj_bottom = bottom - sidebar_scroll;
-                if y >= adj_top && y <= adj_bottom && x >= pad && x <= sidebar_w - pad {
+                // "+ New Project" button sits above list_top
+                if let Some(SidebarEntry::NewProjectBtn { top, bottom }) = entries.first() {
+                    let adj_top = top - sidebar_scroll;
+                    let adj_bottom = bottom - sidebar_scroll;
+                    if y >= adj_top && y <= adj_bottom && x >= pad && x <= sidebar_w - pad {
+                        return Some(SidebarHit::NewProject);
+                    }
+                }
+
+                for entry in entries {
+                    match *entry {
+                        SidebarEntry::ProjectHeader {
+                            project_idx,
+                            top,
+                            bottom,
+                        } => {
+                            let adj_top = top - sidebar_scroll;
+                            let adj_bottom = bottom - sidebar_scroll;
+                            if adj_bottom <= list_top || adj_top >= list_bottom {
+                                continue;
+                            }
+                            if y < adj_top || y > adj_bottom {
+                                continue;
+                            }
+                            // Menu button on the right (real projects only)
+                            if project_idx < projects_len {
+                                let menu_btn_size = (PROJECT_MENU_BTN_SIZE as f32 * scale) as i32;
+                                let menu_right = sidebar_w - pad - (SPACE_1 as f32 * scale) as i32;
+                                let menu_left = menu_right - menu_btn_size;
+                                if x >= menu_left && x <= menu_right {
+                                    return Some(SidebarHit::ProjectMenu(project_idx));
+                                }
+                            }
+                            return Some(SidebarHit::ProjectHeader(project_idx));
+                        }
+                        SidebarEntry::SessionItem {
+                            session_idx,
+                            top,
+                            bottom,
+                            ..
+                        } => {
+                            let adj_top = top - sidebar_scroll;
+                            let adj_bottom = bottom - sidebar_scroll;
+                            if adj_bottom <= list_top || adj_top >= list_bottom {
+                                continue;
+                            }
+
+                            // Check archive/delete buttons first (they're on top of the item)
+                            let (archive_rect, delete_rect) = session_action_rects(
+                                sidebar_inner_left,
+                                sidebar_inner_right,
+                                adj_top,
+                                item_h,
+                                scale,
+                            );
+
+                            if point_in_rect(
+                                x,
+                                y,
+                                archive_rect.0,
+                                archive_rect.1,
+                                archive_rect.2,
+                                archive_rect.3,
+                            ) {
+                                return Some(SidebarHit::SessionArchive(session_idx));
+                            }
+                            if point_in_rect(
+                                x,
+                                y,
+                                delete_rect.0,
+                                delete_rect.1,
+                                delete_rect.2,
+                                delete_rect.3,
+                            ) {
+                                return Some(SidebarHit::SessionDelete(session_idx));
+                            }
+
+                            // Check if click is on the session item itself
+                            if y >= adj_top && y <= adj_bottom {
+                                return Some(SidebarHit::SessionItem(session_idx));
+                            }
+                        }
+                        SidebarEntry::NewProjectBtn { .. } => {}
+                    }
+                }
+                None
+            });
+            match hit {
+                Some(SidebarHit::NewProject) => {
                     self.pressed_element = Some(PressedElement::NewProject);
                     self.new_project_requested = true;
                     return true;
                 }
-            }
-
-            for entry in &entries {
-                match *entry {
-                    SidebarEntry::ProjectHeader {
-                        project_idx,
-                        top,
-                        bottom,
-                    } => {
-                        let adj_top = top - sidebar_scroll;
-                        let adj_bottom = bottom - sidebar_scroll;
-                        if adj_bottom <= list_top || adj_top >= list_bottom {
-                            continue;
-                        }
-                        if y < adj_top || y > adj_bottom {
-                            continue;
-                        }
-                        // Menu button on the right (real projects only)
-                        if project_idx < self.projects.len() {
-                            let menu_btn_size = (PROJECT_MENU_BTN_SIZE as f32 * scale) as i32;
-                            let menu_right = sidebar_w - pad - (SPACE_1 as f32 * scale) as i32;
-                            let menu_left = menu_right - menu_btn_size;
-                            if x >= menu_left && x <= menu_right {
-                                self.pressed_element =
-                                    Some(PressedElement::ProjectMenu(project_idx));
-                                self.project_menu_requested = Some(project_idx);
-                                return true;
-                            }
-                        }
-                        self.pressed_element = Some(PressedElement::ProjectHeader(project_idx));
-                        self.toggle_project(project_idx);
-                        return true;
-                    }
-                    SidebarEntry::SessionItem {
-                        session_idx,
-                        top,
-                        bottom,
-                        ..
-                    } => {
-                        let adj_top = top - sidebar_scroll;
-                        let adj_bottom = bottom - sidebar_scroll;
-                        if adj_bottom <= list_top || adj_top >= list_bottom {
-                            continue;
-                        }
-
-                        // Check archive/delete buttons first (they're on top of the item)
-                        let (archive_rect, delete_rect) = session_action_rects(
-                            sidebar_inner_left,
-                            sidebar_inner_right,
-                            adj_top,
-                            item_h,
-                            scale,
-                        );
-
-                        if point_in_rect(
-                            x,
-                            y,
-                            archive_rect.0,
-                            archive_rect.1,
-                            archive_rect.2,
-                            archive_rect.3,
-                        ) {
-                            self.pressed_element =
-                                Some(PressedElement::SessionArchive(session_idx));
-                            self.toggle_archive_session(session_idx);
-                            return true;
-                        }
-                        if point_in_rect(
-                            x,
-                            y,
-                            delete_rect.0,
-                            delete_rect.1,
-                            delete_rect.2,
-                            delete_rect.3,
-                        ) {
-                            self.pressed_element = Some(PressedElement::SessionDelete(session_idx));
-                            self.delete_session(session_idx);
-                            return true;
-                        }
-
-                        // Check if click is on the session item itself
-                        if y >= adj_top && y <= adj_bottom {
-                            self.pressed_element = Some(PressedElement::SidebarItem(session_idx));
-                            self.switch_session(session_idx);
-                            return true;
-                        }
-                    }
-                    SidebarEntry::NewProjectBtn { .. } => {}
+                Some(SidebarHit::ProjectMenu(pidx)) => {
+                    self.pressed_element = Some(PressedElement::ProjectMenu(pidx));
+                    self.project_menu_requested = Some(pidx);
+                    return true;
                 }
+                Some(SidebarHit::ProjectHeader(pidx)) => {
+                    self.pressed_element = Some(PressedElement::ProjectHeader(pidx));
+                    self.toggle_project(pidx);
+                    return true;
+                }
+                Some(SidebarHit::SessionArchive(sidx)) => {
+                    self.pressed_element = Some(PressedElement::SessionArchive(sidx));
+                    self.toggle_archive_session(sidx);
+                    return true;
+                }
+                Some(SidebarHit::SessionDelete(sidx)) => {
+                    self.pressed_element = Some(PressedElement::SessionDelete(sidx));
+                    self.delete_session(sidx);
+                    return true;
+                }
+                Some(SidebarHit::SessionItem(sidx)) => {
+                    self.pressed_element = Some(PressedElement::SidebarItem(sidx));
+                    self.switch_session(sidx);
+                    return true;
+                }
+                None => {}
             }
 
             // Settings button
@@ -543,7 +605,7 @@ impl AppState {
                         let chat = &mut self.sessions[idx].chat;
                         if !chat.input_buffer.trim().is_empty() {
                             let text = chat.take_input();
-                            self.send_message(text);
+                            self.send_message(&text);
                         }
                     }
                 }
@@ -638,55 +700,70 @@ impl AppState {
 
         let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
         let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
-        let (list_top, total_list_height, entries) = self.sidebar_layout();
-        let list_bottom = self.client_height - footer_h - pad;
-        let avail_height = list_bottom - list_top;
-        let max_scroll = (total_list_height - avail_height).max(0);
-        let sidebar_scroll = self.sidebar_scroll_offset.min(max_scroll).max(0);
+        let client_height = self.client_height;
+        let sidebar_scroll_offset = self.sidebar_scroll_offset;
+        let projects_len = self.projects.len();
+        let hit = self.with_sidebar_layout(|list_top, total_list_height, entries| {
+            let list_bottom = client_height - footer_h - pad;
+            let avail_height = list_bottom - list_top;
+            let max_scroll = (total_list_height - avail_height).max(0);
+            let sidebar_scroll = sidebar_scroll_offset.min(max_scroll).max(0);
 
-        for entry in &entries {
-            match *entry {
-                SidebarEntry::ProjectHeader {
-                    project_idx,
-                    top,
-                    bottom,
-                } => {
-                    let adj_top = top - sidebar_scroll;
-                    let adj_bottom = bottom - sidebar_scroll;
-                    if adj_bottom <= list_top || adj_top >= list_bottom {
-                        continue;
-                    }
-                    if y >= adj_top && y <= adj_bottom {
-                        if project_idx < self.projects.len() {
-                            self.toggle_project(project_idx);
+            for entry in entries {
+                match *entry {
+                    SidebarEntry::ProjectHeader {
+                        project_idx,
+                        top,
+                        bottom,
+                    } => {
+                        let adj_top = top - sidebar_scroll;
+                        let adj_bottom = bottom - sidebar_scroll;
+                        if adj_bottom <= list_top || adj_top >= list_bottom {
+                            continue;
                         }
-                        return true;
+                        if y >= adj_top && y <= adj_bottom {
+                            return Some(DoubleClickHit::ProjectHeader(project_idx));
+                        }
                     }
+                    SidebarEntry::SessionItem {
+                        session_idx,
+                        top,
+                        bottom,
+                        ..
+                    } => {
+                        let adj_top = top - sidebar_scroll;
+                        let adj_bottom = bottom - sidebar_scroll;
+                        if adj_bottom <= list_top || adj_top >= list_bottom {
+                            continue;
+                        }
+                        if y >= adj_top && y <= adj_bottom {
+                            return Some(DoubleClickHit::SessionItem(session_idx));
+                        }
+                    }
+                    SidebarEntry::NewProjectBtn { .. } => {}
                 }
-                SidebarEntry::SessionItem {
-                    session_idx,
-                    top,
-                    bottom,
-                    ..
-                } => {
-                    let adj_top = top - sidebar_scroll;
-                    let adj_bottom = bottom - sidebar_scroll;
-                    if adj_bottom <= list_top || adj_top >= list_bottom {
-                        continue;
-                    }
-                    if y >= adj_top && y <= adj_bottom {
-                        self.start_rename(session_idx);
-                        return true;
-                    }
-                }
-                SidebarEntry::NewProjectBtn { .. } => {}
             }
+            None
+        });
+        match hit {
+            Some(DoubleClickHit::ProjectHeader(pidx)) => {
+                if pidx < projects_len {
+                    self.toggle_project(pidx);
+                }
+                true
+            }
+            Some(DoubleClickHit::SessionItem(sidx)) => {
+                self.start_rename(sidx);
+                true
+            }
+            None => false,
         }
-        false
     }
 
     // ── Hover handling ───────────────────────────────────────
 
+    // Mirrors handle_click's region layout for hover highlight state.
+    #[allow(clippy::too_many_lines)]
     pub fn update_hover(&mut self, x: i32, y: i32) {
         let scale = self.dpi as f32 / 96.0;
         let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
@@ -733,119 +810,153 @@ impl AppState {
                 return;
             }
 
-            // Project-aware sidebar list hover (matches sidebar rendering)
-            let (list_top, total_list_height, entries) = self.sidebar_layout();
-            let list_bottom = self.client_height - footer_h - pad;
-            let avail_height = list_bottom - list_top;
-            let max_scroll = (total_list_height - avail_height).max(0);
-            let sidebar_scroll = self.sidebar_scroll_offset.min(max_scroll).max(0);
-
-            // "+ New Project" button sits above list_top
-            if let Some(SidebarEntry::NewProjectBtn { top, bottom }) = entries.first() {
-                let adj_top = top - sidebar_scroll;
-                let adj_bottom = bottom - sidebar_scroll;
-                if y >= adj_top && y <= adj_bottom && x >= pad && x <= sidebar_w - pad {
-                    self.hover.new_project = true;
-                    return;
-                }
-            }
-
-            if total_list_height > avail_height {
-                let sb_w = (4.0 * scale).max(3.0) as i32;
-                if x >= sidebar_w - sb_w - 1 && x <= sidebar_w && y >= list_top && y <= list_bottom
-                {
-                    self.hover.sidebar_scrollbar = true;
-                    return;
-                }
-            }
-
+            // Project-aware sidebar list hover (matches sidebar rendering).
+            // The hit test runs inside `with_sidebar_layout` (which borrows the
+            // cached entries) and returns a small enum; the hover state is
+            // applied afterwards so the borrow is released before mutation.
             let item_h = (SIDEBAR_ITEM_HEIGHT as f32 * scale) as i32;
             let sidebar_inner_left = pad;
             let sidebar_inner_right = sidebar_w - pad;
+            let client_height = self.client_height;
+            let sidebar_scroll_offset = self.sidebar_scroll_offset;
+            let projects_len = self.projects.len();
+            let hover_hit = self.with_sidebar_layout(|list_top, total_list_height, entries| {
+                let list_bottom = client_height - footer_h - pad;
+                let avail_height = list_bottom - list_top;
+                let max_scroll = (total_list_height - avail_height).max(0);
+                let sidebar_scroll = sidebar_scroll_offset.min(max_scroll).max(0);
 
-            for entry in &entries {
-                match *entry {
-                    SidebarEntry::ProjectHeader {
-                        project_idx,
-                        top,
-                        bottom,
-                    } => {
-                        let adj_top = top - sidebar_scroll;
-                        let adj_bottom = bottom - sidebar_scroll;
-                        if adj_bottom <= list_top || adj_top >= list_bottom {
-                            continue;
+                // "+ New Project" button sits above list_top
+                if let Some(SidebarEntry::NewProjectBtn { top, bottom }) = entries.first() {
+                    let adj_top = top - sidebar_scroll;
+                    let adj_bottom = bottom - sidebar_scroll;
+                    if y >= adj_top && y <= adj_bottom && x >= pad && x <= sidebar_w - pad {
+                        return Some(HoverHit::NewProject);
+                    }
+                }
+
+                if total_list_height > avail_height {
+                    let sb_w = (4.0 * scale).max(3.0) as i32;
+                    if x >= sidebar_w - sb_w - 1
+                        && x <= sidebar_w
+                        && y >= list_top
+                        && y <= list_bottom
+                    {
+                        return Some(HoverHit::SidebarScrollbar);
+                    }
+                }
+
+                for entry in entries {
+                    match *entry {
+                        SidebarEntry::ProjectHeader {
+                            project_idx,
+                            top,
+                            bottom,
+                        } => {
+                            let adj_top = top - sidebar_scroll;
+                            let adj_bottom = bottom - sidebar_scroll;
+                            if adj_bottom <= list_top || adj_top >= list_bottom {
+                                continue;
+                            }
+                            if y < adj_top || y > adj_bottom {
+                                continue;
+                            }
+                            // Menu button hover (real projects only)
+                            if project_idx < projects_len {
+                                let menu_btn_size = (PROJECT_MENU_BTN_SIZE as f32 * scale) as i32;
+                                let menu_right = sidebar_w - pad - (SPACE_1 as f32 * scale) as i32;
+                                let menu_left = menu_right - menu_btn_size;
+                                if x >= menu_left && x <= menu_right {
+                                    return Some(HoverHit::ProjectMenu(project_idx));
+                                }
+                            }
+                            return Some(HoverHit::Project(project_idx));
                         }
-                        if y < adj_top || y > adj_bottom {
-                            continue;
-                        }
-                        // Menu button hover (real projects only)
-                        if project_idx < self.projects.len() {
-                            let menu_btn_size = (PROJECT_MENU_BTN_SIZE as f32 * scale) as i32;
-                            let menu_right = sidebar_w - pad - (SPACE_1 as f32 * scale) as i32;
-                            let menu_left = menu_right - menu_btn_size;
-                            if x >= menu_left && x <= menu_right {
-                                self.hover.project_menu = Some(project_idx);
-                                self.hover.project = Some(project_idx);
-                                return;
+                        SidebarEntry::SessionItem {
+                            session_idx,
+                            top,
+                            bottom,
+                            ..
+                        } => {
+                            let adj_top = top - sidebar_scroll;
+                            let adj_bottom = bottom - sidebar_scroll;
+                            if adj_bottom <= list_top || adj_top >= list_bottom {
+                                continue;
+                            }
+
+                            // Check archive/delete button hover first
+                            let (archive_rect, delete_rect) = session_action_rects(
+                                sidebar_inner_left,
+                                sidebar_inner_right,
+                                adj_top,
+                                item_h,
+                                scale,
+                            );
+
+                            if point_in_rect(
+                                x,
+                                y,
+                                archive_rect.0,
+                                archive_rect.1,
+                                archive_rect.2,
+                                archive_rect.3,
+                            ) {
+                                return Some(HoverHit::SessionArchive(session_idx));
+                            }
+                            if point_in_rect(
+                                x,
+                                y,
+                                delete_rect.0,
+                                delete_rect.1,
+                                delete_rect.2,
+                                delete_rect.3,
+                            ) {
+                                return Some(HoverHit::SessionDelete(session_idx));
+                            }
+
+                            // Session item hover
+                            if y >= adj_top && y <= adj_bottom {
+                                return Some(HoverHit::SessionItem(session_idx));
                             }
                         }
-                        self.hover.project = Some(project_idx);
-                        return;
+                        SidebarEntry::NewProjectBtn { .. } => {}
                     }
-                    SidebarEntry::SessionItem {
-                        session_idx,
-                        top,
-                        bottom,
-                        ..
-                    } => {
-                        let adj_top = top - sidebar_scroll;
-                        let adj_bottom = bottom - sidebar_scroll;
-                        if adj_bottom <= list_top || adj_top >= list_bottom {
-                            continue;
-                        }
-
-                        // Check archive/delete button hover first
-                        let (archive_rect, delete_rect) = session_action_rects(
-                            sidebar_inner_left,
-                            sidebar_inner_right,
-                            adj_top,
-                            item_h,
-                            scale,
-                        );
-
-                        if point_in_rect(
-                            x,
-                            y,
-                            archive_rect.0,
-                            archive_rect.1,
-                            archive_rect.2,
-                            archive_rect.3,
-                        ) {
-                            self.hover.session_archive = Some(session_idx);
-                            self.hover.sidebar_item = Some(session_idx);
-                            return;
-                        }
-                        if point_in_rect(
-                            x,
-                            y,
-                            delete_rect.0,
-                            delete_rect.1,
-                            delete_rect.2,
-                            delete_rect.3,
-                        ) {
-                            self.hover.session_delete = Some(session_idx);
-                            self.hover.sidebar_item = Some(session_idx);
-                            return;
-                        }
-
-                        // Session item hover
-                        if y >= adj_top && y <= adj_bottom {
-                            self.hover.sidebar_item = Some(session_idx);
-                            return;
-                        }
-                    }
-                    SidebarEntry::NewProjectBtn { .. } => {}
                 }
+                None
+            });
+            match hover_hit {
+                Some(HoverHit::NewProject) => {
+                    self.hover.new_project = true;
+                    return;
+                }
+                Some(HoverHit::SidebarScrollbar) => {
+                    self.hover.sidebar_scrollbar = true;
+                    return;
+                }
+                Some(HoverHit::ProjectMenu(pidx)) => {
+                    self.hover.project_menu = Some(pidx);
+                    self.hover.project = Some(pidx);
+                    return;
+                }
+                Some(HoverHit::Project(pidx)) => {
+                    self.hover.project = Some(pidx);
+                    return;
+                }
+                Some(HoverHit::SessionArchive(sidx)) => {
+                    self.hover.session_archive = Some(sidx);
+                    self.hover.sidebar_item = Some(sidx);
+                    return;
+                }
+                Some(HoverHit::SessionDelete(sidx)) => {
+                    self.hover.session_delete = Some(sidx);
+                    self.hover.sidebar_item = Some(sidx);
+                    return;
+                }
+                Some(HoverHit::SessionItem(sidx)) => {
+                    self.hover.sidebar_item = Some(sidx);
+                    return;
+                }
+                None => {}
             }
 
             // Settings button hover
@@ -1138,7 +1249,7 @@ impl AppState {
 pub type Rect = (i32, i32, i32, i32);
 
 /// Compute the rects for the archive and delete buttons on a session sidebar
-/// item. Returns (archive_rect, delete_rect).
+/// item. Returns `(archive_rect, delete_rect)`.
 pub fn session_action_rects(
     _item_left: i32,
     item_right: i32,
@@ -1163,11 +1274,7 @@ pub fn session_action_rects(
     )
 }
 
-/// Alias kept for call sites that build raw rects inline.
-#[allow(dead_code)]
-pub type _LegacyRectPair = (Rect, Rect);
-
 /// Check if point (x, y) is inside a rect (left, top, right, bottom).
-pub fn point_in_rect(x: i32, y: i32, left: i32, top: i32, right: i32, bottom: i32) -> bool {
+pub const fn point_in_rect(x: i32, y: i32, left: i32, top: i32, right: i32, bottom: i32) -> bool {
     x >= left && x <= right && y >= top && y <= bottom
 }
