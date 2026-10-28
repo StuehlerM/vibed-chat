@@ -153,7 +153,7 @@ fn parse_inline(text: &str) -> Vec<StyledRun> {
         // **bold**
         if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
             // Find closing **
-            if let Some(end) = find_delimiter(&chars, i + 2, "**") {
+            if let Some(end) = find_delimiter(&chars, i + 2, &['*', '*']) {
                 flush!();
                 let inner: String = chars[i + 2..end].iter().collect();
                 // Recursively parse inside bold
@@ -174,7 +174,7 @@ fn parse_inline(text: &str) -> Vec<StyledRun> {
         if (chars[i] == '*' || chars[i] == '_') && (i == 0 || chars[i - 1] != chars[i]) {
             let delim = chars[i];
             if i + 1 < chars.len() && chars[i + 1] != delim {
-                if let Some(end) = find_delimiter(&chars, i + 1, &delim.to_string()) {
+                if let Some(end) = find_delimiter(&chars, i + 1, &[delim]) {
                     if end > i + 1 {
                         flush!();
                         let inner: String = chars[i + 1..end].iter().collect();
@@ -192,7 +192,7 @@ fn parse_inline(text: &str) -> Vec<StyledRun> {
 
         // `code`
         if chars[i] == '`' {
-            if let Some(end) = find_delimiter(&chars, i + 1, "`") {
+            if let Some(end) = find_delimiter(&chars, i + 1, &['`']) {
                 flush!();
                 let inner: String = chars[i + 1..end].iter().collect();
                 let mut code_style = current_style.clone();
@@ -265,8 +265,8 @@ fn parse_inline(text: &str) -> Vec<StyledRun> {
     runs
 }
 
-fn find_delimiter(chars: &[char], start: usize, delim: &str) -> Option<usize> {
-    let d: Vec<char> = delim.chars().collect();
+fn find_delimiter(chars: &[char], start: usize, delim: &[char]) -> Option<usize> {
+    let d = delim;
     if d.is_empty() {
         return None;
     }

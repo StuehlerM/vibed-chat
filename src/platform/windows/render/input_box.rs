@@ -280,7 +280,7 @@ pub fn draw_input_box(
                         current = test;
                     } else {
                         wrapped_lines.push(WrappedLine {
-                            text: current.clone(),
+                            text: std::mem::take(&mut current),
                             raw_line_idx: raw_idx,
                             byte_offset: seg_start,
                         });

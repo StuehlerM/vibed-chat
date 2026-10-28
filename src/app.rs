@@ -583,7 +583,7 @@ impl AppState {
                     name,
                     input,
                 } => {
-                    let msg = format!("[Tool: {}] {}", name, truncate_str(&input, 200));
+                    let msg = format!("[Tool: {}] {}", name, truncate_cow(&input, 200));
                     self.add_system_message_to_session(&session_id, &msg);
                     if let Some(idx) = self.find_session_by_acp_id(&session_id) {
                         self.save_session(idx);
@@ -594,7 +594,7 @@ impl AppState {
                     call_id: _,
                     output,
                 } => {
-                    let msg = format!("[Result] {}", truncate_str(&output, 200));
+                    let msg = format!("[Result] {}", truncate_cow(&output, 200));
                     self.add_system_message_to_session(&session_id, &msg);
                     if let Some(idx) = self.find_session_by_acp_id(&session_id) {
                         self.save_session(idx);
@@ -880,4 +880,17 @@ pub fn truncate_str(s: &str, max_len: usize) -> String {
         }
         format!("{}...", &s[..end])
     }
+}
+
+/// Borrowing variant of `truncate_str`: returns the input slice unchanged
+/// when it is short enough, avoiding a full copy for the common case.
+pub fn truncate_cow<'a>(s: &'a str, max_len: usize) -> std::borrow::Cow<'a, str> {
+    if s.len() <= max_len {
+        return s.into();
+    }
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &s[..end]).into()
 }

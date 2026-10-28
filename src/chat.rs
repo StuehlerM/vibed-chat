@@ -97,6 +97,12 @@ pub struct ChatState {
     pub input_scroll_offset: i32,
 }
 
+impl Default for ChatState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChatState {
     pub fn new() -> Self {
         Self {

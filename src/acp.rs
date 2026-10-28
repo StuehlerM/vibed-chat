@@ -280,23 +280,26 @@ fn writer_thread(
                 // Allocate the request id in a single lock scope (previously
                 // two separate locks). Callers always pass a concrete session
                 // id; an empty one is rejected below.
-                let (sid, id) = {
+                // Reject an empty session id up front: the request would
+                // never be routed to a session, so allocating an id for it
+                // would leak an entry in `pending_prompts` forever.
+                if session_id.is_empty() {
+                    let _ = event_tx.send(AcpEvent::Error(
+                        "Session not ready, prompt queued".to_string(),
+                    ));
+                    continue;
+                }
+                let sid = session_id;
+                let id = {
                     let mut s = match state.lock() {
                         Ok(s) => s,
                         Err(_) => continue,
                     };
                     let id = s.next_id;
                     s.next_id += 1;
-                    s.pending_prompts.insert(id, session_id.clone());
-                    (session_id, id)
+                    s.pending_prompts.insert(id, sid.clone());
+                    id
                 };
-
-                if sid.is_empty() {
-                    let _ = event_tx.send(AcpEvent::Error(
-                        "Session not ready, prompt queued".to_string(),
-                    ));
-                    continue;
-                }
                 let msg = Json::object(vec![
                     ("jsonrpc", Json::String("2.0".to_string())),
                     ("id", Json::Number(id as f64)),

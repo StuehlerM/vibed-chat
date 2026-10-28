@@ -19,7 +19,7 @@ pub const TIMER_INTERVAL_MS: UINT = 16; // ~60fps
 pub const MIN_WINDOW_WIDTH: i32 = 720;
 pub const MIN_WINDOW_HEIGHT: i32 = 480;
 
-const GWLP_USERDATA: i32 = -21;
+pub const GWLP_USERDATA: i32 = -21;
 
 // ── Window procedure ─────────────────────────────────────────
 

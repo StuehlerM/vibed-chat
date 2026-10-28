@@ -75,9 +75,11 @@ pub fn app_entry() {
 
         app_state.as_mut().connect_acp();
 
-        app_state.as_mut().sessions[0]
-            .chat
-            .add_system_message("ACP Chat started. Connecting to agent...");
+        if let Some(session) = app_state.as_mut().sessions.first_mut() {
+            session
+                .chat
+                .add_system_message("ACP Chat started. Connecting to agent...");
+        }
 
         let mut msg = MSG {
             hwnd: ptr::null_mut(),
@@ -92,7 +94,7 @@ pub fn app_entry() {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
 
-            let state_ptr = GetWindowLongPtrW(msg.hwnd, -21) as *mut AppState;
+            let state_ptr = GetWindowLongPtrW(msg.hwnd, window::GWLP_USERDATA) as *mut AppState;
             if !state_ptr.is_null() && (*state_ptr).should_quit {
                 break;
             }
