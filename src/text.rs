@@ -8,58 +8,6 @@ use crate::chat::ChatState;
 
 // ── Date/time helpers ───────────────────────────────────────────────────────
 
-/// Convert Unix timestamp (seconds) to civil date (year, month, day).
-/// Uses the algorithm from Howard Hinnant's date library.
-pub fn unix_to_civil(unix_secs: u64) -> (i64, u32, u32) {
-    let days = (unix_secs / 86400) as i64;
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-/// Returns a date group label for a session based on its creation time.
-/// Groups: "Today", "Yesterday", or "Mon DD" (e.g., "Oct 23").
-pub fn date_group_label(created_at: &std::time::Instant) -> String {
-    let now = std::time::SystemTime::now();
-    let elapsed = created_at.elapsed();
-    let created_sys = now.checked_sub(elapsed).unwrap_or(now);
-
-    let created = match created_sys.duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => d.as_secs(),
-        Err(_) => return "Unknown".to_string(),
-    };
-    let now_secs = match now.duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => d.as_secs(),
-        Err(_) => return "Unknown".to_string(),
-    };
-
-    let (cy, cm, cd) = unix_to_civil(created);
-    let (ny, nm, nd) = unix_to_civil(now_secs);
-
-    if cy == ny && cm == nm && cd == nd {
-        "Today".to_string()
-    } else {
-        let yesterday = now_secs.saturating_sub(86400);
-        let (yy, ym, yd) = unix_to_civil(yesterday);
-        if cy == yy && cm == ym && cd == yd {
-            "Yesterday".to_string()
-        } else {
-            let month_names = [
-                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-            ];
-            let m_idx = (cm.saturating_sub(1)) as usize % 12;
-            format!("{} {}", month_names[m_idx], cd)
-        }
-    }
-}
-
 /// Returns a relative time string like "2m ago", "1h ago", "3d ago".
 pub fn relative_time(created_at: &std::time::Instant) -> String {
     let secs = created_at.elapsed().as_secs();
