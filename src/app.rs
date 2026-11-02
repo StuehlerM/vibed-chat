@@ -161,6 +161,7 @@ pub struct AppState {
     /// Set by interaction when a project's menu button is clicked;
     /// the platform backend shows the project context menu.
     pub project_menu_requested: Option<usize>,
+    pub mode_change_requested: Option<(String, SessionMode)>,
     /// Cache of the last computed sidebar layout plus the structure version it
     /// was computed at. Invalidated (version mismatch) on any structural change.
     pub sidebar_cache: SidebarLayoutCache,
@@ -232,6 +233,7 @@ impl AppState {
             draft_save_due: None,
             last_checkpoint: std::time::Instant::now(),
             project_menu_requested: None,
+            mode_change_requested: None,
             sidebar_cache: SidebarLayoutCache::default(),
             sidebar_version: 0,
         }
@@ -1102,10 +1104,17 @@ impl AppState {
 
     /// Switch the active session's mode (radio control in the header).
     pub fn set_session_mode(&mut self, mode: SessionMode) {
-        if self.sessions.is_empty() {
-            return;
+        if let Some(session) = self.sessions.get(self.active_session) {
+            if session.mode != mode {
+                self.mode_change_requested = Some((session.local_id.clone(), mode));
+            }
         }
-        let idx = self.active_session.min(self.sessions.len() - 1);
+    }
+
+    pub fn apply_session_mode(&mut self, local_id: &str, mode: SessionMode) {
+        let Some(idx) = self.sessions.iter().position(|s| s.local_id == local_id) else {
+            return;
+        };
         if self.sessions[idx].mode != mode {
             self.sessions[idx].mode = mode;
             let notice = match mode {

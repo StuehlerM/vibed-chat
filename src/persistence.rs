@@ -144,6 +144,10 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
             path.display()
         ));
     }
+    // Writer and reader must share the same structural/string budgets. Refuse
+    // an oversized transcript rather than publish data we cannot reopen later.
+    let text = std::str::from_utf8(content).map_err(|e| format!("Invalid snapshot UTF-8: {e}"))?;
+    json::parse(text).map_err(|e| format!("Snapshot exceeds supported JSON limits: {e}"))?;
     let temporary = path.with_extension(format!("{}.tmp", generation()));
     let result = (|| {
         let mut file = std::fs::OpenOptions::new()

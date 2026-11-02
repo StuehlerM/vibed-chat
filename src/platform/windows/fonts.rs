@@ -99,7 +99,7 @@ impl Drop for Fonts {
                 self.group_header,
                 self.session_header_name,
             ] {
-                if !font.is_null() && font as HGDIOBJ != stock {
+                if !font.is_null() && !std::ptr::eq(font, stock) {
                     DeleteObject(font as HGDIOBJ);
                 }
             }

@@ -346,9 +346,9 @@ pub unsafe extern "system" fn wnd_proc(
                 {
                     state.consumed_character = Some(wparam as u32);
                     // Handle deferred platform requests from the activation
-                    if state.new_project_requested {
-                        state.new_project_requested = false;
-                        execute_effect(hwnd, NativeEffect::PickProjectFolder);
+                    let effect = take_requested_effect(state);
+                    if let Some(effect) = effect {
+                        execute_effect(hwnd, effect);
                     }
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                     return 0;
@@ -484,19 +484,7 @@ pub unsafe extern "system" fn wnd_proc(
                     Some(NativeEffect::CopyCode(code))
                 } else {
                     state.handle_click(x, y);
-                    if std::mem::take(&mut state.new_project_requested) {
-                        Some(NativeEffect::PickProjectFolder)
-                    } else {
-                        state
-                            .project_menu_requested
-                            .take()
-                            .and_then(|idx| state.projects.get(idx))
-                            .map(|project| NativeEffect::ProjectMenu {
-                                path: project.path.clone(),
-                                name: project.name.clone(),
-                                session_count: project.session_indices.len(),
-                            })
-                    }
+                    take_requested_effect(state)
                 };
                 // All application borrows end before a native modal call.
                 if let Some(effect) = effect {
@@ -781,7 +769,29 @@ enum NativeEffect {
     },
     OpenLink(String),
     CopyCode(String),
+    ModeChange {
+        local_id: String,
+        mode: crate::session::SessionMode,
+    },
     Permission(crate::app::PendingPermission),
+}
+
+fn take_requested_effect(state: &mut AppState) -> Option<NativeEffect> {
+    if let Some((local_id, mode)) = state.mode_change_requested.take() {
+        return Some(NativeEffect::ModeChange { local_id, mode });
+    }
+    if std::mem::take(&mut state.new_project_requested) {
+        return Some(NativeEffect::PickProjectFolder);
+    }
+    state
+        .project_menu_requested
+        .take()
+        .and_then(|idx| state.projects.get(idx))
+        .map(|project| NativeEffect::ProjectMenu {
+            path: project.path.clone(),
+            name: project.name.clone(),
+            session_count: project.session_indices.len(),
+        })
 }
 
 fn execute_effect(hwnd: HWND, effect: NativeEffect) {
@@ -796,6 +806,18 @@ fn execute_effect(hwnd: HWND, effect: NativeEffect) {
         (*pointer).modal_active = true;
         let dialogs = WinDialogs(hwnd);
         match effect {
+            NativeEffect::ModeChange { local_id, mode } => {
+                let policy = match mode {
+                    crate::session::SessionMode::Direct => "Direct uploads this chat's user and assistant text to api.mistral.ai, including earlier Code assistant text. Tool/system activity and displayed thinking are excluded. No tool summary is supplied.",
+                    crate::session::SessionMode::Code => "Code uses the agent's context. A new/reconnected agent session does not receive this Direct transcript. Earlier Direct messages are not automatically transferred.",
+                };
+                let accepted = MessageBoxW(hwnd, to_wide(&format!("{policy}\n\nChange the backend for future turns? A running turn is unchanged.")).as_ptr(),
+                    to_wide("Change chat backend").as_ptr(), MB_YESNO | MB_ICONWARNING | 0x100) == IDYES as i32;
+                let pointer = get_app_state(hwnd);
+                if accepted && !pointer.is_null() {
+                    (*pointer).apply_session_mode(&local_id, mode);
+                }
+            }
             NativeEffect::Permission(permission) => {
                 // Details are owned, so both nested modal loops can repaint and
                 // settle/disconnect the original turn without aliasing AppState.
