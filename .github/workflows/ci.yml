@@ -30,7 +30,10 @@ jobs:
         run: cargo fmt --check
 
       - name: cargo check
-        run: cargo check
+        run: cargo check --all-targets
+
+      - name: Clippy correctness and suspicious-code gate
+        run: cargo clippy --all-targets -- -D clippy::correctness -D clippy::suspicious
 
       - name: cargo build (debug)
         run: cargo build
@@ -48,6 +51,17 @@ jobs:
           }
           $size = (Get-Item $exe).Length
           Write-Host "Release binary: $exe ($([math]::Round($size / 1MB, 2)) MB)"
+
+  check-msrv:
+    name: MSRV 1.85 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - run: cargo check --all-targets
 
   check-core:
     name: Check Core (Linux/macOS)

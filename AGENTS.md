@@ -6,13 +6,13 @@ You are an expert Rust systems programmer specializing in zero-dependency cross-
 
 ## Project knowledge
 
-**Tech Stack:** Rust 1.70+ (edition 2021), **Zero external dependencies** - only `std`. No crates.io. No `windows` crate. No `serde`. No `tokio`. Everything is hand-written.
+**Tech Stack:** Rust 1.85+ (declared MSRV) (edition 2021), **Zero external dependencies** - only `std`. No crates.io. No `windows` crate. No `serde`. No `tokio`. Everything is hand-written.
 
 **Supported platforms:** Windows (fully functional), Linux (skeleton), macOS (skeleton).
 
 **What this project is:** A minimal desktop chat application that connects to an ACP agent via the Agent Client Protocol (ACP). It spawns `vibe-acp` as a child process and communicates over stdin/stdout using JSON-RPC 2.0 (line-delimited). The Windows UI is a raw Win32 window with GDI-rendered message bubbles. No GUI framework, no webview, no Electron.
 
-**Prerequisites:** Rust toolchain (rustup), `vibe-acp` on PATH, `API_KEY` in environment (passed to the agent process).
+**Prerequisites:** Rust 1.85+ (rustup), MSVC linker and Windows SDK for Windows builds. Direct mode uses `API_KEY`, falling back to `MISTRAL_API_KEY`. Code mode additionally requires `vibe-acp` on PATH and the credentials expected by that agent (inherited environment).
 
 **Disclaimer:** This is an independent, unofficial project. It is not affiliated with, endorsed by, or sponsored by Mistral AI. All Mistral trademarks and branding have been removed.
 
@@ -132,7 +132,7 @@ cargo fmt --check
 cargo clippy
 ```
 
-There are no tests in this project. Verification is done by running the binary and checking the window renders correctly.
+A few core modules contain std-only unit tests (`cargo test` requires a working native linker). Native UI, process, persistence recovery, and live provider acceptance still require manual verification; compilation is not proof of those behaviors.
 
 ## Code style
 
@@ -209,7 +209,7 @@ let scaled_value = (base_value as f32 * scale) as i32;
 
 ## Testing
 
-There is no test framework in this project (zero dependencies). Verification is manual:
+There is no external test framework (zero dependencies). Core unit tests use Rust's built-in harness; native acceptance is manual:
 
 1. `cargo check` - must compile without errors on the current platform
 2. `cargo check --target x86_64-pc-windows-msvc` - must compile for Windows

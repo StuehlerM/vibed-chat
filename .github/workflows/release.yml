@@ -8,6 +8,7 @@ on:
 jobs:
   release-windows:
     name: Build Release (Windows)
+    needs: [check-linux, check-macos, check-msrv]
     runs-on: windows-latest
     permissions:
       contents: write
@@ -26,6 +27,15 @@ jobs:
           key: windows-target-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
             windows-target-${{ hashFiles('**/Cargo.lock') }}-
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Check all targets
+        run: cargo check --all-targets
+
+      - name: Clippy correctness and suspicious-code gate
+        run: cargo clippy --all-targets -- -D clippy::correctness -D clippy::suspicious
 
       - name: Build release
         run: cargo build --release
@@ -54,6 +64,17 @@ jobs:
           files: target\release\vibe-chat.exe
           generate_release_notes: true
           name: ${{ github.ref_name }}
+
+  check-msrv:
+    name: MSRV 1.85 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - run: cargo check --all-targets
 
   # Linux and macOS release jobs are skeletons - they verify the core compiles
   # on those platforms but do not produce binaries yet (backends are stubs).
