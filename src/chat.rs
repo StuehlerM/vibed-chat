@@ -22,7 +22,7 @@ impl Role {
 }
 
 /// Byte index of the char boundary immediately before `pos` (at most `pos`).
-pub const fn prev_char_boundary(s: &str, pos: usize) -> usize {
+pub fn prev_char_boundary(s: &str, pos: usize) -> usize {
     let mut p = pos.saturating_sub(1);
     while p > 0 && !s.is_char_boundary(p) {
         p -= 1;
@@ -32,7 +32,7 @@ pub const fn prev_char_boundary(s: &str, pos: usize) -> usize {
 
 /// Byte index of the char boundary immediately after `pos` (at least `pos`,
 /// at most `s.len()`).
-pub const fn next_char_boundary(s: &str, pos: usize) -> usize {
+pub fn next_char_boundary(s: &str, pos: usize) -> usize {
     let mut p = pos.saturating_add(1);
     while p < s.len() && !s.is_char_boundary(p) {
         p += 1;
@@ -46,6 +46,8 @@ pub const fn next_char_boundary(s: &str, pos: usize) -> usize {
 
 #[derive(Debug, Clone)]
 pub struct Message {
+    pub id: u64,
+    pub revision: u64,
     pub role: Role,
     pub text: String,
     pub runs: Vec<StyledRun>,
@@ -64,6 +66,8 @@ pub struct Message {
 
 impl Message {
     pub fn new(role: Role, text: &str) -> Self {
+        static NEXT_MESSAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_MESSAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let runs = if role == Role::Agent {
             parse_markdown(text)
         } else {
@@ -73,6 +77,8 @@ impl Message {
             }]
         };
         Self {
+            id,
+            revision: 0,
             role,
             text: text.to_string(),
             runs,
@@ -168,6 +174,7 @@ impl ChatState {
         if let Some(idx) = self.streaming_message_idx {
             if let Some(msg) = self.messages.get_mut(idx) {
                 msg.text.push_str(text);
+                msg.revision = msg.revision.wrapping_add(1);
                 msg.runs_dirty = true;
             }
         }
@@ -177,6 +184,7 @@ impl ChatState {
         if let Some(idx) = self.streaming_message_idx {
             if let Some(msg) = self.messages.get_mut(idx) {
                 msg.thinking.push_str(text);
+                msg.revision = msg.revision.wrapping_add(1);
                 msg.thinking_runs_dirty = true;
             }
         }
@@ -346,7 +354,7 @@ impl ChatState {
         pos
     }
 
-    pub const fn select_all(&mut self) {
+    pub fn select_all(&mut self) {
         self.selection_start = Some(0);
         self.cursor_pos = self.input_buffer.len();
     }

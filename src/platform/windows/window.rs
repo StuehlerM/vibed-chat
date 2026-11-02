@@ -91,6 +91,7 @@ pub unsafe extern "system" fn wnd_proc(
         WM_SIZE => {
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
+                (*app_state).window_minimized = wparam == SIZE_MINIMIZED;
                 (*app_state).client_width = (lparam & 0xFFFF) as i32;
                 (*app_state).client_height = ((lparam >> 16) & 0xFFFF) as i32;
                 (*app_state).invalidate_sidebar_cache();
@@ -153,12 +154,33 @@ pub unsafe extern "system" fn wnd_proc(
                     {
                         (*app_state).cursor_visible = !(*app_state).cursor_visible;
                         (*app_state).last_cursor_blink = now;
+                        if (*app_state).window_focused
+                            && (*app_state).focused_element
+                                == Some(crate::ui::FocusedElement::Input)
+                        {
+                            (*app_state).repaint_needed = true;
+                        }
                     }
-
-                    // Streaming animation dots
-                    (*app_state).streaming_dots = (*app_state).streaming_dots.wrapping_add(1);
-
-                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                    if (*app_state)
+                        .sessions
+                        .iter()
+                        .any(|s| s.active_turn.is_some())
+                    {
+                        (*app_state).streaming_dots = (*app_state).streaming_dots.wrapping_add(1);
+                        if (*app_state).streaming_dots % 8 == 0 {
+                            (*app_state).repaint_needed = true;
+                        }
+                    }
+                    if (*app_state).toast.as_ref().is_some_and(|toast| {
+                        toast.shown_at.elapsed().as_millis() >= u128::from(toast.duration_ms)
+                    }) {
+                        (*app_state).toast = None;
+                        (*app_state).repaint_needed = true;
+                    }
+                    if (*app_state).repaint_needed && !(*app_state).window_minimized {
+                        (*app_state).repaint_needed = false;
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                    }
                     if !(*app_state).modal_active {
                         let permission = (*app_state).pending_permissions.pop_front();
                         if let Some(permission) = permission {
@@ -170,6 +192,7 @@ pub unsafe extern "system" fn wnd_proc(
             return 0;
         }
         WM_PAINT => {
+            let paint = WindowPaint::begin(hwnd);
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
                 let state = &mut *app_state;
@@ -189,28 +212,11 @@ pub unsafe extern "system" fn wnd_proc(
                     None => return 0,
                 };
 
-                let mut ps = PAINTSTRUCT {
-                    hdc: std::ptr::null_mut(),
-                    fErase: 0,
-                    rcPaint: RECT {
-                        left: 0,
-                        top: 0,
-                        right: 0,
-                        bottom: 0,
-                    },
-                    fRestore: 0,
-                    fIncUpdate: 0,
-                    rgbReserved: [0; 32],
-                };
-                BeginPaint(hwnd, &mut ps);
-
                 let mut ctx = PaintContext {
                     app: state,
                     fonts: fonts_ref,
                 };
-                render::paint(hwnd, &mut ctx);
-
-                EndPaint(hwnd, &ps);
+                render::paint(paint.state.hdc, &mut ctx);
             }
             return 0;
         }
@@ -361,6 +367,7 @@ pub unsafe extern "system" fn wnd_proc(
                         shift: (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0,
                     };
                     let clipboard = WinClipboard(hwnd);
+                    let previous_draft = chat.input_buffer.clone();
                     let result = match key {
                         Some(Key::Char(b'C')) if mods.ctrl => {
                             if input::copy_selection(chat, &clipboard).is_err() {
@@ -389,6 +396,13 @@ pub unsafe extern "system" fn wnd_proc(
                         Some(k) => input::handle_key(chat, k, mods),
                         None => InputResult::None,
                     };
+                    if state
+                        .sessions
+                        .get(state.active_session)
+                        .is_some_and(|s| s.chat.input_buffer != previous_draft)
+                    {
+                        state.draft_save_due = Some(std::time::Instant::now());
+                    }
                     match result {
                         InputResult::Submit(text) => {
                             state.send_message(&text);
@@ -693,6 +707,7 @@ pub unsafe extern "system" fn wnd_proc(
         }
         WM_DESTROY => {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            render::release_backbuffer();
             PostQuitMessage(0);
             return 0;
         }
@@ -703,6 +718,30 @@ pub unsafe extern "system" fn wnd_proc(
 }
 
 // ── Helpers ──────────────────────────────────────────────────
+
+struct WindowPaint {
+    hwnd: HWND,
+    state: PAINTSTRUCT,
+}
+impl WindowPaint {
+    fn begin(hwnd: HWND) -> Self {
+        // SAFETY: PAINTSTRUCT contains only integers, pointers and byte arrays;
+        // BeginPaint initializes it, and the guard always pairs EndPaint.
+        unsafe {
+            let mut state: PAINTSTRUCT = std::mem::zeroed();
+            BeginPaint(hwnd, &mut state);
+            Self { hwnd, state }
+        }
+    }
+}
+impl Drop for WindowPaint {
+    fn drop(&mut self) {
+        // SAFETY: this is the one guard corresponding to BeginPaint above.
+        unsafe {
+            EndPaint(self.hwnd, &self.state);
+        }
+    }
+}
 
 fn route_character(state: &mut AppState, c: char) {
     if !state.window_focused || c.is_control() {
@@ -715,6 +754,7 @@ fn route_character(state: &mut AppState, c: char) {
             let _ = input::handle_char_input(chat, c);
         }
     }
+    state.draft_save_due = Some(std::time::Instant::now());
     state.cursor_visible = true;
     state.last_cursor_blink = std::time::Instant::now();
 }

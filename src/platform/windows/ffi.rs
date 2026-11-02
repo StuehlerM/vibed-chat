@@ -518,7 +518,6 @@ extern "system" {
     pub fn DrawFocusRect(hDC: HDC, lprc: *const RECT) -> BOOL;
     pub fn GetSysColor(nIndex: i32) -> DWORD;
     pub fn GetStockObject(i: i32) -> HGDIOBJ;
-    pub fn wsprintfW(lpOut: LPWSTR, lpFmt: LPCWSTR, ...) -> i32;
     pub fn GetWindowLongPtrW(hWnd: HWND, nIndex: i32) -> LONG_PTR;
     pub fn SetWindowLongPtrW(hWnd: HWND, nIndex: i32, dwNewLong: LONG_PTR) -> LONG_PTR;
     pub fn LoadIconW(hInstance: HINSTANCE, lpIconName: LPCWSTR) -> HICON;

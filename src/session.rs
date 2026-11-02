@@ -115,7 +115,8 @@ pub struct Session {
     pub name: String,
     pub working_dir: String,
     pub chat: ChatState,
-    pub created_at: std::time::Instant,
+    pub created_at: std::time::SystemTime,
+    pub last_activity: std::time::SystemTime,
     pub archived: bool,
     pub mode: SessionMode,
     pub active_turn: Option<ActiveTurn>,
@@ -130,7 +131,8 @@ impl Session {
             name: name.to_string(),
             working_dir: working_dir.to_string(),
             chat: ChatState::new(),
-            created_at: std::time::Instant::now(),
+            created_at: std::time::SystemTime::now(),
+            last_activity: std::time::SystemTime::now(),
             archived: false,
             mode: SessionMode::Direct,
             active_turn: None,
@@ -149,11 +151,6 @@ impl Session {
                     text: msg.text.clone(),
                 }),
                 Role::Agent => {
-                    if !msg.thinking.is_empty() {
-                        items.push(HistoryItem::ModelReasoning {
-                            text: msg.thinking.clone(),
-                        });
-                    }
                     if !msg.text.is_empty() {
                         items.push(HistoryItem::ModelMessage {
                             text: msg.text.clone(),

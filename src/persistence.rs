@@ -138,6 +138,12 @@ fn session_path(config: &str, id: &LocalSessionId, generation: Option<&str>) -> 
 /// REPLACE_EXISTING on Windows). Never remove the destination before replacement.
 /// A same-directory create_new temporary is flushed before publication.
 fn atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
+    if content.len() as u64 > MAX_FILE_BYTES {
+        return Err(format!(
+            "{} exceeds the 16 MiB storage limit; previous snapshot preserved",
+            path.display()
+        ));
+    }
     let temporary = path.with_extension(format!("{}.tmp", generation()));
     let result = (|| {
         let mut file = std::fs::OpenOptions::new()
@@ -252,6 +258,27 @@ pub fn save_all(
         metadata.push(Json::object(vec![
             ("local_id", Json::String(id.0)),
             ("name", Json::String(session.name.clone())),
+            ("title_is_automatic", Json::Bool(session.title_is_automatic)),
+            (
+                "created_at",
+                Json::Integer(i128::from(
+                    session
+                        .created_at
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                )),
+            ),
+            (
+                "last_activity",
+                Json::Integer(i128::from(
+                    session
+                        .last_activity
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                )),
+            ),
             ("working_dir", Json::String(session.working_dir.clone())),
             ("archived", Json::Bool(session.archived)),
             ("mode", Json::String(session.mode.as_str().to_string())),
@@ -290,8 +317,25 @@ pub fn save_all(
         ));
     }
     let index = Path::new(config).join(STATE_FILE);
-    match std::fs::read(&index) {
-        Ok(old) => atomic_write(&index.with_extension("json.bak"), &old)?,
+    match std::fs::metadata(&index) {
+        Ok(_) => {
+            // Revalidate at the write boundary too: another process/user may
+            // have changed the index after startup. Never overwrite future or
+            // damaged data just because this process still has an older model.
+            let old = read_json(&index).map_err(|e| e.to_string())?;
+            if !matches!(old.get("version").and_then(Json::as_i64), Some(1 | VERSION))
+                || old.get("sessions").and_then(Json::as_array).is_none()
+                || old.get("projects").and_then(Json::as_array).is_none()
+            {
+                return Err(
+                    "Existing index is damaged or unsupported; refusing replacement".to_string(),
+                );
+            }
+            atomic_write(
+                &index.with_extension("json.bak"),
+                old.to_string().as_bytes(),
+            )?;
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("Read previous index: {e}")),
     }
@@ -366,7 +410,19 @@ pub fn load_backup(config: &str) -> Result<Option<LoadedState>, LoadError> {
 fn load_index(config: &str, backup: bool) -> Result<Option<LoadedState>, LoadError> {
     let path = Path::new(config).join(if backup { "state.json.bak" } else { STATE_FILE });
     match std::fs::metadata(&path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if !backup
+                && (Path::new(config).join("state.json.bak").exists()
+                    || std::fs::read_dir(Path::new(config).join(SESSIONS_DIR))
+                        .is_ok_and(|mut entries| entries.next().is_some()))
+            {
+                return Err(LoadError::Malformed {
+                    path,
+                    message: "Index missing but recovery files exist".to_string(),
+                });
+            }
+            return Ok(None);
+        }
         Err(e) => {
             return Err(LoadError::Io {
                 path,
@@ -451,6 +507,20 @@ fn load_index(config: &str, backup: bool) -> Result<Option<LoadedState>, LoadErr
             required_str(item, "working_dir").map_err(&malformed)?,
         );
         session.local_id = id.0.clone();
+        session.title_is_automatic = item
+            .get("title_is_automatic")
+            .and_then(Json::as_bool)
+            .unwrap_or(false);
+        let stored_time = |key| {
+            item.get(key)
+                .and_then(Json::as_i64)
+                .and_then(|v| u64::try_from(v).ok())
+                .and_then(|secs| {
+                    std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(secs))
+                })
+        };
+        session.created_at = stored_time("created_at").unwrap_or(session.created_at);
+        session.last_activity = stored_time("last_activity").unwrap_or(session.created_at);
         session.mode = mode;
         session.archived = item
             .get("archived")

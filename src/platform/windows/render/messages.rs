@@ -6,29 +6,131 @@ use crate::markdown::Style;
 use crate::platform::windows::ffi::*;
 use crate::platform::windows::fonts::{select_font_for_style, Fonts};
 use crate::platform::windows::paint::PaintContext;
-use crate::platform::windows::text::wrap_text;
 use crate::theme::*;
 
-/// Wrap a set of styled runs into drawable lines, selecting the right font
-/// per run. Empty source lines produce an empty placeholder line.
+#[derive(Default, Clone)]
+struct VisualLine {
+    spans: Vec<(String, Style, i32)>,
+    code_header: Option<Style>,
+}
+
+type LayoutKey = (u64, u64, u64, i32, bool);
+thread_local! {
+    static MESSAGE_LAYOUTS: std::cell::RefCell<std::collections::HashMap<LayoutKey, std::rc::Rc<Vec<VisualLine>>>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+fn message_lines(
+    hdc: HDC,
+    msg: &Message,
+    width: i32,
+    fonts: &Fonts,
+    thinking: bool,
+) -> std::rc::Rc<Vec<VisualLine>> {
+    let key = (msg.id, msg.revision, fonts.generation, width, thinking);
+    if let Some(layout) = MESSAGE_LAYOUTS.with(|cache| cache.borrow().get(&key).cloned()) {
+        return layout;
+    }
+    let runs = if thinking {
+        &msg.thinking_runs
+    } else {
+        &msg.runs
+    };
+    let lines = std::rc::Rc::new(wrap_runs(hdc, runs, width, fonts));
+    // Bound cache retention separately from saved transcript retention.
+    if msg.text.len() + msg.thinking.len() < 100_000 {
+        MESSAGE_LAYOUTS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            cache.retain(|(id, revision, ..), _| *id != msg.id || *revision == msg.revision);
+            if cache.len() >= 512 {
+                cache.clear();
+            }
+            cache.insert(key, lines.clone());
+        });
+    }
+    lines
+}
+
+/// Inline spans share a measured visual line. Explicit breaks emit exactly one
+/// line. Code retains its original source independently of its clipped display.
 fn wrap_runs(
     hdc: HDC,
     runs: &[crate::markdown::StyledRun],
     text_width: i32,
     fonts: &Fonts,
-) -> Vec<(String, Style, i32)> {
-    let mut out = Vec::new();
+) -> Vec<VisualLine> {
+    let mut lines = Vec::new();
+    let mut line = VisualLine::default();
+    let mut width = 0;
     for run in runs {
-        let _old = select_font_for_style(hdc, &run.style, fonts);
-        for line_text in run.text.split('\n') {
-            if line_text.is_empty() {
-                out.push((String::new(), run.style.clone(), 0));
-                continue;
+        let old = select_font_for_style(hdc, &run.style, fonts);
+        if run.style.is_code_block {
+            if !line.spans.is_empty() {
+                lines.push(std::mem::take(&mut line));
             }
-            out.extend(wrap_text(hdc, line_text, text_width, &run.style, fonts));
+            lines.push(VisualLine {
+                spans: Vec::new(),
+                code_header: Some(run.style.clone()),
+            });
+            for text in run.text.split_terminator('\n') {
+                let display = text.trim_end_matches('\r').replace('\t', "    ");
+                lines.push(VisualLine {
+                    spans: vec![(display, run.style.clone(), 0)],
+                    code_header: None,
+                });
+            }
+            width = 0;
+        } else {
+            for c in run.text.chars() {
+                if c == '\n' {
+                    lines.push(std::mem::take(&mut line));
+                    width = 0;
+                    continue;
+                }
+                let same_style = line
+                    .spans
+                    .last()
+                    .is_some_and(|(_, style, _)| *style == run.style);
+                let mut candidate = if same_style {
+                    line.spans.last().map(|s| s.0.clone()).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                candidate.push(c);
+                let previous_width = if same_style {
+                    line.spans.last().map_or(0, |s| s.2)
+                } else {
+                    0
+                };
+                let wide = to_wide(&candidate);
+                let mut size = POINT { x: 0, y: 0 };
+                // SAFETY: selected font matches drawing; UTF-16 buffer remains live.
+                unsafe {
+                    GetTextExtentPoint32W(hdc, wide.as_ptr(), wide.len() as i32 - 1, &mut size);
+                }
+                if width - previous_width + size.x > text_width.max(1) && width > 0 {
+                    lines.push(std::mem::take(&mut line));
+                    width = 0;
+                    candidate = c.to_string();
+                    let wide = to_wide(&candidate);
+                    unsafe {
+                        GetTextExtentPoint32W(hdc, wide.as_ptr(), wide.len() as i32 - 1, &mut size);
+                    }
+                } else if same_style {
+                    line.spans.pop();
+                    width -= previous_width;
+                }
+                width += size.x;
+                line.spans.push((candidate, run.style.clone(), size.x));
+            }
+        }
+        // SAFETY: restore the previous selected GDI object before returning.
+        unsafe {
+            SelectObject(hdc, old);
         }
     }
-    out
+    if !line.spans.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -144,7 +246,7 @@ fn draw_message(
         // Calculate thinking section height
         let has_thinking = !msg.thinking.is_empty();
         let thinking_text_height = if has_thinking && !msg.thinking_collapsed {
-            let wrapped = wrap_runs(hdc, &msg.thinking_runs, text_width, fonts);
+            let wrapped = message_lines(hdc, msg, text_width, fonts, true);
             let mut th = wrapped.len() as i32 * line_height;
             if th == 0 {
                 th = line_height;
@@ -155,7 +257,7 @@ fn draw_message(
         };
 
         // Calculate main text height
-        let lines = wrap_runs(hdc, &msg.runs, text_width, fonts);
+        let lines = message_lines(hdc, msg, text_width, fonts, false);
         let mut total_text_height = lines.len() as i32 * line_height;
         if total_text_height == 0 {
             total_text_height = line_height;
@@ -311,171 +413,104 @@ fn draw_message(
                 DeleteObject(think_brush as HGDIOBJ);
 
                 let mut think_y = content_y + bubble_padding / 2;
-                for run in &msg.thinking_runs {
-                    let _run_old = select_font_for_style(hdc, &run.style, fonts);
+                for line in message_lines(hdc, msg, text_width, fonts, true).iter() {
+                    let mut x = bubble_left + bubble_padding;
                     SetTextColor(hdc, THINKING_TEXT_COLOR);
-                    for line_text in run.text.split('\n') {
-                        if line_text.is_empty() {
-                            think_y += line_height;
-                            continue;
-                        }
-                        let wrapped = wrap_text(hdc, line_text, text_width, &run.style, fonts);
-                        for (w_text, w_style, _) in &wrapped {
-                            if !w_text.is_empty() {
-                                let _w_old = select_font_for_style(hdc, w_style, fonts);
-                                let wide = to_wide(w_text);
-                                let mut tr = RECT {
-                                    left: bubble_left + bubble_padding + bubble_padding / 2,
-                                    top: think_y,
-                                    right: bubble_left + bubble_width - bubble_padding,
-                                    bottom: think_y + line_height,
-                                };
-                                DrawTextW(
-                                    hdc,
-                                    wide.as_ptr(),
-                                    wide.len() as i32 - 1,
-                                    &mut tr as LPRECT,
-                                    DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOCLIP,
-                                );
-                            }
-                            think_y += line_height;
-                        }
+                    for (text, style, width) in &line.spans {
+                        let previous = select_font_for_style(hdc, style, fonts);
+                        let wide = to_wide(text);
+                        let mut rect = RECT {
+                            left: x,
+                            top: think_y,
+                            right: bubble_left + bubble_width - bubble_padding,
+                            bottom: think_y + line_height,
+                        };
+                        DrawTextW(
+                            hdc,
+                            wide.as_ptr(),
+                            wide.len() as i32 - 1,
+                            &mut rect,
+                            DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX,
+                        );
+                        SelectObject(hdc, previous);
+                        x += width;
                     }
+                    think_y += line_height;
                 }
                 SelectObject(hdc, fonts.italic as HGDIOBJ);
                 content_y += thinking_text_height + bubble_padding;
             }
         }
 
-        // Draw main text lines, register link rects, detect code blocks
         let mut text_y = content_y;
-        let mut local_link_idx = link_rects.len();
-        let mut in_code_block = false;
-        let mut code_block_start_y = 0i32;
-        let mut code_block_lines: Vec<String> = Vec::new();
-        let mut code_block_lang: Option<String> = None;
-        let code_block_left = bubble_left + bubble_padding;
-        let code_block_right = bubble_left + bubble_width - bubble_padding;
-        let mut code_block_global_idx = code_block_rects.len();
-
-        for (line_text, style, _width) in &lines {
-            if line_text.is_empty() {
-                if in_code_block {
-                    code_block_lines.push(String::new());
-                }
-                text_y += line_height;
-                continue;
-            }
-            let style_font = select_font_for_style(hdc, style, fonts);
-
-            // Code block tracking
-            if style.is_code_block {
-                if !in_code_block {
-                    in_code_block = true;
-                    code_block_start_y = text_y;
-                    code_block_lines.clear();
-                    code_block_lang = style.code_lang.clone();
-                }
-                code_block_lines.push(line_text.clone());
-            } else if in_code_block {
-                in_code_block = false;
+        let left = bubble_left + bubble_padding;
+        let right = bubble_left + bubble_width - bubble_padding;
+        for line in lines.iter() {
+            if let Some(style) = &line.code_header {
                 finish_code_block(
                     hdc,
                     fonts,
-                    code_block_start_y,
-                    code_block_left,
-                    code_block_right,
-                    &code_block_lang,
-                    &code_block_lines,
-                    hover_code_copy == Some(code_block_global_idx),
+                    text_y,
+                    left,
+                    right,
+                    &style.code_lang,
+                    style.code_source.as_deref().unwrap_or(""),
+                    hover_code_copy == Some(code_block_rects.len()),
                     code_block_rects,
                     line_height,
                     scale,
                 );
-                code_block_global_idx = code_block_rects.len();
             }
-
-            let is_link_hover = style.is_link && hover_link == Some(local_link_idx);
-            let text_color = if style.is_link {
-                if is_link_hover {
-                    MD_LINK_HOVER
+            let mut x = left;
+            for (text, style, width) in &line.spans {
+                let previous = select_font_for_style(hdc, style, fonts);
+                let color = if style.is_link {
+                    if hover_link == Some(link_rects.len()) {
+                        MD_LINK_HOVER
+                    } else {
+                        MD_LINK
+                    }
                 } else {
-                    MD_LINK
-                }
-            } else {
-                match msg.role {
-                    Role::User => USER_BUBBLE_TEXT,
-                    Role::System => SYSTEM_TEXT_COLOR,
-                    Role::Agent => style.color,
-                }
-            };
-            SetTextColor(hdc, text_color);
-            let wide = to_wide(line_text);
-            let draw_format = if msg.role == Role::System {
-                DT_CENTER | DT_TOP | DT_SINGLELINE | DT_NOCLIP
-            } else {
-                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOCLIP
-            };
-            let mut text_rect = RECT {
-                left: bubble_left + bubble_padding,
-                top: text_y,
-                right: bubble_left + bubble_width - bubble_padding,
-                bottom: text_y + line_height,
-            };
-            DrawTextW(
-                hdc,
-                wide.as_ptr(),
-                wide.len() as i32 - 1,
-                &mut text_rect as LPRECT,
-                draw_format,
-            );
-
-            // Measure text width
-            let mut sz = POINT { x: 0, y: 0 };
-            GetTextExtentPoint32W(hdc, wide.as_ptr(), wide.len() as i32 - 1, &mut sz);
-
-            // Underline + register clickable rect for links
-            if style.is_link {
-                let underline_y = text_y + line_height - 1;
-                let underline_rect = RECT {
-                    left: text_rect.left,
-                    top: underline_y,
-                    right: text_rect.left + sz.x,
-                    bottom: underline_y + 1,
+                    match msg.role {
+                        Role::User => USER_BUBBLE_TEXT,
+                        Role::System => SYSTEM_TEXT_COLOR,
+                        Role::Agent => style.color,
+                    }
                 };
-                let underline_brush = CreateSolidBrush(text_color);
-                FillRect(hdc, &underline_rect, underline_brush);
-                DeleteObject(underline_brush as HGDIOBJ);
-
-                link_rects.push((
-                    text_rect.left,
-                    text_y,
-                    text_rect.left + sz.x,
-                    text_y + line_height,
-                    line_text.clone(),
-                ));
-                local_link_idx += 1;
+                SetTextColor(hdc, color);
+                let wide = to_wide(text);
+                let mut rect = RECT {
+                    left: x,
+                    top: text_y,
+                    right,
+                    bottom: text_y + line_height,
+                };
+                DrawTextW(
+                    hdc,
+                    wide.as_ptr(),
+                    wide.len() as i32 - 1,
+                    &mut rect,
+                    DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX,
+                );
+                if style.is_link {
+                    let end = (x + width).min(right);
+                    let underline = RECT {
+                        left: x,
+                        top: text_y + line_height - 1,
+                        right: end,
+                        bottom: text_y + line_height,
+                    };
+                    let brush = CreateSolidBrush(color);
+                    FillRect(hdc, &underline, brush);
+                    DeleteObject(brush as HGDIOBJ);
+                    if let Some(target) = &style.link_target {
+                        link_rects.push((x, text_y, end, text_y + line_height, target.clone()));
+                    }
+                }
+                SelectObject(hdc, previous);
+                x += width;
             }
-
-            SelectObject(hdc, style_font as HGDIOBJ);
             text_y += line_height;
-        }
-
-        // Handle code block that extends to end of message
-        if in_code_block {
-            finish_code_block(
-                hdc,
-                fonts,
-                code_block_start_y,
-                code_block_left,
-                code_block_right,
-                &code_block_lang,
-                &code_block_lines,
-                hover_code_copy == Some(code_block_global_idx),
-                code_block_rects,
-                line_height,
-                scale,
-            );
         }
 
         SelectObject(hdc, old_font as HGDIOBJ);
@@ -490,7 +525,7 @@ fn finish_code_block(
     left: i32,
     right: i32,
     lang: &Option<String>,
-    code_lines: &[String],
+    code_source: &str,
     is_hover: bool,
     code_block_rects: &mut Vec<crate::app::ClickableRect>,
     line_height: i32,
@@ -505,7 +540,7 @@ fn finish_code_block(
             let mut label_rect = RECT {
                 left,
                 top: start_y,
-                right: right - (SPACE_2 as f32 * scale) as i32,
+                right: right - (32.0 * scale) as i32,
                 bottom: start_y + line_height,
             };
             DrawTextW(
@@ -513,7 +548,7 @@ fn finish_code_block(
                 label_wide.as_ptr(),
                 label_wide.len() as i32 - 1,
                 &mut label_rect as LPRECT,
-                DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_NOCLIP,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX,
             );
             SelectObject(hdc, old_font as HGDIOBJ);
         }
@@ -546,7 +581,7 @@ fn finish_code_block(
         SelectObject(hdc, old_font as HGDIOBJ);
 
         // Register clickable rect with the full code text
-        let code_text = code_lines.join("\n");
+        let code_text = code_source.to_string();
         code_block_rects.push((
             btn_rect.left,
             btn_rect.top,
@@ -584,7 +619,7 @@ pub fn compute_message_heights(
             msg.ensure_runs_parsed();
 
             // Main text height
-            let wrapped = wrap_runs(hdc, &msg.runs, text_width, fonts);
+            let wrapped = message_lines(hdc, msg, text_width, fonts, false);
             let mut total_text_height = wrapped.len() as i32 * line_height;
             if total_text_height == 0 {
                 total_text_height = line_height;
@@ -596,7 +631,7 @@ pub fn compute_message_heights(
             if has_thinking && msg.role == Role::Agent {
                 thinking_section_h += thinking_header_h;
                 if !msg.thinking_collapsed {
-                    let wrapped = wrap_runs(hdc, &msg.thinking_runs, text_width, fonts);
+                    let wrapped = message_lines(hdc, msg, text_width, fonts, true);
                     let mut th = wrapped.len() as i32 * line_height;
                     if th == 0 {
                         th = line_height;

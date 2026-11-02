@@ -16,6 +16,8 @@ pub struct Style {
     pub is_code_block: bool,
     pub is_link: bool,
     pub code_lang: Option<String>,
+    pub link_target: Option<String>,
+    pub code_source: Option<std::sync::Arc<str>>,
 }
 
 impl Default for Style {
@@ -28,6 +30,8 @@ impl Default for Style {
             is_code_block: false,
             is_link: false,
             code_lang: None,
+            link_target: None,
+            code_source: None,
         }
     }
 }
@@ -40,7 +44,7 @@ pub struct StyledRun {
 
 /// Find the end of a URL in a character slice starting at `start`.
 /// URLs end at whitespace or certain punctuation.
-const fn find_url_end(chars: &[char], start: usize) -> usize {
+fn find_url_end(chars: &[char], start: usize) -> usize {
     let mut i = start;
     while i < chars.len() {
         let c = chars[i];
@@ -63,60 +67,46 @@ const fn find_url_end(chars: &[char], start: usize) -> usize {
 /// Also returns any code block language labels found: `Vec<(start_line_idx_in_runs, lang)>`.
 pub fn parse(text: &str) -> Vec<StyledRun> {
     let mut runs = Vec::new();
-    let lines: Vec<&str> = text.lines().collect();
-    let mut i = 0;
-    let mut in_code_block = false;
-    let mut current_code_lang: Option<String> = None;
-
-    while i < lines.len() {
-        let line = lines[i];
-
-        // Check for code block delimiters
-        if line.trim_start().starts_with("```") {
-            let lang = line.trim_start()[3..].trim().to_string();
-            in_code_block = !in_code_block;
-            current_code_lang = if in_code_block && !lang.is_empty() {
-                Some(lang)
+    let mut code: Option<(String, String)> = None;
+    for raw_line in text.split_inclusive('\n') {
+        let line = raw_line.trim_end_matches(['\r', '\n']);
+        if let Some(fence) = line.trim_start().strip_prefix("```") {
+            if let Some((language, source)) = code.take() {
+                push_code(&mut runs, language, source);
             } else {
-                None
-            };
-            i += 1;
-            continue;
+                code = Some((fence.trim().to_string(), String::new()));
+            }
+        } else if let Some((_, source)) = &mut code {
+            source.push_str(raw_line); // verbatim CRLF, tabs, indentation and trailing newline
+        } else {
+            runs.extend(parse_inline(line));
+            if raw_line.ends_with('\n') {
+                runs.push(StyledRun {
+                    text: "\n".to_string(),
+                    style: Style::default(),
+                });
+            }
         }
-
-        if in_code_block {
-            // Code block line — tag the first line with the language so the renderer can draw a label
-            let mut style = Style {
-                code: true,
-                is_code_block: true,
-                color: MD_CODE_BLOCK,
-                ..Default::default()
-            };
-            style.code_lang.clone_from(&current_code_lang);
-            runs.push(StyledRun {
-                text: line.to_string(),
-                style,
-            });
-            i += 1;
-            continue;
-        }
-
-        // Parse inline markdown on this line
-        let inline_runs = parse_inline(line);
-        runs.extend(inline_runs);
-
-        // Add newline as a separate run if not the last line
-        if i < lines.len() - 1 {
-            runs.push(StyledRun {
-                text: "\n".to_string(),
-                style: Style::default(),
-            });
-        }
-
-        i += 1;
     }
-
+    if let Some((language, source)) = code {
+        push_code(&mut runs, language, source);
+    }
     runs
+}
+
+fn push_code(runs: &mut Vec<StyledRun>, language: String, source: String) {
+    let style = Style {
+        code: true,
+        is_code_block: true,
+        color: MD_CODE_BLOCK,
+        code_lang: (!language.is_empty()).then_some(language),
+        code_source: Some(std::sync::Arc::from(source.as_str())),
+        ..Default::default()
+    };
+    runs.push(StyledRun {
+        text: source,
+        style,
+    });
 }
 
 /// If a URL scheme (http:// or https://) starts at `i`, return its length.
@@ -137,6 +127,16 @@ fn url_scheme_len(chars: &[char], i: usize) -> Option<usize> {
 // Sequential inline-markdown scanner; each branch handles one delimiter pair.
 #[allow(clippy::too_many_lines)]
 fn parse_inline(text: &str) -> Vec<StyledRun> {
+    parse_inline_depth(text, 0)
+}
+
+fn parse_inline_depth(text: &str, depth: usize) -> Vec<StyledRun> {
+    if depth >= 32 {
+        return vec![StyledRun {
+            text: text.to_string(),
+            style: Style::default(),
+        }];
+    }
     let mut runs = Vec::new();
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
@@ -162,7 +162,7 @@ fn parse_inline(text: &str) -> Vec<StyledRun> {
                 flush!();
                 let inner: String = chars[i + 2..end].iter().collect();
                 // Recursively parse inside bold
-                let inner_runs = parse_inline(&inner);
+                let inner_runs = parse_inline_depth(&inner, depth + 1);
                 for mut r in inner_runs {
                     r.style.bold = true;
                     if r.style.color == current_style.color {
@@ -183,7 +183,7 @@ fn parse_inline(text: &str) -> Vec<StyledRun> {
                     if end > i + 1 {
                         flush!();
                         let inner: String = chars[i + 1..end].iter().collect();
-                        let inner_runs = parse_inline(&inner);
+                        let inner_runs = parse_inline_depth(&inner, depth + 1);
                         for mut r in inner_runs {
                             r.style.italic = true;
                             runs.push(r);
@@ -252,6 +252,7 @@ fn parse_inline(text: &str) -> Vec<StyledRun> {
                 let url: String = chars[i..url_end].iter().collect();
                 let mut link_style = current_style.clone();
                 link_style.is_link = true;
+                link_style.link_target = Some(url.clone());
                 link_style.color = ACCENT_HOVER;
                 runs.push(StyledRun {
                     text: url,

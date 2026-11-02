@@ -12,8 +12,8 @@ use std::borrow::Cow;
 /// Returns a relative time string like "2m ago", "1h ago", "3d ago".
 /// The common "now" case is borrowed (no allocation); only older timestamps
 /// allocate.
-pub fn relative_time(created_at: &std::time::Instant) -> Cow<'static, str> {
-    let secs = created_at.elapsed().as_secs();
+pub fn relative_time(created_at: &std::time::SystemTime) -> Cow<'static, str> {
+    let secs = created_at.elapsed().unwrap_or_default().as_secs();
     if secs < 60 {
         Cow::Borrowed("now")
     } else if secs < 3600 {

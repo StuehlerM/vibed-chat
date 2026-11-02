@@ -5,6 +5,7 @@ use crate::platform::windows::ffi::*;
 use crate::theme::*;
 
 pub struct Fonts {
+    pub generation: u64,
     pub normal: HFONT,
     pub bold: HFONT,
     pub italic: HFONT,
@@ -53,7 +54,9 @@ impl Fonts {
         let group_header = create_font(group_h, FW_SEMIBOLD, false, "Segoe UI");
         let session_header_name = create_font(sess_hdr_h, FW_SEMIBOLD, false, "Segoe UI");
 
+        static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            generation: NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             normal,
             bold,
             italic,

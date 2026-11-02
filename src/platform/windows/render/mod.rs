@@ -32,52 +32,107 @@ use crate::platform::windows::ffi::*;
 use crate::platform::windows::paint::PaintContext;
 use crate::theme::*;
 
-/// Paint the entire window using double buffering.
-pub fn paint(hwnd: HWND, ctx: &mut PaintContext) {
-    let scale = ctx.app.dpi as f32 / 96.0;
+struct BackBuffer {
+    dc: HDC,
+    bitmap: HBITMAP,
+    previous: HGDIOBJ,
+    width: i32,
+    height: i32,
+}
+impl BackBuffer {
+    fn new(screen: HDC, width: i32, height: i32) -> Option<Self> {
+        // SAFETY: screen is the live BeginPaint DC; each failed acquisition is
+        // unwound before another handle can be used. Only the UI thread owns it.
+        unsafe {
+            let dc = CreateCompatibleDC(screen);
+            if dc.is_null() {
+                return None;
+            }
+            let bitmap = CreateCompatibleBitmap(screen, width, height);
+            if bitmap.is_null() {
+                DeleteDC(dc);
+                return None;
+            }
+            let previous = SelectObject(dc, bitmap as HGDIOBJ);
+            if previous.is_null() || previous as isize == -1 {
+                DeleteObject(bitmap as HGDIOBJ);
+                DeleteDC(dc);
+                return None;
+            }
+            Some(Self {
+                dc,
+                bitmap,
+                previous,
+                width,
+                height,
+            })
+        }
+    }
+}
+impl Drop for BackBuffer {
+    fn drop(&mut self) {
+        // SAFETY: restore the borrowed previous bitmap before deleting ours.
+        unsafe {
+            SelectObject(self.dc, self.previous);
+            DeleteObject(self.bitmap as HGDIOBJ);
+            DeleteDC(self.dc);
+        }
+    }
+}
+thread_local! { static BACKBUFFER: std::cell::RefCell<Option<BackBuffer>> = const { std::cell::RefCell::new(None) }; }
+
+/// The caller owns BeginPaint/EndPaint. Reuse the backbuffer until resize;
+/// allocation failure falls back to the valid paint DC rather than a null one.
+pub fn paint(screen: HDC, ctx: &mut PaintContext) {
     let width = ctx.app.client_width;
     let height = ctx.app.client_height;
-
-    unsafe {
-        let hdc_screen = GetDC(hwnd);
-        let hdc_mem = CreateCompatibleDC(hdc_screen);
-        let hbitmap = CreateCompatibleBitmap(hdc_screen, width, height);
-        let old_bitmap = SelectObject(hdc_mem, hbitmap as HGDIOBJ);
-
-        // Fill background
-        let bg_rect = RECT {
-            left: 0,
-            top: 0,
-            right: width,
-            bottom: height,
-        };
-        let bg_brush = CreateSolidBrush(BG_COLOR);
-        FillRect(hdc_mem, &bg_rect, bg_brush);
-        DeleteObject(bg_brush as HGDIOBJ);
-
-        SetBkMode(hdc_mem, TRANSPARENT);
-
-        // Draw sidebar
-        sidebar::draw_sidebar(hdc_mem, ctx, scale);
-
-        // Draw main chat area (shrinks when settings panel is open - push layout)
-        chat_area::draw_chat_area(hdc_mem, ctx, scale);
-
-        // Draw settings panel in the reserved space (push, not overlay)
-        if ctx.app.show_settings {
-            settings::draw_settings_panel(hdc_mem, ctx, scale);
-        }
-
-        // Draw toast notification (top-right corner, above everything)
-        toast::draw_toast(hdc_mem, ctx, scale);
-
-        // Blit to screen
-        BitBlt(hdc_screen, 0, 0, width, height, hdc_mem, 0, 0, SRCCOPY);
-
-        // Cleanup
-        SelectObject(hdc_mem, old_bitmap as HGDIOBJ);
-        DeleteObject(hbitmap as HGDIOBJ);
-        DeleteDC(hdc_mem);
-        ReleaseDC(hwnd, hdc_screen);
+    if screen.is_null() || width <= 0 || height <= 0 {
+        return;
     }
+    BACKBUFFER.with(|storage| {
+        let Ok(mut buffer) = storage.try_borrow_mut() else {
+            return;
+        };
+        if buffer
+            .as_ref()
+            .is_none_or(|b| b.width != width || b.height != height)
+        {
+            *buffer = BackBuffer::new(screen, width, height);
+        }
+        let dc = buffer.as_ref().map_or(screen, |b| b.dc);
+        let scale = ctx.app.dpi as f32 / 96.0;
+        // SAFETY: dc is either the live paint DC or our selected backbuffer.
+        unsafe {
+            let rect = RECT {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
+            };
+            let background = CreateSolidBrush(BG_COLOR);
+            if !background.is_null() {
+                FillRect(dc, &rect, background);
+                DeleteObject(background as HGDIOBJ);
+            }
+            SetBkMode(dc, TRANSPARENT);
+        }
+        sidebar::draw_sidebar(dc, ctx, scale);
+        chat_area::draw_chat_area(dc, ctx, scale);
+        if ctx.app.show_settings {
+            settings::draw_settings_panel(dc, ctx, scale);
+        }
+        toast::draw_toast(dc, ctx, scale);
+        if dc != screen {
+            // SAFETY: both DCs are live and the source bitmap matches the window.
+            unsafe {
+                BitBlt(screen, 0, 0, width, height, dc, 0, 0, SRCCOPY);
+            }
+        }
+    });
+}
+
+pub fn release_backbuffer() {
+    BACKBUFFER.with(|buffer| {
+        buffer.borrow_mut().take();
+    });
 }

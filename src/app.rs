@@ -153,6 +153,10 @@ pub struct AppState {
     pub consumed_character: Option<u32>,
     pub ime_composing: bool,
     pub wheel_remainder: i32,
+    pub repaint_needed: bool,
+    pub window_minimized: bool,
+    pub draft_save_due: Option<std::time::Instant>,
+    pub last_checkpoint: std::time::Instant,
     /// Set by interaction when a project's menu button is clicked;
     /// the platform backend shows the project context menu.
     pub project_menu_requested: Option<usize>,
@@ -222,6 +226,10 @@ impl AppState {
             consumed_character: None,
             ime_composing: false,
             wheel_remainder: 0,
+            repaint_needed: true,
+            window_minimized: false,
+            draft_save_due: None,
+            last_checkpoint: std::time::Instant::now(),
             project_menu_requested: None,
             sidebar_cache: SidebarLayoutCache::default(),
             sidebar_version: 0,
@@ -587,6 +595,9 @@ impl AppState {
                 break;
             }
             let event = self.acp.as_ref().and_then(AcpClient::try_recv);
+            if event.is_some() {
+                self.repaint_needed = true;
+            }
             let Some(event) = event else {
                 break;
             };
@@ -722,6 +733,7 @@ impl AppState {
             }
             self.sessions[idx].chat.finish_streaming();
             self.sessions[idx].active_turn = None;
+            self.sessions[idx].last_activity = std::time::SystemTime::now();
             self.sessions[idx]
                 .chat
                 .add_system_message(&format!("[Turn {}: {outcome}]", key.turn_id));
@@ -834,6 +846,7 @@ impl AppState {
 
     /// Show a transient toast (replaces any previous one) in the top-right corner.
     pub(crate) fn show_toast(&mut self, text: &str, kind: ToastKind) {
+        self.repaint_needed = true;
         self.toast = Some(Toast {
             text: text.to_string(),
             kind,
@@ -865,6 +878,7 @@ impl AppState {
         };
         let mode = session.mode;
         session.chat.add_message(Role::User, text);
+        session.last_activity = std::time::SystemTime::now();
         session.auto_name();
         session.active_turn = Some(ActiveTurn {
             key,
@@ -941,6 +955,9 @@ impl AppState {
                 break;
             }
             let event = self.responses.as_ref().and_then(ResponsesClient::try_recv);
+            if event.is_some() {
+                self.repaint_needed = true;
+            }
             let Some(event) = event else {
                 break;
             };
@@ -1175,6 +1192,16 @@ impl AppState {
     /// Check if an auto-reconnect should be attempted. Called from the timer tick.
     /// Returns true if a reconnect was initiated.
     pub fn try_auto_reconnect(&mut self) -> bool {
+        let draft_due = self
+            .draft_save_due
+            .is_some_and(|edit| edit.elapsed().as_millis() >= 750);
+        let checkpoint_due = self.last_checkpoint.elapsed().as_secs() >= 15
+            && self.sessions.iter().any(|s| s.active_turn.is_some());
+        if draft_due || checkpoint_due {
+            self.draft_save_due = None;
+            self.last_checkpoint = std::time::Instant::now();
+            self.save_all();
+        }
         let expired: Vec<_> = self
             .sessions
             .iter()
