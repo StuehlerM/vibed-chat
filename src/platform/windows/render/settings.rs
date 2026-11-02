@@ -375,6 +375,8 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             }
         }
 
+        drop(gfx);
+
         // Focus ring for reconnect button
         if ctx.app.focused_element == Some(FocusedElement::Reconnect) {
             let focus_pen = CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);

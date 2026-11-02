@@ -523,6 +523,8 @@ fn draw_send_button(
             }
         }
 
+        drop(gfx);
+
         // Focus ring
         if focused {
             let focus_pen = CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);

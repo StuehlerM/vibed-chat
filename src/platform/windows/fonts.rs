@@ -78,22 +78,31 @@ impl Fonts {
 
 impl Drop for Fonts {
     fn drop(&mut self) {
+        // SAFETY: each non-stock handle is a distinct CreateFontIndirectW
+        // acquisition. Fonts are UI-thread owned and outlive paint selections.
         unsafe {
-            DeleteObject(self.normal as HGDIOBJ);
-            DeleteObject(self.bold as HGDIOBJ);
-            DeleteObject(self.italic as HGDIOBJ);
-            DeleteObject(self.code as HGDIOBJ);
-            DeleteObject(self.label as HGDIOBJ);
-            DeleteObject(self.caption as HGDIOBJ);
-            DeleteObject(self.sidebar as HGDIOBJ);
-            DeleteObject(self.sidebar_medium as HGDIOBJ);
-            DeleteObject(self.title as HGDIOBJ);
-            DeleteObject(self.empty_title as HGDIOBJ);
-            DeleteObject(self.timestamp as HGDIOBJ);
-            DeleteObject(self.session_preview as HGDIOBJ);
-            DeleteObject(self.hint as HGDIOBJ);
-            DeleteObject(self.group_header as HGDIOBJ);
-            DeleteObject(self.session_header_name as HGDIOBJ);
+            let stock = GetStockObject(DEFAULT_GUI_FONT as i32);
+            for font in [
+                self.normal,
+                self.bold,
+                self.italic,
+                self.code,
+                self.label,
+                self.caption,
+                self.sidebar,
+                self.sidebar_medium,
+                self.title,
+                self.empty_title,
+                self.timestamp,
+                self.session_preview,
+                self.hint,
+                self.group_header,
+                self.session_header_name,
+            ] {
+                if !font.is_null() && font as HGDIOBJ != stock {
+                    DeleteObject(font as HGDIOBJ);
+                }
+            }
         }
     }
 }
@@ -111,7 +120,16 @@ pub fn create_font(height: LONG, weight: LONG, italic: bool, face: &str) -> HFON
     let len = face_wide.len().min(LF_FACESIZE - 1);
     lf.lfFaceName[..len].copy_from_slice(&face_wide[..len]);
 
-    unsafe { CreateFontIndirectW(&lf) }
+    // SAFETY: lf is initialized. On allocation failure borrow the stock font;
+    // Fonts::drop explicitly excludes that borrowed handle from deletion.
+    unsafe {
+        let font = CreateFontIndirectW(&lf);
+        if font.is_null() {
+            GetStockObject(DEFAULT_GUI_FONT as i32) as HFONT
+        } else {
+            font
+        }
+    }
 }
 
 /// Select the appropriate font for a markdown style and return the previously selected font.

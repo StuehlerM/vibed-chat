@@ -448,6 +448,15 @@ extern "system" {
     pub fn GetWindowRect(hWnd: HWND, lpRect: LPRECT) -> BOOL;
     pub fn BeginPaint(hWnd: HWND, lpPaint: LPPAINTSTRUCT) -> HDC;
     pub fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) -> BOOL;
+    pub fn DrawTextW(hdc: HDC, lpchText: LPCWSTR, cchText: i32, lprc: LPRECT, format: UINT) -> i32;
+    pub fn DrawTextExW(
+        hdc: HDC,
+        lpchText: LPWSTR,
+        cchText: i32,
+        lprc: LPRECT,
+        dwDTFormat: UINT,
+        lpDTParams: *const DRAWTEXTPARAMS,
+    ) -> i32;
     pub fn FillRect(hdc: HDC, lprc: *const RECT, hbr: HBRUSH) -> i32;
     pub fn SetTimer(
         hWnd: HWND,
@@ -506,7 +515,6 @@ extern "system" {
         cy: i32,
         uFlags: UINT,
     ) -> BOOL;
-    pub fn GetModuleHandleW(lpModuleName: LPCWSTR) -> HMODULE;
     pub fn SetRect(lprc: LPRECT, xLeft: i32, yTop: i32, xRight: i32, yBottom: i32) -> BOOL;
     pub fn InflateRect(lprc: LPRECT, dx: i32, dy: i32) -> BOOL;
     pub fn IntersectRect(lprcDst: LPRECT, lprcSrc1: *const RECT, lprcSrc2: *const RECT) -> BOOL;
@@ -517,7 +525,6 @@ extern "system" {
     pub fn OffsetRect(lprc: LPRECT, dx: i32, dy: i32) -> BOOL;
     pub fn DrawFocusRect(hDC: HDC, lprc: *const RECT) -> BOOL;
     pub fn GetSysColor(nIndex: i32) -> DWORD;
-    pub fn GetStockObject(i: i32) -> HGDIOBJ;
     pub fn GetWindowLongPtrW(hWnd: HWND, nIndex: i32) -> LONG_PTR;
     pub fn SetWindowLongPtrW(hWnd: HWND, nIndex: i32, dwNewLong: LONG_PTR) -> LONG_PTR;
     pub fn LoadIconW(hInstance: HINSTANCE, lpIconName: LPCWSTR) -> HICON;
@@ -559,6 +566,7 @@ extern "system" {
 // ── gdi32.dll ────────────────────────────────────────────────
 #[link(name = "gdi32")]
 extern "system" {
+    pub fn GetStockObject(i: i32) -> HGDIOBJ;
     pub fn CreateCompatibleDC(hdc: HDC) -> HDC;
     pub fn CreateCompatibleBitmap(hdc: HDC, cx: i32, cy: i32) -> HBITMAP;
     pub fn SelectObject(hdc: HDC, h: HGDIOBJ) -> HGDIOBJ;
@@ -579,15 +587,6 @@ extern "system" {
     pub fn SetBkMode(hdc: HDC, mode: i32) -> i32;
     pub fn SetTextColor(hdc: HDC, color: u32) -> u32;
     pub fn CreateFontIndirectW(lplf: *const LOGFONTW) -> HFONT;
-    pub fn DrawTextW(hdc: HDC, lpchText: LPCWSTR, cchText: i32, lprc: LPRECT, format: UINT) -> i32;
-    pub fn DrawTextExW(
-        hdc: HDC,
-        lpchText: LPWSTR,
-        cchText: i32,
-        lprc: LPRECT,
-        dwDTFormat: UINT,
-        lpDTParams: *const DRAWTEXTPARAMS,
-    ) -> i32;
     pub fn GetTextExtentPoint32W(hdc: HDC, lpString: LPCWSTR, c: i32, lpszl: *mut POINT) -> BOOL;
     pub fn GetTextMetricsW(hdc: HDC, lptm: LPTEXTMETRICW) -> BOOL;
     pub fn Rectangle(hdc: HDC, left: i32, top: i32, right: i32, bottom: i32) -> BOOL;
@@ -633,6 +632,8 @@ pub struct DRAWTEXTPARAMS {
 // ── kernel32.dll ─────────────────────────────────────────────
 #[link(name = "kernel32")]
 extern "system" {
+    pub fn GetModuleHandleW(lpModuleName: LPCWSTR) -> HMODULE;
+    pub fn FreeLibrary(hLibModule: HMODULE) -> BOOL;
     pub fn GlobalAlloc(uFlags: UINT, dwBytes: SIZE_T) -> HGLOBAL;
     pub fn GlobalLock(hMem: HGLOBAL) -> LPVOID;
     pub fn GlobalUnlock(hMem: HGLOBAL) -> BOOL;

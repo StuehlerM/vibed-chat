@@ -122,8 +122,6 @@ pub struct AppState {
     pub focused_element: Option<FocusedElement>,
     pub sidebar_scroll_offset: i32,
     pub streaming_dots: u8,
-    pub pending_new_session: bool,
-    pub pending_working_dir: String,
     pub session_counter: usize,
     next_turn_id: u64,
     pub default_working_dir: String,
@@ -207,8 +205,6 @@ impl AppState {
             focused_element: Some(FocusedElement::Input),
             sidebar_scroll_offset: 0,
             streaming_dots: 0,
-            pending_new_session: false,
-            pending_working_dir: String::new(),
             session_counter: 0,
             next_turn_id: 1,
             default_working_dir: default_wd,
@@ -328,6 +324,12 @@ impl AppState {
         for (pidx, sidx) in pushes {
             self.projects[pidx].session_indices.push(sidx);
         }
+        let sessions = &self.sessions;
+        for project in &mut self.projects {
+            project
+                .session_indices
+                .sort_by_key(|&idx| std::cmp::Reverse(sessions[idx].last_activity));
+        }
     }
 
     pub fn project_for_session(&self, session_idx: usize) -> Option<usize> {
@@ -362,14 +364,33 @@ impl AppState {
 
     // ── Session management ──────────────────────────────────────────────────
 
+    fn allocate_session(&self, name: &str, working_dir: &str) -> Result<Session, String> {
+        for _ in 0..64 {
+            let session = Session::new("", name, working_dir);
+            if !self
+                .sessions
+                .iter()
+                .any(|existing| existing.local_id == session.local_id)
+                && !crate::persistence::session_id_in_storage(&self.config_dir, &session.local_id)?
+            {
+                return Ok(session);
+            }
+        }
+        Err("Could not allocate a unique session identity".to_string())
+    }
+
     pub fn create_local_session(&mut self, working_dir: &str) {
         self.session_counter += 1;
         let name = format!("Chat {}", self.session_counter);
-        let session = Session::new("", &name, working_dir);
+        let session = match self.allocate_session(&name, working_dir) {
+            Ok(session) => session,
+            Err(error) => {
+                self.show_toast(&error, ToastKind::Error);
+                return;
+            }
+        };
         self.sessions.push(session);
         self.active_session = self.sessions.len() - 1;
-        self.pending_new_session = true;
-        self.pending_working_dir = working_dir.to_string();
         self.ensure_project(working_dir);
         self.rebuild_project_indices();
         self.save_index();
@@ -522,6 +543,17 @@ impl AppState {
             );
             return false;
         }
+        let replacement = if self.sessions.iter().all(|s| ids.contains(&s.local_id)) {
+            match self.allocate_session("New Chat", &self.default_working_dir) {
+                Ok(session) => Some(session),
+                Err(error) => {
+                    self.show_toast(&error, ToastKind::Error);
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
         let selected = self
             .sessions
             .get(self.active_session)
@@ -530,10 +562,9 @@ impl AppState {
         if let Some(path) = project {
             self.projects.retain(|p| p.path != path);
         }
-        if self.sessions.is_empty() {
-            // Consistent replacement instead of an indexable empty collection.
-            let wd = self.default_working_dir.clone();
-            self.sessions.push(Session::new("", "New Chat", &wd));
+        if let Some(session) = replacement {
+            let wd = session.working_dir.clone();
+            self.sessions.push(session);
             self.ensure_project(&wd);
         }
         self.active_session = selected
@@ -776,6 +807,7 @@ impl AppState {
             self.sessions[idx].chat.finish_streaming();
             self.sessions[idx].active_turn = None;
             self.sessions[idx].last_activity = std::time::SystemTime::now();
+            self.rebuild_project_indices();
             self.sessions[idx]
                 .chat
                 .add_system_message(&format!("[Turn {}: {outcome}]", key.turn_id));
@@ -968,6 +1000,7 @@ impl AppState {
             started: std::time::Instant::now(),
         });
         session.chat.is_waiting_for_agent = true;
+        self.rebuild_project_indices();
         let idx = self.active_session;
         self.save_session(idx);
         match mode {

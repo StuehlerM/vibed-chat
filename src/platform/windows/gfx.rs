@@ -41,7 +41,24 @@ struct SendSyncPtr(*mut c_void);
 unsafe impl Send for SendSyncPtr {}
 unsafe impl Sync for SendSyncPtr {}
 
-static GDIPLUS: std::sync::OnceLock<GdiplusState> = std::sync::OnceLock::new();
+// Cache failure too: a missing export must not reload/leak a DLL per button.
+static GDIPLUS: std::sync::OnceLock<Option<GdiplusState>> = std::sync::OnceLock::new();
+fn gdiplus_state() -> Option<&'static GdiplusState> {
+    // SAFETY: the initializer checks each typed export and startup status. The
+    // successful module/token intentionally have process lifetime.
+    GDIPLUS.get_or_init(|| unsafe { load_gdiplus() }).as_ref()
+}
+struct Library(HMODULE);
+impl Drop for Library {
+    fn drop(&mut self) {
+        // SAFETY: only owns a successfully acquired LoadLibrary reference.
+        if !self.0.is_null() {
+            unsafe {
+                FreeLibrary(self.0);
+            }
+        }
+    }
+}
 
 /// Load gdiplus.dll and resolve all needed entry points. Runs once.
 /// Resolve an export by name and reinterpret it as the function-pointer type T.
@@ -64,23 +81,23 @@ unsafe fn get_proc<T: Copy>(module: HMODULE, name: &[u8]) -> Option<T> {
     Some(u.typed)
 }
 
-unsafe fn load_gdiplus() -> bool {
-    if GDIPLUS.get().is_some() {
-        return true;
-    }
-
+unsafe fn load_gdiplus() -> Option<GdiplusState> {
     let name: &[u8] = b"gdiplus.dll\0";
     let module = LoadLibraryA(name.as_ptr());
     if module.is_null() {
-        return false;
+        return None;
     }
+    let library = Library(module);
 
     macro_rules! sym {
         ($module:expr, $name:expr, $ty:ty) => {{
+            // Every invocation names an explicit export and exact extern-system
+            // alias; this checks the union's bit-copy size on this target.
+            const _: [(); std::mem::size_of::<*mut c_void>()] = [(); std::mem::size_of::<$ty>()];
             let pname: &[u8] = concat!($name, "\0").as_bytes();
             match get_proc::<$ty>($module, pname) {
                 Some(f) => f,
-                None => return false,
+                None => return None,
             }
         }};
     }
@@ -111,14 +128,16 @@ unsafe fn load_gdiplus() -> bool {
         SuppressExternalCodecs: 0,
     };
     if (fns.startup)(&mut token, &input, std::ptr::null_mut()) != GDIPLUS_OK {
-        return false;
+        return None;
     }
 
-    let _ = GDIPLUS.set(GdiplusState {
+    // The static state never unloads successful bindings while a Gfx exists.
+    // Failed symbol resolution/startup instead drops `library` immediately.
+    std::mem::forget(library);
+    Some(GdiplusState {
         fns,
         token: SendSyncPtr(token),
-    });
-    true
+    })
 }
 
 /// RAII guard wrapping a GDI+ graphics object bound to a HDC.
@@ -131,15 +150,18 @@ impl Gfx {
     /// Returns None if GDI+ is unavailable (caller falls back to GDI).
     pub fn new(hdc: HDC) -> Option<Gfx> {
         unsafe {
-            if !load_gdiplus() {
+            if hdc.is_null() {
                 return None;
             }
-            let state = GDIPLUS.get()?;
+            let state = gdiplus_state()?;
             let mut graphics: *mut GpGraphics = std::ptr::null_mut();
             if (state.fns.create_from_hdc)(hdc, &mut graphics) != GDIPLUS_OK || graphics.is_null() {
                 return None;
             }
-            (state.fns.set_smoothing_mode)(graphics, SMOOTHING_MODE_ANTI_ALIAS);
+            if (state.fns.set_smoothing_mode)(graphics, SMOOTHING_MODE_ANTI_ALIAS) != GDIPLUS_OK {
+                (state.fns.delete_graphics)(graphics);
+                return None;
+            }
             Some(Gfx { graphics })
         }
     }
@@ -147,7 +169,7 @@ impl Gfx {
     /// Fill a rounded rectangle with a solid color, anti-aliased.
     pub fn fill_round_rect(&self, rect: RECT, radius: i32, color: u32) {
         unsafe {
-            let state = match GDIPLUS.get() {
+            let state = match gdiplus_state() {
                 Some(s) => s,
                 None => return,
             };
@@ -165,7 +187,7 @@ impl Gfx {
     /// Stroke a rounded rectangle outline (1px), anti-aliased.
     pub fn stroke_round_rect(&self, rect: RECT, radius: i32, color: u32, width: f32) {
         unsafe {
-            let state = match GDIPLUS.get() {
+            let state = match gdiplus_state() {
                 Some(s) => s,
                 None => return,
             };
@@ -237,7 +259,7 @@ impl Drop for Gfx {
     fn drop(&mut self) {
         unsafe {
             if !self.graphics.is_null() {
-                if let Some(state) = GDIPLUS.get() {
+                if let Some(state) = gdiplus_state() {
                     (state.fns.delete_graphics)(self.graphics);
                 }
             }

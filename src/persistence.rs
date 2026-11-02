@@ -392,6 +392,28 @@ pub fn save_all(
     }
     atomic_write(&index, Json::object(root).to_string().as_bytes())
 }
+/// Reserve neither files nor directories, but reject identities already present
+/// in any retained generation (including an orphan from an interrupted save).
+pub fn session_id_in_storage(config: &str, local_id: &str) -> Result<bool, String> {
+    let id = LocalSessionId::parse(local_id)?;
+    let entries = match std::fs::read_dir(Path::new(config).join(SESSIONS_DIR)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("Check session identity: {e}")),
+    };
+    let legacy = format!("{}.json", id.0);
+    let prefix = format!("{}_", id.0);
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if let Some(name) = entry.file_name().to_str() {
+            if name == legacy || name.starts_with(&prefix) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 pub fn save_index(
     config: &str,
     settings: &Settings,

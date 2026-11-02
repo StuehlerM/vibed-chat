@@ -635,7 +635,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     );
                     let show_actions = !is_active; // never expose invisible destructive hit targets
 
-                    let ts_text = relative_time(&session.created_at);
+                    let ts_text = relative_time(&session.last_activity);
                     let ts_font = ctx.fonts.timestamp;
                     let old_ts_font = SelectObject(hdc, ts_font as HGDIOBJ);
                     let ts_wide = to_wide(&ts_text);
@@ -1046,6 +1046,8 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                 DeleteObject(settings_brush as HGDIOBJ);
             }
         }
+
+        drop(gfx);
 
         // Focus ring for settings button
         if ctx.app.focused_element == Some(FocusedElement::SettingsBtn) {
