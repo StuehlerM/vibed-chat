@@ -21,6 +21,14 @@ pub fn draw_toast(hdc: HDC, ctx: &PaintContext, scale: f32) {
             duration_ms: u64::MAX,
         };
         &persistent
+    } else if ctx.app.persistence_pending && ctx.app.toast.is_none() {
+        persistent = crate::ui::Toast {
+            text: "Saving changes...".to_string(),
+            kind: ToastKind::Info,
+            shown_at: std::time::Instant::now(),
+            duration_ms: u64::MAX,
+        };
+        &persistent
     } else {
         match &ctx.app.toast {
             Some(t) => t,

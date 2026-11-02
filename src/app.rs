@@ -131,6 +131,10 @@ pub struct AppState {
     pub persistence_error: Option<String>,
     /// Never overwrite damaged/future-version storage with a new empty state.
     pub persistence_blocked: bool,
+    pub persistence_pending: bool,
+    persistence_worker: Option<crate::persistence::PersistenceWorker>,
+    save_revision: u64,
+    pending_deletions: Vec<String>,
     pub rename_target: Option<RenameTarget>,
     pub rename_buffer: String,
     pub rename_cursor: usize,
@@ -213,6 +217,10 @@ impl AppState {
             config_dir: crate::persistence::default_config_dir(),
             persistence_error: None,
             persistence_blocked: false,
+            persistence_pending: false,
+            persistence_worker: None,
+            save_revision: 0,
+            pending_deletions: Vec::new(),
             rename_target: None,
             rename_buffer: String::new(),
             rename_cursor: 0,
@@ -582,12 +590,12 @@ impl AppState {
         self.rebuild_project_indices();
         // Publish the removal before erasing any history. A save failure keeps
         // all recovery material, even though the in-memory removal is unsaved.
-        self.save_all();
-        if self.persistence_error.is_none() {
-            for id in ids {
-                self.delete_session_file(id);
+        for id in ids {
+            if !self.pending_deletions.contains(id) {
+                self.pending_deletions.push(id.clone());
             }
         }
+        self.save_all();
         true
     }
 
@@ -1209,22 +1217,77 @@ impl AppState {
         match result {
             Ok(()) => self.persistence_error = None,
             Err(e) => {
-                self.persistence_error = Some(format!("Unsaved changes: {e}"));
+                self.persistence_error = Some(format!("Storage error: {e}"));
                 self.show_toast(&format!("Save failed: {e}"), ToastKind::Error);
             }
         }
     }
 
     fn save_complete_snapshot(&mut self) {
-        let window = self.saved_window_state();
-        let result = crate::persistence::save_index(
+        if self.persistence_worker.is_none() {
+            match crate::persistence::PersistenceWorker::new() {
+                Ok(worker) => self.persistence_worker = Some(worker),
+                Err(error) => {
+                    self.record_save_result(Err(error));
+                    return;
+                }
+            }
+        }
+        let Some(revision) = self.save_revision.checked_add(1) else {
+            self.record_save_result(Err("Snapshot revision space exhausted".to_string()));
+            return;
+        };
+        self.save_revision = revision;
+        let snapshot = crate::persistence::SaveSnapshot::capture(
+            revision,
             &self.config_dir,
             &self.settings,
             &self.projects,
             &self.sessions,
-            window.as_ref(),
-        );
-        self.record_save_result(result);
+            self.saved_window.as_ref(),
+        )
+        .with_removals(self.pending_deletions.clone());
+        let result = match &self.persistence_worker {
+            Some(worker) => worker.submit(snapshot),
+            None => Err("Snapshot worker unavailable".to_string()),
+        };
+        self.persistence_pending = result.is_ok();
+        self.repaint_needed = true;
+        if let Err(error) = result {
+            self.record_save_result(Err(error));
+        }
+    }
+
+    pub fn poll_persistence(&mut self) {
+        let result = self
+            .persistence_worker
+            .as_ref()
+            .and_then(crate::persistence::PersistenceWorker::try_result);
+        if let Some(result) = result {
+            if result.result.is_ok() {
+                self.pending_deletions
+                    .retain(|id| !result.removed.contains(id));
+            }
+            self.repaint_needed = true;
+            if result.revision == self.save_revision {
+                self.persistence_pending = false;
+                self.record_save_result(result.result);
+            } else if let Err(error) = result.result {
+                self.record_save_result(Err(error));
+            }
+        }
+    }
+
+    pub fn finish_saves(&mut self) {
+        self.save_all();
+        let result = match self.persistence_worker.as_mut() {
+            Some(worker) => worker.finish(std::time::Duration::from_secs(5)),
+            None => Ok(()),
+        };
+        self.poll_persistence();
+        if let Err(error) = result {
+            self.record_save_result(Err(error));
+        }
     }
 
     /// A session save publishes one coherent generation, including its index.
@@ -1316,18 +1379,23 @@ impl AppState {
 
     /// Delete a session's file from disk.
     pub fn delete_session_file(&mut self, local_id: &str) {
-        if self.persistence_blocked {
+        if self.persistence_blocked || self.sessions.iter().any(|s| s.local_id == local_id) {
             return;
         }
-        if let Err(e) = crate::persistence::delete_session_file(&self.config_dir, local_id) {
-            self.persistence_error = Some(format!("File cleanup failed: {e}"));
-            self.show_toast(&e, ToastKind::Error);
+        if let Err(error) = crate::persistence::LocalSessionId::parse(local_id) {
+            self.record_save_result(Err(error));
+            return;
         }
+        if !self.pending_deletions.iter().any(|id| id == local_id) {
+            self.pending_deletions.push(local_id.to_string());
+        }
+        self.save_all();
     }
 
     /// Check if an auto-reconnect should be attempted. Called from the timer tick.
     /// Returns true if a reconnect was initiated.
     pub fn try_auto_reconnect(&mut self) -> bool {
+        self.poll_persistence();
         let draft_due = self
             .draft_save_due
             .is_some_and(|edit| edit.elapsed().as_millis() >= 750);

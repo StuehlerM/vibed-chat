@@ -164,13 +164,17 @@ pub fn app_entry() {
             }
         }
 
+        // Also retire native callbacks when GetMessage failed before WM_CLOSE.
+        if GetWindowLongPtrW(hwnd, window::GWLP_USERDATA) != 0 {
+            DestroyWindow(hwnd);
+        }
         // Dropping the client signals cancellation independently of its queue.
         app_state.responses.take();
-        app_state.save_all();
-        if let Some(error) = &app_state.persistence_error {
+        app_state.finish_saves();
+        if let Some(error) = app_state.persistence_error.clone() {
             MessageBoxW(
                 ptr::null_mut(),
-                to_wide(error).as_ptr(),
+                to_wide(&error).as_ptr(),
                 to_wide("Changes were not saved").as_ptr(),
                 MB_OK | MB_ICONERROR,
             );

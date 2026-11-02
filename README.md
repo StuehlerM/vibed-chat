@@ -76,7 +76,7 @@ cargo run --release
 - Windows storage defaults to `%APPDATA%\\vibe-chat`. `state.json` references immutable files under `sessions/`; `state.json.bak` retains the previous index. Chats, displayed thinking, tool notices, and drafts are **plaintext**, not encrypted. Protect this directory as sensitive data.
 - Version-1 ACP histories load as Code chats. New saves publish version-2 generations; originals/recovery generations are retained rather than silently trimmed. This can consume disk space; automatic generation garbage collection is not implemented.
 - Damaged/future-version data opens read-only, with an offer to inspect the backup. Copy the entire directory before manually repairing/migrating it. Recovery mode never replaces originals with an empty history. Save errors remain visible and are reported again at shutdown.
-- Drafts are debounced and active partial output is checkpointed; an abrupt crash can still lose changes since the latest successful checkpoint. Serialization/storage currently remain on the UI thread.
+- Drafts are debounced and active partial output is checkpointed; an abrupt crash can still lose changes since the latest successful checkpoint. A single bounded worker serializes and publishes complete revisions in order, coalescing pending saves; the UI captures owned storage-only text/metadata. Shutdown waits up to five seconds and reports failure rather than racing a second writer. History cleanup runs only after its removal revision is published.
 
 ## Verification and implementation status
 

@@ -76,6 +76,247 @@ pub struct WindowState {
     pub y: i32,
 }
 
+/// Owned storage-only data. No markdown layouts, native handles, mutable app
+/// references, channels, or live turns are transferred to the persistence worker.
+struct StoredMessage {
+    role: Role,
+    text: String,
+    thinking: String,
+    thinking_collapsed: bool,
+    turn_id: Option<u64>,
+    backend: Option<SessionMode>,
+    model: Option<String>,
+    outcome: Option<crate::chat::TurnStatus>,
+}
+struct StoredSession {
+    local_id: String,
+    name: String,
+    working_dir: String,
+    archived: bool,
+    mode: SessionMode,
+    title_is_automatic: bool,
+    created_at: std::time::SystemTime,
+    last_activity: std::time::SystemTime,
+    draft: String,
+    interrupted: bool,
+    messages: Vec<StoredMessage>,
+}
+pub struct SaveSnapshot {
+    pub revision: u64,
+    config: String,
+    settings: Settings,
+    projects: Vec<Project>,
+    sessions: Vec<StoredSession>,
+    window: Option<WindowState>,
+    removed: Vec<String>,
+}
+impl SaveSnapshot {
+    pub fn capture(
+        revision: u64,
+        config: &str,
+        settings: &Settings,
+        projects: &[Project],
+        sessions: &[Session],
+        window: Option<&WindowState>,
+    ) -> Self {
+        Self {
+            revision,
+            config: config.to_string(),
+            settings: settings.clone(),
+            projects: projects
+                .iter()
+                .map(|p| Project {
+                    path: p.path.clone(),
+                    name: p.name.clone(),
+                    expanded: p.expanded,
+                    session_indices: Vec::new(),
+                })
+                .collect(),
+            window: window.cloned(),
+            removed: Vec::new(),
+            sessions: sessions
+                .iter()
+                .map(|s| StoredSession {
+                    local_id: s.local_id.clone(),
+                    name: s.name.clone(),
+                    working_dir: s.working_dir.clone(),
+                    archived: s.archived,
+                    mode: s.mode,
+                    title_is_automatic: s.title_is_automatic,
+                    created_at: s.created_at,
+                    last_activity: s.last_activity,
+                    draft: s.chat.input_buffer.clone(),
+                    interrupted: s.chat.is_waiting_for_agent,
+                    messages: s
+                        .chat
+                        .messages
+                        .iter()
+                        .map(|m| StoredMessage {
+                            role: m.role,
+                            text: m.text.clone(),
+                            thinking: m.thinking.clone(),
+                            thinking_collapsed: m.thinking_collapsed,
+                            turn_id: m.turn_id,
+                            backend: m.backend,
+                            model: m.model.clone(),
+                            outcome: m.outcome,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+    pub fn with_removals(mut self, removed: Vec<String>) -> Self {
+        self.removed = removed;
+        self
+    }
+    fn write(&self) -> Result<(), String> {
+        for id in &self.removed {
+            LocalSessionId::parse(id)?;
+            if self.sessions.iter().any(|s| s.local_id == *id) {
+                return Err(
+                    "Refusing cleanup of a session still referenced by the saved index".to_string(),
+                );
+            }
+        }
+        write_snapshot(self)?;
+        // An older generation cannot run cleanup after a newer one: this worker
+        // is the sole publisher, and cleanup belongs to that same ordered task.
+        for id in &self.removed {
+            delete_session_file(&self.config, id)
+                .map_err(|e| format!("Snapshot published, but history cleanup failed: {e}"))?;
+        }
+        Ok(())
+    }
+}
+pub struct SaveResult {
+    pub revision: u64,
+    pub removed: Vec<String>,
+    pub result: Result<(), String>,
+}
+struct SaveMailbox {
+    pending: Option<SaveSnapshot>,
+    completed: Option<SaveResult>,
+    stopping: bool,
+    latest_revision: u64,
+}
+/// One active save and at most one pending complete snapshot. Newer pending
+/// revisions replace older ones; deletion tombstones must accompany every queued
+/// snapshot until a successful completion acknowledges them.
+pub struct PersistenceWorker {
+    mailbox: std::sync::Arc<(std::sync::Mutex<SaveMailbox>, std::sync::Condvar)>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl PersistenceWorker {
+    pub fn new() -> Result<Self, String> {
+        let mailbox = std::sync::Arc::new((
+            std::sync::Mutex::new(SaveMailbox {
+                pending: None,
+                completed: None,
+                stopping: false,
+                latest_revision: 0,
+            }),
+            std::sync::Condvar::new(),
+        ));
+        let worker = mailbox.clone();
+        let thread = std::thread::Builder::new()
+            .name("snapshot-writer".to_string())
+            .spawn(move || loop {
+                let task = {
+                    let (lock, wake) = &*worker;
+                    let Ok(mut state) = lock.lock() else {
+                        return;
+                    };
+                    while state.pending.is_none() && !state.stopping {
+                        state = match wake.wait(state) {
+                            Ok(state) => state,
+                            Err(_) => return,
+                        };
+                    }
+                    match state.pending.take() {
+                        Some(task) => task,
+                        None => return,
+                    }
+                };
+                let result = task.write();
+                let Ok(mut state) = worker.0.lock() else {
+                    return;
+                };
+                state.completed = Some(SaveResult {
+                    revision: task.revision,
+                    removed: task.removed,
+                    result,
+                });
+            })
+            .map_err(|e| format!("Create snapshot worker: {e}"))?;
+        Ok(Self {
+            mailbox,
+            thread: Some(thread),
+        })
+    }
+    pub fn submit(&self, snapshot: SaveSnapshot) -> Result<(), String> {
+        let mut state = self
+            .mailbox
+            .0
+            .lock()
+            .map_err(|_| "Snapshot worker state poisoned")?;
+        if state.stopping
+            || self
+                .thread
+                .as_ref()
+                .is_none_or(std::thread::JoinHandle::is_finished)
+        {
+            return Err("Snapshot worker stopped".to_string());
+        }
+        if snapshot.revision <= state.latest_revision {
+            return Err("Stale snapshot revision refused".to_string());
+        }
+        state.latest_revision = snapshot.revision;
+        state.pending = Some(snapshot);
+        self.mailbox.1.notify_one();
+        Ok(())
+    }
+    pub fn try_result(&self) -> Option<SaveResult> {
+        self.mailbox.0.lock().ok()?.completed.take()
+    }
+    /// Called after the native window closes: bounded wait, never a second
+    /// publisher racing a timed-out worker. A timeout preserves the prior index.
+    pub fn finish(&mut self, timeout: std::time::Duration) -> Result<(), String> {
+        self.request_stop();
+        let start = std::time::Instant::now();
+        while self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            if start.elapsed() >= timeout {
+                return Err(
+                    "Snapshot shutdown timed out; previous committed snapshot is preserved"
+                        .to_string(),
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .map_err(|_| "Snapshot worker exited unexpectedly")?;
+        }
+        Ok(())
+    }
+    fn request_stop(&self) {
+        if let Ok(mut state) = self.mailbox.0.lock() {
+            state.stopping = true;
+            self.mailbox.1.notify_one();
+        }
+    }
+}
+impl Drop for PersistenceWorker {
+    fn drop(&mut self) {
+        self.request_stop();
+    }
+}
+
 pub fn default_config_dir() -> String {
     #[cfg(windows)]
     if let Some(appdata) = std::env::var_os("APPDATA") {
@@ -167,7 +408,7 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
     result
 }
 
-fn message_to_json(m: &Message) -> Json {
+fn message_to_json(m: &StoredMessage) -> Json {
     Json::object(vec![
         (
             "role",
@@ -275,6 +516,8 @@ fn settings_to_json(s: &Settings) -> Json {
 
 /// Every save publishes a complete generation. Old snapshots remain available
 /// through state.json.bak; orphan generations are deliberately retained for recovery.
+/// Offline synchronous entry point: application saves use PersistenceWorker;
+/// never run a second publisher concurrently for the same storage directory.
 pub fn save_all(
     config: &str,
     settings: &Settings,
@@ -282,6 +525,17 @@ pub fn save_all(
     sessions: &[Session],
     window: Option<&WindowState>,
 ) -> Result<(), String> {
+    SaveSnapshot::capture(0, config, settings, projects, sessions, window).write()
+}
+fn write_snapshot(snapshot: &SaveSnapshot) -> Result<(), String> {
+    let SaveSnapshot {
+        config,
+        settings,
+        projects,
+        sessions,
+        window,
+        ..
+    } = snapshot;
     let mut ids = HashSet::new();
     for session in sessions {
         let id = LocalSessionId::parse(&session.local_id)?;
@@ -299,11 +553,11 @@ pub fn save_all(
         let snapshot = Json::object(vec![
             ("version", Json::Number(VERSION as f64)),
             ("local_id", Json::String(id.0.clone())),
-            ("draft", Json::String(session.chat.input_buffer.clone())),
-            ("interrupted", Json::Bool(session.chat.is_waiting_for_agent)),
+            ("draft", Json::String(session.draft.clone())),
+            ("interrupted", Json::Bool(session.interrupted)),
             (
                 "messages",
-                Json::Array(session.chat.messages.iter().map(message_to_json).collect()),
+                Json::Array(session.messages.iter().map(message_to_json).collect()),
             ),
         ]);
         atomic_write(
