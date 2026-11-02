@@ -32,7 +32,7 @@ backends, release-profile changes, or manifest changes were introduced.
 | CR-21 | No unconditional 60-Hz full repaint; idle/minimized animation suppressed; reusable checked backbuffer via BeginPaint DC; bounded revision/width/font-generation layout cache; bounded event drain; serialization/write/flush/cleanup moved to one owned worker with one coalesced pending snapshot. | Caret-only dirty rectangles, cumulative height/visible-range indexing, frame-budgeted growing-message layout, incremental snapshot capture, profiling on reference hardware. |
 | CR-22 | Auto-scroll consulted without forcing follow-tail; decorative theme/approval switches replaced with honest fixed-policy rows. | Jump-to-latest, reflow anchors, adaptive/scrollable settings. Changes to layout/shortcuts require approval. |
 | CR-23 | Correct COLORREF-to-ARGB channel conversion. | Compare GDI+ and GDI fallback on Windows. |
-| CR-24 | Decoded-entity transport contract, request descriptor, headers/status before body, deadlines, checked wire lengths, CR/LF checks, local key preflight, no default requested reasoning or replay. | Verify real API/model schema, structured usage/incomplete details and capability choices; remove remaining unused legacy HTTP framing helpers. |
+| CR-24 | Decoded-entity transport contract, request descriptor, headers/status before body, deadlines, checked wire lengths, CR/LF checks, local key preflight, no default requested reasoning or replay. Removed unused raw HTTP framing/status helpers and the buggy legacy chunk decoder; bounded SSE handles split CRLF, standalone CR and initial BOM. | Verify real API/model schema, structured usage/incomplete details and capability choices. |
 | CR-25 | Fallible owned Direct worker with queue disconnection and bounded shutdown/join; owned persistence worker with bounded shutdown/join and no racing synchronous fallback; BeginPaint/EndPaint guard; checked backbuffer ownership/selection restoration; clipboard/OLE ownership; font stock fallback excludes stock deletion; GDI+ failure cached and failed DLL loads freed; explicit export type/size checks; graphics released before unrelated GDI; GetMessage error path; ACP Drop fallback. | Owned/joined ACP worker handles and bounded asynchronous shutdown; Job Object decision; modern long-path folder dialog; comprehensive GDI acquisition wrappers; placement/DPI persistence audit. Successful GDI+ module/token intentionally live until process exit. |
 | CR-26 | Persisted wall-clock creation/activity and activity ordering; manual-title protection; monotonic ID component plus loaded/storage collision checks; runtime message/turn identity; backend-injected process flags; obsolete pending-session flags removed. | Normalized workspace identities/paths, fewer public invariant-bearing fields and index identities, borrowed history serialization. |
 | CR-27 | Declared Rust 1.85 MSRV; removed incompatible const use/unused variadic declaration; corrected native library groups; focused Clippy/MSRV CI and release gates; honest Direct/Code/storage/setup documentation. | Native debug/release link and manual acceptance in a full Windows development environment. |
@@ -41,7 +41,10 @@ backends, release-profile changes, or manifest changes were introduced.
 
 Compilation checks have passed with Rust 1.85 for Windows, Linux, and macOS
 (`cargo check`, not runnable Linux/macOS desktop backends). Stable formatting,
-all-target compilation and Clippy have also passed during implementation.
+all-target compilation and Clippy have also passed during implementation. Existing
+SSE tests were retained, obsolete raw-framing tests were removed with their unused
+implementation, and split-BOM/CRLF and standalone-CR cases were added. These tests
+compile under all-target checks but have not executed without a native linker.
 
 This environment has no MSVC linker/Windows SDK: `cargo test` and
 `cargo build --release` attempts failed at linking (Git's unrelated `link.exe`
