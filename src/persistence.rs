@@ -1,74 +1,208 @@
-// Persistence: save/load sessions, projects, and settings to JSON files.
-// Uses the hand-written json.rs module — no external dependencies.
-// Layout:
-//   <config_dir>/state.json           — settings, projects, session index (metadata)
-//   <config_dir>/sessions/<id>.json   — full message history per session (includes thinking)
+// Versioned persistence: immutable session snapshots, atomic index publication,
+// last-known-good backup, bounded validation, and non-destructive recovery.
 #![allow(dead_code)]
 
 use crate::chat::{Message, Role};
 use crate::json::{self, Json};
 use crate::session::{Project, Session, SessionMode};
 use crate::theme::Settings;
+use std::collections::HashSet;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const STATE_FILE: &str = "state.json";
 pub const SESSIONS_DIR: &str = "sessions";
+const VERSION: i64 = 2;
+const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
-// ── Serialization ──────────────────────────────────────────────────────────
-
-const fn role_to_str(role: Role) -> &'static str {
-    match role {
-        Role::User => "user",
-        Role::Agent => "agent",
-        Role::System => "system",
+/// The only accepted persisted identity grammar is sess_<digits>_<digits>.
+/// Separators, drive prefixes, NULs and traversal can never reach path creation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LocalSessionId(String);
+impl LocalSessionId {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let mut parts = value.split('_');
+        if value.len() > 100 || parts.next() != Some("sess") {
+            return Err("Invalid local session ID".to_string());
+        }
+        for _ in 0..2 {
+            if !parts
+                .next()
+                .is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return Err("Invalid local session ID".to_string());
+            }
+        }
+        if parts.next().is_some() {
+            return Err("Invalid local session ID".to_string());
+        }
+        Ok(Self(value.to_string()))
     }
 }
 
-fn str_to_role(s: &str) -> Role {
-    match s {
-        "user" => Role::User,
-        "agent" => Role::Agent,
-        _ => Role::System,
+#[derive(Debug)]
+pub enum LoadError {
+    Io { path: PathBuf, message: String },
+    Malformed { path: PathBuf, message: String },
+    UnsupportedVersion(i64),
+}
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io { path, message } => write!(f, "{}: {message}", path.display()),
+            Self::Malformed { path, message } => write!(f, "{}: {message}", path.display()),
+            Self::UnsupportedVersion(v) => {
+                write!(f, "Unsupported storage version {v}; originals preserved")
+            }
+        }
     }
+}
+
+pub struct LoadedState {
+    pub settings: Settings,
+    pub projects: Vec<Project>,
+    pub sessions: Vec<Session>,
+    pub window: Option<WindowState>,
+    /// Partial recovery is read-only until the damaged originals are repaired.
+    pub warnings: Vec<String>,
+}
+#[derive(Debug, Clone)]
+pub struct WindowState {
+    pub width: i32,
+    pub height: i32,
+    pub x: i32,
+    pub y: i32,
+}
+
+pub fn default_config_dir() -> String {
+    #[cfg(windows)]
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        return PathBuf::from(appdata)
+            .join("vibe-chat")
+            .to_string_lossy()
+            .into_owned();
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join("Library/Application Support/vibe-chat")
+            .to_string_lossy()
+            .into_owned();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            return PathBuf::from(xdg)
+                .join("vibe-chat")
+                .to_string_lossy()
+                .into_owned();
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join(".config/vibe-chat")
+                .to_string_lossy()
+                .into_owned();
+        }
+    }
+    ".vibe-chat".to_string()
+}
+
+fn generation() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!(
+        "{nanos}_{}_{}",
+        std::process::id(),
+        NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+fn valid_generation(value: &str) -> bool {
+    value.len() <= 100
+        && value.split('_').count() == 3
+        && value
+            .split('_')
+            .all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+}
+fn session_path(config: &str, id: &LocalSessionId, generation: Option<&str>) -> PathBuf {
+    let name = generation.map_or_else(
+        || format!("{}.json", id.0),
+        |g| format!("{}_{g}.json", id.0),
+    );
+    Path::new(config).join(SESSIONS_DIR).join(name)
+}
+
+/// std::fs::rename replaces existing files atomically (MoveFileExW with
+/// REPLACE_EXISTING on Windows). Never remove the destination before replacement.
+/// A same-directory create_new temporary is flushed before publication.
+fn atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
+    let temporary = path.with_extension(format!("{}.tmp", generation()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|e| format!("Create {}: {e}", temporary.display()))?;
+        file.write_all(content)
+            .and_then(|()| file.sync_all())
+            .map_err(|e| format!("Flush {}: {e}", temporary.display()))?;
+        drop(file);
+        std::fs::rename(&temporary, path).map_err(|e| format!("Publish {}: {e}", path.display()))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn message_to_json(m: &Message) -> Json {
     Json::object(vec![
-        ("role", Json::String(role_to_str(m.role).to_string())),
+        (
+            "role",
+            Json::String(
+                match m.role {
+                    Role::User => "user",
+                    Role::Agent => "agent",
+                    Role::System => "system",
+                }
+                .to_string(),
+            ),
+        ),
         ("text", Json::String(m.text.clone())),
         ("thinking", Json::String(m.thinking.clone())),
         ("thinking_collapsed", Json::Bool(m.thinking_collapsed)),
     ])
 }
-
-fn message_from_json(j: &Json) -> Message {
-    let role = j
-        .get("role")
+fn required_str<'a>(value: &'a Json, key: &str) -> Result<&'a str, String> {
+    value
+        .get(key)
         .and_then(Json::as_str)
-        .map_or(Role::System, str_to_role);
-    let text = j
-        .get("text")
-        .and_then(Json::as_str)
-        .unwrap_or("")
-        .to_string();
-    let thinking = j
-        .get("thinking")
-        .and_then(Json::as_str)
-        .unwrap_or("")
-        .to_string();
-    let collapsed = j
+        .ok_or_else(|| format!("Missing/invalid {key}"))
+}
+fn required_array<'a>(value: &'a Json, key: &str) -> Result<&'a [Json], String> {
+    value
+        .get(key)
+        .and_then(Json::as_array)
+        .ok_or_else(|| format!("Missing/invalid {key}"))
+}
+fn message_from_json(j: &Json) -> Result<Message, String> {
+    let role = match required_str(j, "role")? {
+        "user" => Role::User,
+        "agent" => Role::Agent,
+        "system" => Role::System,
+        _ => return Err("Invalid role".to_string()),
+    };
+    let mut msg = Message::new(role, required_str(j, "text")?);
+    msg.thinking = required_str(j, "thinking")?.to_string();
+    msg.thinking_runs = crate::markdown::parse(&msg.thinking);
+    msg.thinking_collapsed = j
         .get("thinking_collapsed")
         .and_then(Json::as_bool)
         .unwrap_or(true);
-
-    let mut msg = Message::new(role, &text);
-    msg.thinking_collapsed = collapsed;
-    if !thinking.is_empty() {
-        msg.thinking_runs = crate::markdown::parse(&thinking);
-        msg.thinking = thinking;
-    }
-    msg
+    Ok(msg)
 }
-
 fn settings_to_json(s: &Settings) -> Json {
     Json::object(vec![
         ("dark_theme", Json::Bool(s.dark_theme)),
@@ -78,188 +212,74 @@ fn settings_to_json(s: &Settings) -> Json {
     ])
 }
 
-fn settings_from_json(j: &Json) -> Settings {
-    let mut s = Settings::default();
-    if let Some(v) = j.get("dark_theme").and_then(Json::as_bool) {
-        s.dark_theme = v;
-    }
-    if let Some(v) = j.get("auto_scroll").and_then(Json::as_bool) {
-        s.auto_scroll = v;
-    }
-    if let Some(v) = j.get("auto_approve").and_then(Json::as_bool) {
-        s.auto_approve = v;
-    }
-    if let Some(v) = j.get("show_archived").and_then(Json::as_bool) {
-        s.show_archived = v;
-    }
-    s
-}
-
-fn project_to_json(p: &Project) -> Json {
-    Json::object(vec![
-        ("path", Json::String(p.path.clone())),
-        ("name", Json::String(p.name.clone())),
-        ("expanded", Json::Bool(p.expanded)),
-    ])
-}
-
-fn project_from_json(j: &Json) -> Option<Project> {
-    let path = j.get("path")?.as_str()?.to_string();
-    let name = j
-        .get("name")
-        .and_then(Json::as_str)
-        .unwrap_or("")
-        .to_string();
-    let expanded = j.get("expanded").and_then(Json::as_bool).unwrap_or(true);
-    if path.is_empty() {
-        return None;
-    }
-    let mut p = Project::new(&path);
-    p.name = name;
-    p.expanded = expanded;
-    Some(p)
-}
-
-// ── State index (state.json) ───────────────────────────────────────────────
-
-pub struct SessionMeta {
-    pub local_id: String,
-    pub acp_session_id: String,
-    pub name: String,
-    pub working_dir: String,
-    pub archived: bool,
-    pub mode: SessionMode,
-}
-
-fn session_meta_to_json(m: &SessionMeta) -> Json {
-    Json::object(vec![
-        ("local_id", Json::String(m.local_id.clone())),
-        ("acp_session_id", Json::String(m.acp_session_id.clone())),
-        ("name", Json::String(m.name.clone())),
-        ("working_dir", Json::String(m.working_dir.clone())),
-        ("archived", Json::Bool(m.archived)),
-        ("mode", Json::String(m.mode.as_str().to_string())),
-        ("file", Json::String(format!("{}.json", m.local_id))),
-    ])
-}
-
-fn session_meta_from_json(j: &Json) -> Option<SessionMeta> {
-    let local_id = j.get("local_id")?.as_str()?.to_string();
-    if local_id.is_empty() {
-        return None;
-    }
-    Some(SessionMeta {
-        local_id,
-        acp_session_id: j
-            .get("acp_session_id")
-            .and_then(Json::as_str)
-            .unwrap_or("")
-            .to_string(),
-        name: j
-            .get("name")
-            .and_then(Json::as_str)
-            .unwrap_or("New Chat")
-            .to_string(),
-        working_dir: j
-            .get("working_dir")
-            .and_then(Json::as_str)
-            .unwrap_or(".")
-            .to_string(),
-        archived: j.get("archived").and_then(Json::as_bool).unwrap_or(false),
-        mode: j
-            .get("mode")
-            .and_then(Json::as_str)
-            .map(SessionMode::from_str)
-            .unwrap_or(SessionMode::Direct),
-    })
-}
-
-// ── Public API ─────────────────────────────────────────────────────────────
-
-pub struct LoadedState {
-    pub settings: Settings,
-    pub projects: Vec<Project>,
-    pub sessions: Vec<Session>,
-    pub window: Option<WindowState>,
-}
-
-#[derive(Debug, Clone)]
-pub struct WindowState {
-    pub width: i32,
-    pub height: i32,
-    pub x: i32,
-    pub y: i32,
-}
-
-/// Build the config directory path for the current platform.
-pub fn default_config_dir() -> String {
-    #[cfg(windows)]
-    {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            return format!("{appdata}\\vibe-chat");
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{home}/Library/Application Support/vibe-chat");
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-            return format!("{xdg}/vibe-chat");
-        }
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{home}/.config/vibe-chat");
-        }
-    }
-    ".vibe-chat".to_string()
-}
-
-fn sessions_dir(config_dir: &str) -> std::path::PathBuf {
-    std::path::Path::new(config_dir).join(SESSIONS_DIR)
-}
-
-fn session_file_path(config_dir: &str, local_id: &str) -> std::path::PathBuf {
-    sessions_dir(config_dir).join(format!("{local_id}.json"))
-}
-
-/// Save the state index (settings, projects, session metadata) to state.json.
-pub fn save_index(
-    config_dir: &str,
+/// Every save publishes a complete generation. Old snapshots remain available
+/// through state.json.bak; orphan generations are deliberately retained for recovery.
+pub fn save_all(
+    config: &str,
     settings: &Settings,
     projects: &[Project],
     sessions: &[Session],
     window: Option<&WindowState>,
 ) -> Result<(), String> {
-    std::fs::create_dir_all(config_dir).map_err(|e| format!("Failed to create config dir: {e}"))?;
-
-    let session_metas: Vec<Json> = sessions
-        .iter()
-        .map(|s| {
-            session_meta_to_json(&SessionMeta {
-                local_id: s.local_id.clone(),
-                acp_session_id: s.acp_session_id.clone(),
-                name: s.name.clone(),
-                working_dir: s.working_dir.clone(),
-                archived: s.archived,
-                mode: s.mode,
-            })
-        })
-        .collect();
-
-    let projects_json: Vec<Json> = projects.iter().map(project_to_json).collect();
-
-    let mut root_pairs: Vec<(&str, Json)> = vec![
-        ("version", Json::Number(1.0)),
+    let mut ids = HashSet::new();
+    for session in sessions {
+        let id = LocalSessionId::parse(&session.local_id)?;
+        if !ids.insert(id) {
+            return Err("Duplicate local session ID".to_string());
+        }
+    }
+    std::fs::create_dir_all(Path::new(config).join(SESSIONS_DIR)).map_err(|e| e.to_string())?;
+    let generation = generation();
+    let mut metadata = Vec::new();
+    // Publish immutable snapshots first. An interrupted save cannot alter any
+    // snapshot referenced by either the current index or its previous backup.
+    for session in sessions {
+        let id = LocalSessionId::parse(&session.local_id)?;
+        let snapshot = Json::object(vec![
+            ("version", Json::Number(VERSION as f64)),
+            ("local_id", Json::String(id.0.clone())),
+            ("draft", Json::String(session.chat.input_buffer.clone())),
+            ("interrupted", Json::Bool(session.chat.is_waiting_for_agent)),
+            (
+                "messages",
+                Json::Array(session.chat.messages.iter().map(message_to_json).collect()),
+            ),
+        ]);
+        atomic_write(
+            &session_path(config, &id, Some(&generation)),
+            snapshot.to_string().as_bytes(),
+        )?;
+        metadata.push(Json::object(vec![
+            ("local_id", Json::String(id.0)),
+            ("name", Json::String(session.name.clone())),
+            ("working_dir", Json::String(session.working_dir.clone())),
+            ("archived", Json::Bool(session.archived)),
+            ("mode", Json::String(session.mode.as_str().to_string())),
+        ]));
+    }
+    let mut root = vec![
+        ("version", Json::Number(VERSION as f64)),
+        ("generation", Json::String(generation)),
         ("settings", settings_to_json(settings)),
-        ("projects", Json::Array(projects_json)),
-        ("sessions", Json::Array(session_metas)),
+        (
+            "projects",
+            Json::Array(
+                projects
+                    .iter()
+                    .map(|p| {
+                        Json::object(vec![
+                            ("path", Json::String(p.path.clone())),
+                            ("name", Json::String(p.name.clone())),
+                            ("expanded", Json::Bool(p.expanded)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        ("sessions", Json::Array(metadata)),
     ];
-
     if let Some(w) = window {
-        root_pairs.push((
+        root.push((
             "window",
             Json::object(vec![
                 ("width", Json::Number(f64::from(w.width))),
@@ -269,125 +289,223 @@ pub fn save_index(
             ]),
         ));
     }
-
-    let root = Json::Object(
-        root_pairs
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect(),
-    );
-
-    let path = std::path::Path::new(config_dir).join(STATE_FILE);
-    std::fs::write(&path, root.to_string()).map_err(|e| format!("Failed to write state.json: {e}"))
+    let index = Path::new(config).join(STATE_FILE);
+    match std::fs::read(&index) {
+        Ok(old) => atomic_write(&index.with_extension("json.bak"), &old)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Read previous index: {e}")),
+    }
+    atomic_write(&index, Json::object(root).to_string().as_bytes())
 }
-
-/// Save a single session's message history to `sessions/<local_id>.json`.
-pub fn save_session(config_dir: &str, session: &Session) -> Result<(), String> {
-    let dir = sessions_dir(config_dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {e}"))?;
-
-    let messages_json: Vec<Json> = session.chat.messages.iter().map(message_to_json).collect();
-
-    let root = Json::object(vec![
-        ("local_id", Json::String(session.local_id.clone())),
-        (
-            "acp_session_id",
-            Json::String(session.acp_session_id.clone()),
-        ),
-        ("messages", Json::Array(messages_json)),
-    ]);
-
-    let path = session_file_path(config_dir, &session.local_id);
-    std::fs::write(&path, root.to_string())
-        .map_err(|e| format!("Failed to write session file: {e}"))
-}
-
-/// Save the full state: index + all session files.
-pub fn save_all(
-    config_dir: &str,
+pub fn save_index(
+    config: &str,
     settings: &Settings,
     projects: &[Project],
     sessions: &[Session],
     window: Option<&WindowState>,
 ) -> Result<(), String> {
-    save_index(config_dir, settings, projects, sessions, window)?;
-    for session in sessions {
-        save_session(config_dir, session)?;
+    save_all(config, settings, projects, sessions, window)
+}
+
+/// Delete only validated filenames belonging to this identity. Caller publishes
+/// metadata removal first, then removes recovery copies intentionally as well.
+pub fn delete_session_file(config: &str, local_id: &str) -> Result<(), String> {
+    let id = LocalSessionId::parse(local_id)?;
+    let entries = match std::fs::read_dir(Path::new(config).join(SESSIONS_DIR)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let legacy = format!("{}.json", id.0);
+        let prefix = format!("{}_", id.0);
+        let snapshot = name
+            .strip_prefix(&prefix)
+            .and_then(|s| s.strip_suffix(".json"));
+        if name == legacy || snapshot.is_some_and(valid_generation) {
+            std::fs::remove_file(entry.path())
+                .map_err(|e| format!("Delete {}: {e}", entry.path().display()))?;
+        }
     }
     Ok(())
 }
 
-/// Delete a session file from disk.
-pub fn delete_session_file(config_dir: &str, local_id: &str) {
-    let path = session_file_path(config_dir, local_id);
-    let _ = std::fs::remove_file(&path);
+fn read_json(path: &Path) -> Result<Json, LoadError> {
+    let malformed = |message| LoadError::Malformed {
+        path: path.to_path_buf(),
+        message,
+    };
+    let file = std::fs::File::open(path).map_err(|e| LoadError::Io {
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })?;
+    let mut content = String::new();
+    file.take(MAX_FILE_BYTES + 1)
+        .read_to_string(&mut content)
+        .map_err(|e| LoadError::Io {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+    if content.len() as u64 > MAX_FILE_BYTES {
+        return Err(malformed("File exceeds storage size limit".to_string()));
+    }
+    json::parse(&content).map_err(malformed)
 }
 
-/// Load the state index and all session message files from disk.
-/// Returns None if state.json doesn't exist or is corrupt.
-pub fn load_all(config_dir: &str) -> Option<LoadedState> {
-    let index_path = std::path::Path::new(config_dir).join(STATE_FILE);
-    let content = std::fs::read_to_string(&index_path).ok()?;
-    let root = json::parse(&content).ok()?;
-
-    let settings = root
+pub fn load_all(config: &str) -> Result<Option<LoadedState>, LoadError> {
+    load_index(config, false)
+}
+pub fn load_backup(config: &str) -> Result<Option<LoadedState>, LoadError> {
+    load_index(config, true)
+}
+fn load_index(config: &str, backup: bool) -> Result<Option<LoadedState>, LoadError> {
+    let path = Path::new(config).join(if backup { "state.json.bak" } else { STATE_FILE });
+    match std::fs::metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(LoadError::Io {
+                path,
+                message: e.to_string(),
+            })
+        }
+        Ok(_) => {}
+    }
+    let root = read_json(&path)?;
+    let malformed = |message| LoadError::Malformed {
+        path: path.clone(),
+        message,
+    };
+    let version = root
+        .get("version")
+        .and_then(Json::as_i64)
+        .ok_or_else(|| malformed("Missing/invalid version".to_string()))?;
+    if version != 1 && version != VERSION {
+        return Err(LoadError::UnsupportedVersion(version));
+    }
+    let generation = if version == VERSION {
+        let g = required_str(&root, "generation").map_err(&malformed)?;
+        if !valid_generation(g) {
+            return Err(malformed("Invalid generation".to_string()));
+        }
+        Some(g)
+    } else {
+        None
+    };
+    let settings_json = root
         .get("settings")
-        .map(settings_from_json)
-        .unwrap_or_default();
-
+        .filter(|v| v.as_object().is_some())
+        .ok_or_else(|| malformed("Missing settings object".to_string()))?;
+    let mut settings = Settings::default();
+    if let Some(v) = settings_json.get("dark_theme").and_then(Json::as_bool) {
+        settings.dark_theme = v;
+    }
+    if let Some(v) = settings_json.get("auto_scroll").and_then(Json::as_bool) {
+        settings.auto_scroll = v;
+    }
+    // Never restore a global automatic permission policy from disk.
+    settings.auto_approve = false;
+    if let Some(v) = settings_json.get("show_archived").and_then(Json::as_bool) {
+        settings.show_archived = v;
+    }
     let mut projects = Vec::new();
-    if let Some(arr) = root.get("projects").and_then(Json::as_array) {
-        for item in arr {
-            if let Some(p) = project_from_json(item) {
-                projects.push(p);
-            }
+    let mut project_paths = HashSet::new();
+    for item in required_array(&root, "projects").map_err(&malformed)? {
+        let location = required_str(item, "path").map_err(&malformed)?;
+        if location.is_empty() || !project_paths.insert(location) {
+            return Err(malformed("Empty/duplicate project path".to_string()));
         }
+        let mut project = Project::new(location);
+        project.name = required_str(item, "name").map_err(&malformed)?.to_string();
+        project.expanded = item.get("expanded").and_then(Json::as_bool).unwrap_or(true);
+        projects.push(project);
     }
-
+    let mut ids = HashSet::new();
     let mut sessions = Vec::new();
-    if let Some(arr) = root.get("sessions").and_then(Json::as_array) {
-        for item in arr {
-            if let Some(meta) = session_meta_from_json(item) {
-                let mut session = Session {
-                    local_id: meta.local_id.clone(),
-                    acp_session_id: meta.acp_session_id,
-                    name: meta.name,
-                    working_dir: meta.working_dir,
-                    chat: crate::chat::ChatState::new(),
-                    created_at: std::time::Instant::now(),
-                    archived: meta.archived,
-                    mode: meta.mode,
-                };
-
-                let session_path = session_file_path(config_dir, &meta.local_id);
-                if let Ok(content) = std::fs::read_to_string(&session_path) {
-                    if let Ok(session_json) = json::parse(&content) {
-                        if let Some(msgs) = session_json.get("messages").and_then(Json::as_array) {
-                            for m in msgs {
-                                session.chat.messages.push_back(message_from_json(m));
-                            }
-                        }
-                    }
-                }
-
-                sessions.push(session);
-            }
+    let mut warnings = Vec::new();
+    // Validate every identity before doing any session-file I/O.
+    let metadata = required_array(&root, "sessions").map_err(&malformed)?;
+    for item in metadata {
+        let id = LocalSessionId::parse(required_str(item, "local_id").map_err(&malformed)?)
+            .map_err(&malformed)?;
+        if !ids.insert(id) {
+            return Err(malformed("Duplicate session ID".to_string()));
         }
     }
-
+    for item in metadata {
+        let id = LocalSessionId::parse(required_str(item, "local_id").map_err(&malformed)?)
+            .map_err(&malformed)?;
+        let mode = match item.get("mode").and_then(Json::as_str) {
+            Some("direct") => SessionMode::Direct,
+            Some("code") => SessionMode::Code,
+            None if version == 1 => SessionMode::Code,
+            _ => return Err(malformed("Unknown/missing session mode".to_string())),
+        };
+        let mut session = Session::new(
+            "",
+            required_str(item, "name").map_err(&malformed)?,
+            required_str(item, "working_dir").map_err(&malformed)?,
+        );
+        session.local_id = id.0.clone();
+        session.mode = mode;
+        session.archived = item
+            .get("archived")
+            .and_then(Json::as_bool)
+            .unwrap_or(false);
+        let snapshot_path = session_path(config, &id, generation);
+        let loaded = (|| -> Result<(), String> {
+            let value = read_json(&snapshot_path).map_err(|e| e.to_string())?;
+            if required_str(&value, "local_id")? != id.0 {
+                return Err("Snapshot identity mismatch".to_string());
+            }
+            if version == VERSION && value.get("version").and_then(Json::as_i64) != Some(VERSION) {
+                return Err("Unsupported snapshot version".to_string());
+            }
+            let messages = required_array(&value, "messages")?
+                .iter()
+                .map(message_from_json)
+                .collect::<Result<_, _>>()?;
+            session.chat.messages = messages;
+            if let Some(draft) = value.get("draft").and_then(Json::as_str) {
+                session.chat.input_buffer = draft.to_string();
+                session.chat.cursor_pos = draft.len();
+            }
+            if value.get("interrupted").and_then(Json::as_bool) == Some(true) {
+                session.chat.add_system_message(
+                    "Previous turn was interrupted. Partial output has been preserved.",
+                );
+            }
+            Ok(())
+        })();
+        if let Err(e) = loaded {
+            warnings.push(format!("{} ({}): {e}", session.name, id.0));
+            session.chat.add_system_message(
+                "History could not be recovered. Storage is read-only; originals are preserved.",
+            );
+        }
+        sessions.push(session);
+    }
     let window = root.get("window").and_then(|w| {
         Some(WindowState {
-            width: w.get("width").and_then(Json::as_i64)? as i32,
-            height: w.get("height").and_then(Json::as_i64)? as i32,
-            x: w.get("x").and_then(Json::as_i64)? as i32,
-            y: w.get("y").and_then(Json::as_i64)? as i32,
+            width: i32::try_from(w.get("width")?.as_i64()?)
+                .ok()?
+                .clamp(720, 16384),
+            height: i32::try_from(w.get("height")?.as_i64()?)
+                .ok()?
+                .clamp(480, 16384),
+            x: i32::try_from(w.get("x")?.as_i64()?).ok()?,
+            y: i32::try_from(w.get("y")?.as_i64()?).ok()?,
         })
     });
-
-    Some(LoadedState {
+    Ok(Some(LoadedState {
         settings,
         projects,
         sessions,
         window,
-    })
+        warnings,
+    }))
 }

@@ -83,8 +83,18 @@ pub fn app_entry() {
         let caret_blink = GetCaretBlinkTime();
         let mut app_state = Box::new(AppState::new(caret_blink));
 
-        if !app_state.as_mut().load_state() || app_state.sessions.is_empty() {
-            app_state.as_mut().create_local_session_default();
+        let loaded = app_state.load_state();
+        if app_state.persistence_blocked {
+            let error = app_state.persistence_error.clone().unwrap_or_default();
+            let use_backup = MessageBoxW(ptr::null_mut(),
+                to_wide(&format!("{error}\n\nOriginal files will not be overwritten. Open the last saved backup read-only?\nStorage: {}", app_state.config_dir)).as_ptr(),
+                to_wide("History recovery required").as_ptr(), MB_YESNO | MB_ICONWARNING) == IDYES as i32;
+            if use_backup {
+                app_state.load_backup();
+            }
+        }
+        if (!loaded && app_state.sessions.is_empty()) || app_state.sessions.is_empty() {
+            app_state.create_local_session_default();
         }
 
         let (win_w, win_h) = if let Some(ref w) = app_state.saved_window {
@@ -141,6 +151,14 @@ pub fn app_entry() {
         }
 
         app_state.save_all();
+        if let Some(error) = &app_state.persistence_error {
+            MessageBoxW(
+                ptr::null_mut(),
+                to_wide(error).as_ptr(),
+                to_wide("Changes were not saved").as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
+        }
 
         if let Some(a) = app_state.acp.take() {
             a.shutdown();

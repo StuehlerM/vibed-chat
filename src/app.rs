@@ -116,6 +116,10 @@ pub struct AppState {
     pub default_working_dir: String,
     pub toast: Option<Toast>,
     pub config_dir: String,
+    /// Durable warning, visible until a successful save (or manual recovery).
+    pub persistence_error: Option<String>,
+    /// Never overwrite damaged/future-version storage with a new empty state.
+    pub persistence_blocked: bool,
     pub rename_target: Option<RenameTarget>,
     pub rename_buffer: String,
     pub rename_cursor: usize,
@@ -184,6 +188,8 @@ impl AppState {
             default_working_dir: default_wd,
             toast: None,
             config_dir: crate::persistence::default_config_dir(),
+            persistence_error: None,
+            persistence_blocked: false,
             rename_target: None,
             rename_buffer: String::new(),
             rename_cursor: 0,
@@ -301,24 +307,13 @@ impl AppState {
             return;
         }
         let path = self.projects[project_idx].path.clone();
-        let sessions_to_remove: Vec<usize> = self
+        let ids: Vec<String> = self
             .sessions
             .iter()
-            .enumerate()
-            .filter(|(_, s)| s.working_dir == path)
-            .map(|(i, _)| i)
+            .filter(|s| s.working_dir == path)
+            .map(|s| s.local_id.clone())
             .collect();
-        for &idx in sessions_to_remove.iter().rev() {
-            self.sessions.remove(idx);
-        }
-        self.projects.remove(project_idx);
-        if self.active_session >= self.sessions.len() && !self.sessions.is_empty() {
-            self.active_session = self.sessions.len() - 1;
-        } else if self.sessions.is_empty() {
-            self.active_session = 0;
-        }
-        self.rebuild_project_indices();
-        self.save_index();
+        self.remove_sessions(&ids, Some(&path));
     }
 
     // ── Session management ──────────────────────────────────────────────────
@@ -443,25 +438,66 @@ impl AppState {
 
     /// Permanently delete a session. Returns true if a session was removed.
     pub fn delete_session(&mut self, idx: usize) -> bool {
-        if idx >= self.sessions.len() {
+        let Some(session) = self.sessions.get(idx) else {
+            return false;
+        };
+        self.remove_sessions(&[session.local_id.clone()], None)
+    }
+
+    /// One removal path for individual chats and project groups. Refuse active
+    /// work explicitly; stable IDs preserve the selected surviving chat.
+    fn remove_sessions(&mut self, ids: &[String], project: Option<&str>) -> bool {
+        if self.persistence_blocked {
+            self.show_toast(
+                "Cannot delete while storage is in read-only recovery mode",
+                ToastKind::Error,
+            );
             return false;
         }
-        if self.sessions[idx].chat.is_waiting_for_agent {
+        if self
+            .sessions
+            .iter()
+            .any(|s| ids.contains(&s.local_id) && s.chat.is_waiting_for_agent)
+        {
+            self.show_toast(
+                "Stop the active response before deleting its chat or project",
+                ToastKind::Error,
+            );
             return false;
         }
-        let local_id = self.sessions[idx].local_id.clone();
-        self.sessions.remove(idx);
-        self.delete_session_file(&local_id);
-        self.rebuild_project_indices();
+        let selected = self
+            .sessions
+            .get(self.active_session)
+            .map(|s| s.local_id.clone());
+        self.sessions.retain(|s| !ids.contains(&s.local_id));
+        if let Some(path) = project {
+            self.projects.retain(|p| p.path != path);
+        }
         if self.sessions.is_empty() {
-            self.active_session = 0;
-            self.create_local_session_default();
-        } else if self.active_session >= self.sessions.len() {
-            self.active_session = self.sessions.len() - 1;
-        } else if self.active_session > idx {
-            self.active_session -= 1;
+            // Consistent replacement instead of an indexable empty collection.
+            let wd = self.default_working_dir.clone();
+            self.sessions.push(Session::new("", "New Chat", &wd));
+            self.ensure_project(&wd);
         }
-        self.save_index();
+        self.active_session = selected
+            .and_then(|id| self.sessions.iter().position(|s| s.local_id == id))
+            .unwrap_or(0);
+        self.cancel_rename();
+        self.hover = HoverState::default();
+        self.pressed_element = None;
+        self.focused_element = Some(FocusedElement::Input);
+        self.project_menu_requested = None;
+        self.link_rects.clear();
+        self.code_block_rects.clear();
+        self.rebuild_project_indices();
+        // Publish the removal before erasing any history. A save failure keeps
+        // all recovery material, even though the in-memory removal is unsaved.
+        self.save_all();
+        if self.persistence_error.is_none() {
+            for id in ids {
+                self.delete_session_file(id);
+            }
+        }
         true
     }
 
@@ -899,47 +935,80 @@ impl AppState {
     /// Save the state index (settings, projects, session metadata) to disk.
     /// Failures surface as a toast — a silent save loss must never look like success.
     pub fn save_index(&mut self) {
+        self.save_all();
+    }
+
+    fn record_save_result(&mut self, result: Result<(), String>) {
+        match result {
+            Ok(()) => self.persistence_error = None,
+            Err(e) => {
+                self.persistence_error = Some(format!("Unsaved changes: {e}"));
+                self.show_toast(&format!("Save failed: {e}"), ToastKind::Error);
+            }
+        }
+    }
+
+    fn save_complete_snapshot(&mut self) {
         let window = self.saved_window_state();
-        if let Err(e) = crate::persistence::save_index(
+        let result = crate::persistence::save_index(
             &self.config_dir,
             &self.settings,
             &self.projects,
             &self.sessions,
             window.as_ref(),
-        ) {
-            self.show_toast(&format!("Save failed: {e}"), ToastKind::Error);
-        }
+        );
+        self.record_save_result(result);
     }
 
-    /// Save a single session's message history to disk.
+    /// A session save publishes one coherent generation, including its index.
     pub fn save_session(&mut self, idx: usize) {
-        let result = self
-            .sessions
-            .get(idx)
-            .map(|session| crate::persistence::save_session(&self.config_dir, session));
-        if let Some(Err(e)) = result {
-            self.show_toast(&format!("Save failed: {e}"), ToastKind::Error);
+        if self.sessions.get(idx).is_some() {
+            self.save_all();
         }
     }
 
     /// Save the state index and all session files to disk.
     pub fn save_all(&mut self) {
-        let window = self.saved_window_state();
-        if let Err(e) = crate::persistence::save_all(
-            &self.config_dir,
-            &self.settings,
-            &self.projects,
-            &self.sessions,
-            window.as_ref(),
-        ) {
-            self.show_toast(&format!("Save failed: {e}"), ToastKind::Error);
+        if !self.persistence_blocked {
+            self.save_complete_snapshot();
         }
     }
 
     /// Load persisted state from disk. Returns true if state was loaded.
     pub fn load_state(&mut self) -> bool {
         self.invalidate_sidebar_cache();
-        if let Some(loaded) = crate::persistence::load_all(&self.config_dir) {
+        let result = crate::persistence::load_all(&self.config_dir);
+        self.install_loaded_state(result)
+    }
+
+    pub fn load_backup(&mut self) -> bool {
+        let result = crate::persistence::load_backup(&self.config_dir);
+        // Recovery is deliberately read-only; do not replace the damaged index.
+        self.persistence_blocked = true;
+        self.install_loaded_state(result)
+    }
+
+    fn install_loaded_state(
+        &mut self,
+        result: Result<Option<crate::persistence::LoadedState>, crate::persistence::LoadError>,
+    ) -> bool {
+        let loaded = match result {
+            Ok(Some(loaded)) => loaded,
+            Ok(None) => return false,
+            Err(e) => {
+                self.persistence_blocked = true;
+                self.persistence_error = Some(format!("Storage read-only: {e}"));
+                return false;
+            }
+        };
+        {
+            if !loaded.warnings.is_empty() {
+                self.persistence_blocked = true;
+                self.persistence_error = Some(format!(
+                    "Recovery required (read-only): {}",
+                    loaded.warnings.join("; ")
+                ));
+            }
             self.settings = loaded.settings;
             self.projects = loaded.projects;
             self.sessions = loaded.sessions;
@@ -960,8 +1029,6 @@ impl AppState {
                 self.saved_window = Some(w);
             }
             true
-        } else {
-            false
         }
     }
 
@@ -970,8 +1037,14 @@ impl AppState {
     }
 
     /// Delete a session's file from disk.
-    pub fn delete_session_file(&self, local_id: &str) {
-        crate::persistence::delete_session_file(&self.config_dir, local_id);
+    pub fn delete_session_file(&mut self, local_id: &str) {
+        if self.persistence_blocked {
+            return;
+        }
+        if let Err(e) = crate::persistence::delete_session_file(&self.config_dir, local_id) {
+            self.persistence_error = Some(format!("File cleanup failed: {e}"));
+            self.show_toast(&e, ToastKind::Error);
+        }
     }
 
     /// Check if an auto-reconnect should be attempted. Called from the timer tick.

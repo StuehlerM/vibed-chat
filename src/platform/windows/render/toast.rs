@@ -12,9 +12,20 @@ const TOAST_V_PAD: i32 = SPACE_2;
 
 /// Draw the toast popup in the top-right corner, if one is active.
 pub fn draw_toast(hdc: HDC, ctx: &PaintContext, scale: f32) {
-    let toast = match &ctx.app.toast {
-        Some(t) => t,
-        None => return,
+    let persistent;
+    let toast = if let Some(error) = &ctx.app.persistence_error {
+        persistent = crate::ui::Toast {
+            text: error.clone(),
+            kind: ToastKind::Error,
+            shown_at: std::time::Instant::now(),
+            duration_ms: u64::MAX,
+        };
+        &persistent
+    } else {
+        match &ctx.app.toast {
+            Some(t) => t,
+            None => return,
+        }
     };
     let elapsed_ms = toast.shown_at.elapsed().as_millis() as u64;
     if elapsed_ms >= toast.duration_ms {

@@ -148,8 +148,8 @@ impl ChatState {
     pub fn add_message(&mut self, role: Role, text: &str) {
         let msg = Message::new(role, text);
         self.messages.push_back(msg);
-        self.trim_history();
-        self.is_at_bottom = true;
+        // Transcript retention is independent of the rendering/context budget.
+        // Preserve a reader's existing follow-tail decision.
     }
 
     pub fn add_system_message(&mut self, text: &str) {
@@ -157,11 +157,13 @@ impl ChatState {
     }
 
     pub fn start_streaming(&mut self) {
+        if self.is_waiting_for_agent {
+            return;
+        }
         let msg = Message::new(Role::Agent, "");
         self.messages.push_back(msg);
         self.streaming_message_idx = self.last_message_index();
         self.is_waiting_for_agent = true;
-        self.is_at_bottom = true;
     }
 
     pub fn append_stream_chunk(&mut self, text: &str) {
@@ -193,13 +195,8 @@ impl ChatState {
     }
 
     pub fn trim_history(&mut self) {
-        while self.messages.len() > self.max_messages {
-            self.messages.pop_front();
-            // The streaming index shifts down by one for every message
-            // removed from the front; saturate at 0 when it pointed at a
-            // trimmed message.
-            self.streaming_message_idx = self.streaming_message_idx.map(|i| i.saturating_sub(1));
-        }
+        // No implicit destructive retention. Rendering must bound its own work.
+        // Kept as a compatibility entry point for callers.
     }
 
     pub fn insert_char(&mut self, c: char) {

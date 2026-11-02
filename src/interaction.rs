@@ -577,7 +577,7 @@ impl AppState {
             let header_h = (SESSION_HEADER_HEIGHT as f32 * scale) as i32;
             let sidebar_w_scaled = sidebar_w;
             let layout =
-                compute_mode_radio_layout(sidebar_w_scaled, self.client_width, header_h, scale);
+                compute_mode_radio_layout(sidebar_w_scaled, self.chat_right(), header_h, scale);
             if y >= layout.top && y <= layout.top + layout.h {
                 let option_w = (MODE_RADIO_OPTION_W as f32 * scale) as i32;
                 if x >= layout.direct_left && x < layout.direct_left + option_w {
@@ -635,7 +635,10 @@ impl AppState {
             let idx = self
                 .active_session
                 .min(self.sessions.len().saturating_sub(1));
-            let input_h = (self.sessions[idx].chat.input_height as f32 * scale) as i32;
+            let Some(session) = self.sessions.get(idx) else {
+                return false;
+            };
+            let input_h = (session.chat.input_height as f32 * scale) as i32;
             let input_bottom = input_box_top + input_h;
 
             if x >= input_left
