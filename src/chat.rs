@@ -157,7 +157,7 @@ impl ChatState {
     }
 
     pub fn start_streaming(&mut self) {
-        if self.is_waiting_for_agent {
+        if self.streaming_message_idx.is_some() {
             return;
         }
         let msg = Message::new(Role::Agent, "");

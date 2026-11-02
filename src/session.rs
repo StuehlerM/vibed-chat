@@ -91,6 +91,23 @@ impl Project {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TurnKey {
+    pub local_id: String,
+    pub turn_id: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveTurn {
+    pub key: TurnKey,
+    pub backend: SessionMode,
+    pub text: String,
+    pub submitted: bool,
+    pub session_requested: bool,
+    pub cancelling: bool,
+    pub started: std::time::Instant,
+}
+
 #[derive(Debug)]
 pub struct Session {
     pub local_id: String,
@@ -101,6 +118,8 @@ pub struct Session {
     pub created_at: std::time::Instant,
     pub archived: bool,
     pub mode: SessionMode,
+    pub active_turn: Option<ActiveTurn>,
+    pub title_is_automatic: bool,
 }
 
 impl Session {
@@ -114,6 +133,8 @@ impl Session {
             created_at: std::time::Instant::now(),
             archived: false,
             mode: SessionMode::Direct,
+            active_turn: None,
+            title_is_automatic: true,
         }
     }
 
@@ -146,6 +167,9 @@ impl Session {
     }
 
     pub fn auto_name(&mut self) {
+        if !self.title_is_automatic {
+            return;
+        }
         for msg in &self.chat.messages {
             if msg.role == Role::User {
                 let text = msg.text.trim();
@@ -157,6 +181,7 @@ impl Session {
                         name
                     };
                     self.name = name;
+                    self.title_is_automatic = false;
                     return;
                 }
             }
@@ -169,6 +194,9 @@ fn generate_local_id() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let pid = std::process::id();
-    format!("sess_{nanos}_{pid}")
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // Monotonic process component prevents same-clock-tick collisions.
+    let counter = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let component = (u128::from(std::process::id()) << 64) | u128::from(counter);
+    format!("sess_{nanos}_{component}")
 }

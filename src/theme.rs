@@ -352,7 +352,7 @@ impl Default for Settings {
         Self {
             dark_theme: true,
             auto_scroll: true,
-            auto_approve: true,
+            auto_approve: false,
             show_archived: false,
         }
     }

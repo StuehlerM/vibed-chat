@@ -159,6 +159,12 @@ pub unsafe extern "system" fn wnd_proc(
                     (*app_state).streaming_dots = (*app_state).streaming_dots.wrapping_add(1);
 
                     InvalidateRect(hwnd, std::ptr::null(), 0);
+                    if !(*app_state).modal_active {
+                        let permission = (*app_state).pending_permissions.pop_front();
+                        if let Some(permission) = permission {
+                            execute_effect(hwnd, NativeEffect::Permission(permission));
+                        }
+                    }
                 }
             }
             return 0;
@@ -673,6 +679,7 @@ enum NativeEffect {
     },
     OpenLink(String),
     CopyCode(String),
+    Permission(crate::app::PendingPermission),
 }
 
 fn execute_effect(hwnd: HWND, effect: NativeEffect) {
@@ -687,6 +694,47 @@ fn execute_effect(hwnd: HWND, effect: NativeEffect) {
         (*pointer).modal_active = true;
         let dialogs = WinDialogs(hwnd);
         match effect {
+            NativeEffect::Permission(permission) => {
+                let menu = CreatePopupMenu();
+                let mut selected = None;
+                if !menu.is_null() {
+                    AppendMenuW(
+                        menu,
+                        MF_STRING | 0x0002,
+                        0,
+                        to_wide(&permission.title).as_ptr(),
+                    );
+                    for (index, (_, label)) in permission.options.iter().enumerate() {
+                        AppendMenuW(menu, MF_STRING, index + 1, to_wide(label).as_ptr());
+                    }
+                    AppendMenuW(
+                        menu,
+                        MF_STRING,
+                        permission.options.len() + 1,
+                        to_wide("Cancel request").as_ptr(),
+                    );
+                    let mut point = POINT { x: 0, y: 0 };
+                    GetCursorPos(&mut point);
+                    let command = TrackPopupMenu(
+                        menu,
+                        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+                        point.x,
+                        point.y,
+                        0,
+                        hwnd,
+                        std::ptr::null(),
+                    ) as usize;
+                    DestroyMenu(menu);
+                    selected = command
+                        .checked_sub(1)
+                        .and_then(|index| permission.options.get(index))
+                        .map(|(id, _)| id.clone());
+                }
+                let pointer = get_app_state(hwnd);
+                if !pointer.is_null() {
+                    (*pointer).resolve_permission(permission, selected);
+                }
+            }
             NativeEffect::PickProjectFolder => {
                 let result = dialogs.pick_folder("Select a project folder");
                 let pointer = get_app_state(hwnd);

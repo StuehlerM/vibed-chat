@@ -145,6 +145,8 @@ pub struct SseParser {
     data_lines: Vec<String>,
     /// Event name, if provided by an `event:` line.
     event_name: Option<String>,
+    event_bytes: usize,
+    error: Option<String>,
 }
 
 impl SseParser {
@@ -153,6 +155,8 @@ impl SseParser {
             line_buf: Vec::new(),
             data_lines: Vec::new(),
             event_name: None,
+            event_bytes: 0,
+            error: None,
         }
     }
 
@@ -160,6 +164,16 @@ impl SseParser {
     pub fn extend(&mut self, data: &[u8]) -> Vec<(String, String)> {
         let mut events = Vec::new();
         for &b in data {
+            if self.error.is_some() {
+                break;
+            }
+            self.event_bytes += 1;
+            if self.event_bytes > 1024 * 1024 || self.line_buf.len() >= 1024 * 1024 {
+                self.error = Some("SSE frame exceeds 1 MiB".to_string());
+                self.line_buf.clear();
+                self.data_lines.clear();
+                break;
+            }
             if b == b'\n' {
                 // Strip optional CR (SSE lines end with CRLF or LF).
                 let mut line = std::mem::take(&mut self.line_buf);
@@ -176,9 +190,20 @@ impl SseParser {
         events
     }
 
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
     fn handle_line(&mut self, line: &[u8]) -> Option<(String, String)> {
-        let line = String::from_utf8_lossy(line).to_string();
+        let line = match std::str::from_utf8(line) {
+            Ok(line) => line,
+            Err(_) => {
+                self.error = Some("Invalid UTF-8 in SSE frame".to_string());
+                return None;
+            }
+        };
         if line.is_empty() {
+            self.event_bytes = 0;
             // Blank line dispatches the event.
             if self.data_lines.is_empty() {
                 self.event_name = None;
@@ -199,7 +224,7 @@ impl SseParser {
                 let v = v.strip_prefix(' ').unwrap_or(v);
                 (&line[..i], v)
             }
-            None => (line.as_str(), ""),
+            None => (line, ""),
         };
         match field {
             "data" => {

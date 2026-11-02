@@ -955,6 +955,20 @@ pub const WINHTTP_ADDREQ_FLAG_ADD: DWORD = 0x2000_0000;
 pub const WINHTTP_ADDREQ_FLAG_REPLACE: DWORD = 0x8000_0000;
 pub const WINHTTP_QUERY_STATUS_CODE: DWORD = 19;
 pub const WINHTTP_QUERY_FLAG_NUMBER: DWORD = 0x2000_0000;
+pub const WINHTTP_FLAG_ASYNC: DWORD = 0x1000_0000;
+pub const WINHTTP_OPTION_CONTEXT_VALUE: DWORD = 45;
+pub const WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING: DWORD = 0x0000_0800;
+pub const WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE: DWORD = 0x0002_0000;
+pub const WINHTTP_CALLBACK_STATUS_READ_COMPLETE: DWORD = 0x0008_0000;
+pub const WINHTTP_CALLBACK_STATUS_REQUEST_ERROR: DWORD = 0x0020_0000;
+pub const WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE: DWORD = 0x0040_0000;
+pub type WINHTTP_STATUS_CALLBACK =
+    Option<unsafe extern "system" fn(HINTERNET, usize, DWORD, *mut c_void, DWORD)>;
+#[repr(C)]
+pub struct WINHTTP_ASYNC_RESULT {
+    pub result: usize,
+    pub error: DWORD,
+}
 
 #[link(name = "winhttp")]
 extern "system" {
@@ -981,6 +995,27 @@ extern "system" {
         flags: DWORD,
     ) -> HINTERNET;
     pub fn WinHttpCloseHandle(handle: HINTERNET) -> BOOL;
+    pub fn WinHttpSetOption(
+        handle: HINTERNET,
+        option: DWORD,
+        buffer: *mut c_void,
+        length: DWORD,
+    ) -> BOOL;
+    // The return is an opaque previous callback address, including the -1 error
+    // sentinel. Never materialize or invoke that sentinel as a Rust fn pointer.
+    pub fn WinHttpSetStatusCallback(
+        handle: HINTERNET,
+        callback: WINHTTP_STATUS_CALLBACK,
+        flags: DWORD,
+        reserved: usize,
+    ) -> *mut c_void;
+    pub fn WinHttpSetTimeouts(
+        handle: HINTERNET,
+        resolve: i32,
+        connect: i32,
+        send: i32,
+        receive: i32,
+    ) -> BOOL;
     pub fn WinHttpAddRequestHeaders(
         request: HINTERNET,
         headers: LPCWSTR,

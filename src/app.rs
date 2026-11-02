@@ -6,7 +6,7 @@
 use crate::acp::{AcpClient, AcpEvent};
 use crate::chat::{ChatState, Role};
 use crate::responses::{ResponsesClient, ResponsesEvent};
-use crate::session::{Project, Session, SessionMode};
+use crate::session::{ActiveTurn, Project, Session, SessionMode, TurnKey};
 use crate::theme::Settings;
 use crate::ui::{FocusedElement, RenameTarget, Toast, ToastKind};
 
@@ -77,6 +77,14 @@ pub struct HoverState {
     pub code_copy: Option<usize>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingPermission {
+    pub id: crate::json::Json,
+    pub key: TurnKey,
+    pub title: String,
+    pub options: Vec<(String, String)>,
+}
+
 /// Shared application state stored in the window's user data.
 // The handful of bools (show_settings, acp_connected, should_quit, ...) are
 // independent flags on a UI-state bag, not a state machine; grouping them
@@ -92,6 +100,8 @@ pub struct AppState {
     pub dpi: u32,
     pub acp: Option<AcpClient>,
     pub acp_connected: bool,
+    pub acp_connecting: bool,
+    pub pending_permissions: std::collections::VecDeque<PendingPermission>,
     /// Direct-mode (Responses API) client. Created once on first use.
     pub responses: Option<ResponsesClient>,
     /// Set when the UI requests a transport factory for Direct mode;
@@ -164,6 +174,8 @@ impl AppState {
             dpi: 96,
             acp: None,
             acp_connected: false,
+            acp_connecting: false,
+            pending_permissions: std::collections::VecDeque::new(),
             responses: None,
             responses_wanted: false,
             input_tokens: None,
@@ -218,7 +230,14 @@ impl AppState {
         match idx {
             0 => self.settings.dark_theme = !self.settings.dark_theme,
             1 => self.settings.auto_scroll = !self.settings.auto_scroll,
-            2 => self.settings.auto_approve = !self.settings.auto_approve,
+            2 => {
+                self.settings.auto_approve = false;
+                self.show_toast(
+                    "Tool permissions always require an explicit choice",
+                    ToastKind::Info,
+                );
+                return;
+            }
             3 => {
                 self.settings.show_archived = !self.settings.show_archived;
                 self.invalidate_sidebar_cache();
@@ -369,6 +388,7 @@ impl AppState {
                     RenameTarget::Session(idx) => {
                         if idx < self.sessions.len() {
                             self.sessions[idx].name = name;
+                            self.sessions[idx].title_is_automatic = false;
                         }
                     }
                     RenameTarget::Project(idx) => {
@@ -544,151 +564,242 @@ impl AppState {
     // One match arm per AcpEvent variant keeps the dispatch table readable.
     #[allow(clippy::too_many_lines)]
     pub fn poll_acp(&mut self) {
-        let events: Vec<AcpEvent> = {
-            let mut collected = Vec::new();
-            if let Some(ref acp) = self.acp {
-                while let Some(event) = acp.try_recv() {
-                    collected.push(event);
-                }
+        // Bounded channel and per-frame budget: bursts cannot monopolize the UI.
+        let started = std::time::Instant::now();
+        for _ in 0..256 {
+            if started.elapsed().as_millis() >= 4 {
+                break;
             }
-            collected
-        };
-
-        for event in events {
+            let event = self.acp.as_ref().and_then(AcpClient::try_recv);
+            let Some(event) = event else {
+                break;
+            };
             match event {
                 AcpEvent::Connected => {
                     self.acp_connected = true;
+                    self.acp_connecting = false;
                     self.reset_reconnect();
-                    if self.sessions.is_empty() {
-                        self.create_local_session_default();
-                    }
-                    let wd = if self.pending_new_session && !self.pending_working_dir.is_empty() {
-                        self.pending_working_dir.clone()
-                    } else {
-                        self.default_working_dir.clone()
-                    };
-                    if let Some(ref acp) = self.acp {
-                        acp.request_session(&wd);
-                    }
+                    self.advance_code_turns();
                     self.show_toast("Connected to agent", ToastKind::Success);
                 }
-                AcpEvent::SessionReady { session_id } => {
-                    if self.pending_new_session && !self.sessions.is_empty() {
-                        let idx = self.sessions.len() - 1;
-                        self.sessions[idx].acp_session_id.clone_from(&session_id);
-                        self.pending_new_session = false;
-                        self.pending_working_dir.clear();
-                        self.add_system_message_to_active(
-                            "Session ready. Type a message to begin.",
-                        );
-                        self.save_index();
-                        self.save_session(idx);
-                    } else {
-                        self.session_counter += 1;
-                        let name = format!("Chat {}", self.session_counter);
-                        let wd = self.default_working_dir.clone();
-                        let mut session = Session::new(&session_id, &name, &wd);
-                        session
-                            .chat
-                            .add_system_message("Session ready. Type a message to begin.");
-                        self.sessions.push(session);
-                        self.active_session = self.sessions.len() - 1;
-                        self.ensure_project(&wd);
-                        self.rebuild_project_indices();
-                        self.save_index();
-                        self.save_session(self.active_session);
+                AcpEvent::SessionReady { key, session_id } => {
+                    if let Some(idx) = self.turn_index(&key) {
+                        self.sessions[idx].acp_session_id = session_id;
+                        self.advance_code_turns();
                     }
                 }
-                AcpEvent::StreamChunk { session_id, text } => {
-                    if let Some(idx) = self.find_session_by_acp_id(&session_id) {
-                        if self.sessions[idx].chat.streaming_message_idx.is_none() {
-                            self.sessions[idx].chat.start_streaming();
-                        }
+                AcpEvent::StreamChunk { key, text } => {
+                    if let Some(idx) = self.turn_index(&key) {
                         self.sessions[idx].chat.append_stream_chunk(&text);
                     }
                 }
-                AcpEvent::ThoughtChunk { session_id, text } => {
-                    if let Some(idx) = self.find_session_by_acp_id(&session_id) {
-                        if self.sessions[idx].chat.streaming_message_idx.is_none() {
-                            self.sessions[idx].chat.start_streaming();
-                        }
+                AcpEvent::ThoughtChunk { key, text } => {
+                    if let Some(idx) = self.turn_index(&key) {
                         self.sessions[idx].chat.append_thought_chunk(&text);
                     }
                 }
-                AcpEvent::TurnComplete {
-                    session_id,
-                    stop_reason: _,
-                } => {
-                    if let Some(idx) = self.find_session_by_acp_id(&session_id) {
-                        self.sessions[idx].chat.finish_streaming();
-                        self.save_session(idx);
-                    } else if let Some(chat) = self.active_chat() {
-                        chat.finish_streaming();
-                        let idx = self
-                            .active_session
-                            .min(self.sessions.len().saturating_sub(1));
-                        self.save_session(idx);
-                    }
+                AcpEvent::TurnComplete { key, stop_reason } => self.settle_turn(&key, &stop_reason),
+                AcpEvent::RequestFailed { key, message } => {
+                    self.settle_turn(&key, &format!("Failed: {message}"))
                 }
-                AcpEvent::ToolCall {
-                    session_id,
-                    name,
-                    input,
-                } => {
-                    let msg = format!("[Tool: {name}] {}", truncate_cow(&input, 200));
-                    self.add_system_message_to_session(&session_id, &msg);
-                    if let Some(idx) = self.find_session_by_acp_id(&session_id) {
-                        self.save_session(idx);
+                AcpEvent::ToolCall { key, name, input } => {
+                    if let Some(idx) = self.turn_index(&key) {
+                        self.sessions[idx]
+                            .chat
+                            .add_system_message(&format!("[Tool: {name}] {input}"));
                     }
                 }
                 AcpEvent::ToolResult {
-                    session_id,
-                    call_id: _,
+                    key,
+                    call_id,
                     output,
                 } => {
-                    let msg = format!("[Result] {}", truncate_cow(&output, 200));
-                    self.add_system_message_to_session(&session_id, &msg);
-                    if let Some(idx) = self.find_session_by_acp_id(&session_id) {
-                        self.save_session(idx);
+                    if let Some(idx) = self.turn_index(&key) {
+                        self.sessions[idx]
+                            .chat
+                            .add_system_message(&format!("[Result {call_id}] {output}"));
                     }
                 }
                 AcpEvent::PermissionRequest {
                     id,
-                    session_id,
+                    key,
                     method,
-                    params: _,
+                    params,
                 } => {
-                    if self.settings.auto_approve {
-                        let msg = format!("[Permission: {method} (id={id}) - auto-approved]");
-                        self.add_system_message_to_session(&session_id, &msg);
-                        if let Some(ref acp) = self.acp {
-                            acp.respond_permission(id, true);
+                    let options = params
+                        .get("options")
+                        .and_then(crate::json::Json::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| {
+                                    let id = item.get("optionId")?.as_str()?;
+                                    let kind = item.get("kind")?.as_str()?;
+                                    if !matches!(
+                                        kind,
+                                        "allow_once"
+                                            | "allow_always"
+                                            | "reject_once"
+                                            | "reject_always"
+                                    ) || id.is_empty()
+                                    {
+                                        return None;
+                                    }
+                                    Some((
+                                        id.to_string(),
+                                        format!("{} ({kind})", item.get("name")?.as_str()?),
+                                    ))
+                                })
+                                .take(32)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    if self.turn_index(&key).is_some()
+                        && !options.is_empty()
+                        && self.pending_permissions.len() < 32
+                    {
+                        self.pending_permissions.push_back(PendingPermission {
+                            id,
+                            key,
+                            title: method,
+                            options,
+                        });
+                    } else if let Some(acp) = &self.acp {
+                        if let Err(e) = acp.respond_permission(id, None) {
+                            self.connection_failed(&e);
                         }
-                    } else {
-                        let msg = format!(
-                            "[Permission requested: {method} (id={id}) - auto-approve is OFF]"
-                        );
-                        self.add_system_message_to_session(&session_id, &msg);
-                    }
-                    if let Some(idx) = self.find_session_by_acp_id(&session_id) {
-                        self.save_session(idx);
                     }
                 }
                 AcpEvent::ProcessDied { code } => {
-                    self.acp_connected = false;
-                    let msg = code.map_or_else(
-                        || "Agent process died".to_string(),
-                        |c| format!("Agent process exited (code {c})"),
-                    );
-                    self.show_toast(&msg, ToastKind::Error);
-                    // Auto-reconnect: schedule a retry
-                    self.reconnect_attempts += 1;
-                    self.last_reconnect_attempt = Some(std::time::Instant::now());
+                    self.connection_failed(&format!("Agent disconnected ({code:?})"));
+                    break;
                 }
-                AcpEvent::Error(msg) => {
-                    self.show_toast(&format!("Error: {msg}"), ToastKind::Error);
+                AcpEvent::Error(message) => {
+                    self.connection_failed(&message);
+                    break;
                 }
             }
+        }
+    }
+
+    pub fn turn_index(&self, key: &TurnKey) -> Option<usize> {
+        self.sessions.iter().position(|s| {
+            s.local_id == key.local_id
+                && s.active_turn.as_ref().is_some_and(|turn| turn.key == *key)
+        })
+    }
+
+    fn delta_turn_index(&self, key: &TurnKey) -> Option<usize> {
+        self.turn_index(key).filter(|&idx| {
+            self.sessions[idx]
+                .active_turn
+                .as_ref()
+                .is_some_and(|t| !t.cancelling)
+        })
+    }
+
+    fn settle_turn(&mut self, key: &TurnKey, outcome: &str) {
+        if let Some(idx) = self.turn_index(key) {
+            self.cancel_permissions(key);
+            if let Some(acp) = &self.acp {
+                acp.retire_turn(key);
+            }
+            self.sessions[idx].chat.finish_streaming();
+            self.sessions[idx].active_turn = None;
+            self.sessions[idx]
+                .chat
+                .add_system_message(&format!("[Turn {}: {outcome}]", key.turn_id));
+            self.save_session(idx);
+        }
+    }
+
+    fn cancel_permissions(&mut self, key: &TurnKey) {
+        let mut remaining = std::collections::VecDeque::new();
+        while let Some(permission) = self.pending_permissions.pop_front() {
+            if permission.key == *key {
+                if let Some(acp) = &self.acp {
+                    let _ = acp.respond_permission(permission.id, None);
+                }
+            } else {
+                remaining.push_back(permission);
+            }
+        }
+        self.pending_permissions = remaining;
+    }
+
+    pub fn resolve_permission(&mut self, permission: PendingPermission, option: Option<String>) {
+        // Revalidate after the modal UI: the original turn may have died meanwhile.
+        let selected = option.filter(|id| {
+            self.turn_index(&permission.key).is_some()
+                && permission.options.iter().any(|(offered, _)| offered == id)
+        });
+        if let Some(acp) = &self.acp {
+            if let Err(e) = acp.respond_permission(permission.id, selected) {
+                self.connection_failed(&e);
+            }
+        }
+    }
+
+    fn connection_failed(&mut self, message: &str) {
+        self.acp_connected = false;
+        self.acp_connecting = false;
+        self.reconnect_attempts = self.reconnect_attempts.max(1);
+        self.pending_permissions.clear();
+        if let Some(acp) = self.acp.take() {
+            acp.shutdown();
+        }
+        let keys: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|s| s.active_turn.as_ref())
+            .filter(|t| t.backend == SessionMode::Code)
+            .map(|t| t.key.clone())
+            .collect();
+        for session in &mut self.sessions {
+            session.acp_session_id.clear();
+        }
+        for key in keys {
+            self.settle_turn(&key, &format!("Failed: {message}"));
+        }
+        self.last_reconnect_attempt = Some(std::time::Instant::now());
+        self.show_toast(message, ToastKind::Error);
+    }
+
+    fn advance_code_turns(&mut self) {
+        if !self.acp_connected {
+            return;
+        }
+        let mut failures = Vec::new();
+        if let Some(acp) = &self.acp {
+            for session in &mut self.sessions {
+                let Some(turn) = &mut session.active_turn else {
+                    continue;
+                };
+                if turn.backend != SessionMode::Code || turn.submitted {
+                    continue;
+                }
+                let result = if session.acp_session_id.is_empty() {
+                    if turn.session_requested {
+                        continue;
+                    }
+                    turn.session_requested = true;
+                    acp.request_session(turn.key.clone(), &session.working_dir)
+                } else {
+                    let result =
+                        acp.send_prompt(turn.key.clone(), &session.acp_session_id, &turn.text);
+                    if result.is_ok() {
+                        turn.submitted = true;
+                        session.chat.start_streaming();
+                    }
+                    result
+                };
+                if let Err(error) = result {
+                    failures.push((turn.key.clone(), error));
+                }
+            }
+        }
+        for (key, error) in failures {
+            self.settle_turn(&key, &format!("Failed: {error}"));
         }
     }
 
@@ -724,71 +835,72 @@ impl AppState {
     }
 
     pub fn send_message(&mut self, text: &str) {
-        if self.sessions.is_empty() {
+        let Some(session) = self.sessions.get_mut(self.active_session) else {
+            return;
+        };
+        if text.trim().is_empty() || session.active_turn.is_some() {
             return;
         }
-
-        let idx = self.active_session.min(self.sessions.len() - 1);
-
-        let mode;
-        let acp_session_id;
-        {
-            let session = &mut self.sessions[idx];
-            session.chat.add_message(Role::User, text);
-            session.auto_name();
-            mode = session.mode;
-            acp_session_id = session.acp_session_id.clone();
-        }
+        static NEXT_TURN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let turn_id = NEXT_TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let key = TurnKey {
+            local_id: session.local_id.clone(),
+            turn_id,
+        };
+        let mode = session.mode;
+        session.chat.add_message(Role::User, text);
+        session.auto_name();
+        session.active_turn = Some(ActiveTurn {
+            key,
+            backend: mode,
+            text: text.to_string(),
+            submitted: false,
+            session_requested: false,
+            cancelling: false,
+            started: std::time::Instant::now(),
+        });
+        session.chat.is_waiting_for_agent = true;
+        let idx = self.active_session;
         self.save_session(idx);
-        self.save_index();
-
         match mode {
             SessionMode::Direct => self.send_direct(idx),
             SessionMode::Code => {
-                if let Some(ref acp) = self.acp {
-                    if self.acp_connected && !acp_session_id.is_empty() {
-                        self.sessions[idx].chat.start_streaming();
-                        acp.send_prompt(&acp_session_id, text);
-                    } else if self.acp_connected && acp_session_id.is_empty() {
-                        // Lazy agent spawn: connect now, queue the session.
-                        let wd = self.sessions[idx].working_dir.clone();
-                        self.pending_new_session = true;
-                        self.pending_working_dir = wd;
-                        self.sessions[idx].chat.start_streaming();
-                        // The queued prompt is lost this turn; tell the user.
-                        self.show_toast(
-                            "Connecting to agent - send again when ready",
-                            ToastKind::Info,
-                        );
-                    } else {
-                        self.show_toast(
-                            "Not connected to agent. Press F5 to reconnect",
-                            ToastKind::Error,
-                        );
-                    }
-                } else {
+                if self.acp.is_none() {
                     self.connect_acp();
-                    self.show_toast("Starting agent - send again when ready", ToastKind::Info);
                 }
+                self.advance_code_turns();
             }
         }
     }
 
     /// Send the next Direct-mode turn for session `idx` via the Responses API.
     fn send_direct(&mut self, idx: usize) {
-        if self.responses.is_none() {
-            self.responses_wanted = true;
-            self.show_toast(
-                "Direct mode needs an HTTP transport - not available on this platform",
-                ToastKind::Error,
-            );
+        let Some(turn) = self.sessions[idx].active_turn.clone() else {
             return;
-        }
+        };
         let history = self.sessions[idx].responses_history();
-        let session_id = self.sessions[idx].local_id.clone();
-        self.sessions[idx].chat.start_streaming();
-        if let Some(ref client) = self.responses {
-            client.send(&session_id, history, crate::session::ReasoningEffort::High);
+        let result = self
+            .responses
+            .as_ref()
+            .ok_or_else(|| "Direct transport unavailable".to_string())
+            .and_then(|client| {
+                client.send(
+                    turn.key.clone(),
+                    history,
+                    crate::session::ReasoningEffort::None,
+                )
+            });
+        match result {
+            Ok(()) => {
+                if let Some(turn) = &mut self.sessions[idx].active_turn {
+                    turn.submitted = true;
+                }
+                self.sessions[idx].chat.start_streaming();
+            }
+            Err(error) => {
+                self.settle_turn(&turn.key, &format!("Failed: {error}"));
+                self.show_toast(&error, ToastKind::Error);
+            }
         }
     }
 
@@ -807,50 +919,38 @@ impl AppState {
     /// Drain pending Responses API events into the UI state. Called from the
     /// platform timer tick alongside poll_acp.
     pub fn poll_responses(&mut self) {
-        let events: Vec<ResponsesEvent> = {
-            match self.responses {
-                Some(ref client) => client.try_recv().into_iter().collect(),
-                None => return,
+        let started = std::time::Instant::now();
+        for _ in 0..256 {
+            if started.elapsed().as_millis() >= 4 {
+                break;
             }
-        };
-        for event in events {
-            let local_id = match &event {
-                ResponsesEvent::TextDelta { session_id, .. }
-                | ResponsesEvent::ReasoningDelta { session_id, .. }
-                | ResponsesEvent::Completed { session_id }
-                | ResponsesEvent::Failed { session_id, .. }
-                | ResponsesEvent::Incomplete { session_id }
-                | ResponsesEvent::InputTokens { session_id, .. } => session_id.clone(),
-            };
-            let idx = self.sessions.iter().position(|s| s.local_id == local_id);
-            let idx = match idx {
-                Some(i) => i,
-                None => continue,
+            let event = self.responses.as_ref().and_then(ResponsesClient::try_recv);
+            let Some(event) = event else {
+                break;
             };
             match event {
-                ResponsesEvent::TextDelta { text, .. } => {
-                    self.sessions[idx].chat.append_stream_chunk(&text);
-                }
-                ResponsesEvent::ReasoningDelta { text, .. } => {
-                    self.sessions[idx].chat.append_thought_chunk(&text);
-                }
-                ResponsesEvent::Completed { .. } => {
-                    self.sessions[idx].chat.finish_streaming();
-                    let history = self.sessions[idx].responses_history();
-                    if let Some(ref client) = self.responses {
-                        client.count_input_tokens(&local_id, history);
+                ResponsesEvent::TextDelta { key, text } => {
+                    if let Some(idx) = self.delta_turn_index(&key) {
+                        self.sessions[idx].chat.append_stream_chunk(&text);
                     }
                 }
-                ResponsesEvent::Failed { message, .. } => {
-                    self.sessions[idx].chat.finish_streaming();
-                    self.show_toast(&format!("Direct mode error: {}", message), ToastKind::Error);
+                ResponsesEvent::ReasoningDelta { key, text } => {
+                    if let Some(idx) = self.delta_turn_index(&key) {
+                        self.sessions[idx].chat.append_thought_chunk(&text);
+                    }
                 }
-                ResponsesEvent::Incomplete { .. } => {
-                    self.sessions[idx].chat.finish_streaming();
-                    self.show_toast("Response stopped early (token limit)", ToastKind::Info);
-                }
-                ResponsesEvent::InputTokens { tokens, .. } => {
-                    self.input_tokens = Some(tokens);
+                ResponsesEvent::Terminal { key, outcome } => {
+                    use crate::responses::StreamOutcome;
+                    let text = match outcome {
+                        StreamOutcome::Completed => "Completed".to_string(),
+                        StreamOutcome::Incomplete(reason) => format!("Incomplete: {reason}"),
+                        StreamOutcome::Cancelled => "Cancelled".to_string(),
+                        StreamOutcome::Failed(error) => format!("Failed: {error}"),
+                    };
+                    if self.turn_index(&key).is_some() {
+                        self.settle_turn(&key, &text);
+                        self.show_toast(&text, ToastKind::Info);
+                    }
                 }
             }
         }
@@ -873,17 +973,26 @@ impl AppState {
     }
 
     pub fn connect_acp(&mut self) {
-        if let Some(acp) = self.acp.take() {
-            acp.shutdown();
+        if self.acp_connecting {
+            return;
         }
-
+        if self.acp.is_some() {
+            self.connection_failed("Agent connection restarted");
+        }
+        self.acp_connected = false;
+        self.acp_connecting = true;
+        self.reconnect_attempts = self.reconnect_attempts.saturating_add(1);
+        self.last_reconnect_attempt = Some(std::time::Instant::now());
+        for session in &mut self.sessions {
+            session.acp_session_id.clear();
+        }
         match AcpClient::spawn() {
             Ok(client) => {
                 self.acp = Some(client);
                 self.show_toast("Connecting to agent...", ToastKind::Info);
             }
             Err(e) => {
-                self.show_toast(&format!("Failed to start agent: {e}"), ToastKind::Error);
+                self.connection_failed(&format!("Failed to start agent: {e}"));
             }
         }
     }
@@ -894,40 +1003,40 @@ impl AppState {
         }
         let idx = self.active_session.min(self.sessions.len() - 1);
         let acp_session_id = self.sessions[idx].acp_session_id.clone();
-        let local_id = self.sessions[idx].local_id.clone();
-        let mode = self.sessions[idx].mode;
+        let Some(turn) = self.sessions[idx].active_turn.clone() else {
+            return;
+        };
         if let Some(ref acp) = self.acp {
-            if mode == SessionMode::Code && !acp_session_id.is_empty() {
-                acp.cancel(&acp_session_id);
+            if turn.backend == SessionMode::Code && !acp_session_id.is_empty() {
+                let _ = acp.cancel(&acp_session_id);
             }
         }
-        if mode == SessionMode::Direct {
+        if turn.backend == SessionMode::Direct {
             if let Some(ref client) = self.responses {
-                client.abort(&local_id);
+                client.abort(&turn.key);
+                if let Some(active) = &mut self.sessions[idx].active_turn {
+                    active.cancelling = true;
+                }
+                self.show_toast("Cancelling request...", ToastKind::Info);
+                return; // native cleanup must report its terminal first
             }
         }
-        self.sessions[idx].chat.finish_streaming();
+        // ACP updates lack turn IDs: never reuse a cancelled remote session.
+        if turn.backend == SessionMode::Code {
+            self.sessions[idx].acp_session_id.clear();
+        }
+        self.settle_turn(&turn.key, "Cancelled");
     }
 
     /// Create a new chat in the default working directory.
     pub fn new_chat(&mut self) {
         let wd = self.default_working_dir.clone();
         self.create_local_session(&wd);
-        if self.acp_connected {
-            if let Some(ref acp) = self.acp {
-                acp.request_session(&wd);
-            }
-        }
     }
 
     /// Create a new chat in a specific working directory (from folder picker).
     pub fn new_chat_in_dir(&mut self, working_dir: &str) {
         self.create_local_session(working_dir);
-        if self.acp_connected {
-            if let Some(ref acp) = self.acp {
-                acp.request_session(working_dir);
-            }
-        }
     }
 
     // ── Persistence ────────────────────────────────────────────────────────
@@ -1050,10 +1159,40 @@ impl AppState {
     /// Check if an auto-reconnect should be attempted. Called from the timer tick.
     /// Returns true if a reconnect was initiated.
     pub fn try_auto_reconnect(&mut self) -> bool {
+        let expired: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|session| {
+                let turn = session.active_turn.as_ref()?;
+                let limit = if turn.submitted { 600 } else { 30 };
+                (turn.backend == SessionMode::Code && turn.started.elapsed().as_secs() > limit)
+                    .then(|| (turn.key.clone(), session.acp_session_id.clone()))
+            })
+            .collect();
+        for (key, remote) in expired {
+            if let Some(acp) = &self.acp {
+                if !remote.is_empty() {
+                    let _ = acp.cancel(&remote);
+                }
+            }
+            if let Some(idx) = self.turn_index(&key) {
+                self.sessions[idx].acp_session_id.clear();
+            }
+            self.settle_turn(&key, "Failed: agent request timed out");
+        }
         const MAX_AUTO_RECONNECTS: u32 = 5;
         const RECONNECT_DELAY_SECS: u64 = 3;
 
-        if self.reconnect_attempts == 0 || self.reconnect_attempts > MAX_AUTO_RECONNECTS {
+        if self.acp_connecting {
+            if self
+                .last_reconnect_attempt
+                .is_some_and(|t| t.elapsed().as_secs() > 30)
+            {
+                self.connection_failed("Agent initialization timed out");
+            }
+            return false;
+        }
+        if self.reconnect_attempts == 0 || self.reconnect_attempts >= MAX_AUTO_RECONNECTS {
             return false;
         }
         if self.acp_connected {

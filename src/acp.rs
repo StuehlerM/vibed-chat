@@ -1,202 +1,266 @@
-// ACP client: spawn vibe-acp, JSON-RPC over stdio.
+// ACP client: bounded JSON-RPC over stdio, typed request and local-turn correlation.
 #![allow(dead_code)]
 
 use crate::json::{self, Json};
-use std::io::{BufRead, BufReader, Write};
+use crate::session::TurnKey;
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-/// Events sent from the ACP reader thread to the UI.
 #[derive(Debug)]
 pub enum AcpEvent {
-    /// A chunk of streaming text from the agent
-    StreamChunk { session_id: String, text: String },
-    /// A chunk of the agent's thinking/reasoning (collapsible in UI)
-    ThoughtChunk { session_id: String, text: String },
-    /// The agent's turn is complete
+    StreamChunk {
+        key: TurnKey,
+        text: String,
+    },
+    ThoughtChunk {
+        key: TurnKey,
+        text: String,
+    },
     TurnComplete {
-        session_id: String,
+        key: TurnKey,
         stop_reason: String,
     },
-    /// A tool call was made
     ToolCall {
-        session_id: String,
+        key: TurnKey,
         name: String,
         input: String,
     },
-    /// A tool result came back
     ToolResult {
-        session_id: String,
+        key: TurnKey,
         call_id: String,
         output: String,
     },
-    /// Permission request from the agent
     PermissionRequest {
         id: Json,
-        session_id: String,
+        key: TurnKey,
         method: String,
         params: Json,
     },
-    /// The agent process died
-    ProcessDied { code: Option<i32> },
-    /// An error occurred
+    ProcessDied {
+        code: Option<i32>,
+    },
     Error(String),
-    /// Connection established (initialize succeeded)
+    RequestFailed {
+        key: TurnKey,
+        message: String,
+    },
     Connected,
-    /// Session created
-    SessionReady { session_id: String },
+    SessionReady {
+        key: TurnKey,
+        session_id: String,
+    },
 }
-
-/// Commands sent from the UI to the ACP client.
 #[derive(Debug)]
-pub enum AcpCommand {
-    /// Send a prompt to the agent
-    Prompt { session_id: String, text: String },
-    /// Cancel the current prompt
-    Cancel { session_id: String },
-    /// Respond to a permission request
-    PermissionResponse { id: Json, approved: bool },
-    /// Shutdown the client
+enum AcpCommand {
+    Prompt {
+        key: TurnKey,
+        session_id: String,
+        text: String,
+    },
+    Cancel {
+        session_id: String,
+    },
+    Reply {
+        id: Json,
+        result: Option<Json>,
+    },
     Shutdown,
-    /// Internal: send initialize
-    InitInternal,
-    /// Internal: create new session
-    NewSessionInternal { cwd: String },
+    Initialize,
+    NewSession {
+        key: TurnKey,
+        cwd: String,
+    },
 }
-
-pub struct AcpClient {
-    /// Channel to send commands to the writer thread
-    cmd_tx: Sender<AcpCommand>,
-    /// Channel to receive events from the reader thread
-    event_rx: Receiver<AcpEvent>,
-    /// Shared state
-    state: Arc<Mutex<AcpState>>,
-    /// Child process handle
-    child: Arc<Mutex<Option<Child>>>,
+#[derive(Debug)]
+enum PendingRequest {
+    Initialize,
+    NewSession(TurnKey),
+    Prompt { key: TurnKey, remote: String },
 }
-
 struct AcpState {
     next_id: i64,
-    /// Maps JSON-RPC request IDs to session IDs for prompt responses
-    /// (`PromptResponse` does not include `sessionId`)
-    pending_prompts: std::collections::HashMap<i64, String>,
+    requests: HashMap<i64, PendingRequest>,
+    turns: HashMap<String, TurnKey>,
+    retired: HashMap<String, u64>,
 }
-
+pub struct AcpClient {
+    commands: SyncSender<AcpCommand>,
+    events: Receiver<AcpEvent>,
+    child: Arc<Mutex<Option<Child>>>,
+    state: Arc<Mutex<AcpState>>,
+    intentional_shutdown: Arc<AtomicBool>,
+}
 impl AcpClient {
-    /// Spawn vibe-acp and start communication threads.
     pub fn spawn() -> Result<Self, String> {
         Self::spawn_with_command("vibe-acp", &[])
     }
-
     pub fn spawn_with_command(program: &str, args: &[&str]) -> Result<Self, String> {
-        let mut cmd = Command::new(program);
-        cmd.args(args)
+        let mut command = Command::new(program);
+        command
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-
-        // Hide the console window on Windows - spawn vibe-acp without a visible CLI
+        // Process creation is std-only; no backend import in the protocol core.
         #[cfg(windows)]
         {
-            use crate::platform::windows::ffi::CREATE_NO_WINDOW;
-            cmd.creation_flags(CREATE_NO_WINDOW);
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
-
-        let mut child = cmd
+        let mut child = command
             .spawn()
-            .map_err(|e| format!("Failed to spawn {program}: {e}"))?;
-
-        let stdin = child.stdin.take().ok_or("Failed to open stdin")?;
-        let stdout = child.stdout.take().ok_or("Failed to open stdout")?;
-
-        let (cmd_tx, cmd_rx) = channel::<AcpCommand>();
-        let (event_tx, event_rx) = channel::<AcpEvent>();
-
+            .map_err(|e| format!("Spawn {program}: {e}"))?;
+        let Some(stdin) = child.stdin.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Missing agent stdin".to_string());
+        };
+        let Some(stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Missing agent stdout".to_string());
+        };
+        let (commands, command_rx) = sync_channel(64);
+        let (event_tx, events) = sync_channel(512);
         let state = Arc::new(Mutex::new(AcpState {
             next_id: 1,
-            pending_prompts: std::collections::HashMap::new(),
+            requests: HashMap::new(),
+            turns: HashMap::new(),
+            retired: HashMap::new(),
         }));
-
-        let child_arc = Arc::new(Mutex::new(Some(child)));
-        let died_sent = Arc::new(AtomicBool::new(false));
-
-        // Writer thread: receives commands, sends JSON-RPC to agent stdin
-        {
-            let state = Arc::clone(&state);
-            let event_tx = event_tx.clone();
-            thread::spawn(move || {
-                writer_thread(stdin, &cmd_rx, &state, &event_tx);
-            });
+        let child = Arc::new(Mutex::new(Some(child)));
+        let intentional_shutdown = Arc::new(AtomicBool::new(false));
+        let died = Arc::new(AtomicBool::new(false));
+        let client = Self {
+            commands,
+            events,
+            child: child.clone(),
+            state: state.clone(),
+            intentional_shutdown: intentional_shutdown.clone(),
+        };
+        let writer_state = state.clone();
+        let writer_events = event_tx.clone();
+        thread::Builder::new()
+            .name("acp-writer".to_string())
+            .spawn(move || writer(stdin, command_rx, writer_state, writer_events))
+            .map_err(|e| format!("Create ACP writer: {e}"))?;
+        let reader_state = state;
+        let reader_events = event_tx.clone();
+        let reader_died = died.clone();
+        let reader_shutdown = intentional_shutdown.clone();
+        let replies = client.commands.clone();
+        thread::Builder::new()
+            .name("acp-reader".to_string())
+            .spawn(move || {
+                reader(stdout, reader_state, &reader_events, replies);
+                if !reader_shutdown.load(Ordering::Acquire)
+                    && !reader_died.swap(true, Ordering::AcqRel)
+                {
+                    let _ = reader_events.send(AcpEvent::ProcessDied { code: None });
+                }
+            })
+            .map_err(|e| format!("Create ACP reader: {e}"))?;
+        thread::Builder::new()
+            .name("acp-monitor".to_string())
+            .spawn(move || loop {
+                thread::sleep(std::time::Duration::from_millis(250));
+                let status = {
+                    let Ok(mut guard) = child.lock() else {
+                        return;
+                    };
+                    let Some(child) = guard.as_mut() else {
+                        return;
+                    };
+                    child.try_wait()
+                };
+                if !matches!(status, Ok(None)) {
+                    if !intentional_shutdown.load(Ordering::Acquire)
+                        && !died.swap(true, Ordering::AcqRel)
+                    {
+                        let _ = event_tx.send(AcpEvent::ProcessDied {
+                            code: status.ok().flatten().and_then(|s| s.code()),
+                        });
+                    }
+                    return;
+                }
+            })
+            .map_err(|e| format!("Create ACP monitor: {e}"))?;
+        client.submit(AcpCommand::Initialize)?;
+        Ok(client)
+    }
+    fn submit(&self, command: AcpCommand) -> Result<(), String> {
+        self.commands
+            .try_send(command)
+            .map_err(|e| format!("ACP command queue unavailable: {e}"))
+    }
+    pub fn send_prompt(&self, key: TurnKey, remote: &str, text: &str) -> Result<(), String> {
+        if remote.is_empty() {
+            return Err("Remote session is not ready".to_string());
         }
-
-        // Reader thread: reads JSON-RPC from agent stdout
-        {
-            let state = Arc::clone(&state);
-            let event_tx_reader = event_tx.clone();
-            let died_sent = Arc::clone(&died_sent);
-            thread::spawn(move || {
-                reader_thread(stdout, &state, &event_tx_reader, &died_sent);
-            });
-        }
-
-        // Monitor thread: watches for child process exit
-        {
-            let child_arc = Arc::clone(&child_arc);
-            let died_sent = Arc::clone(&died_sent);
-            thread::spawn(move || {
-                monitor_thread(&child_arc, &event_tx, &died_sent);
-            });
-        }
-
-        // Send initialize
-        let _ = cmd_tx.send(AcpCommand::InitInternal);
-
-        Ok(Self {
-            cmd_tx,
-            event_rx,
-            state,
-            child: child_arc,
+        self.submit(AcpCommand::Prompt {
+            key,
+            session_id: remote.to_string(),
+            text: text.to_string(),
         })
     }
-
-    pub fn send_prompt(&self, session_id: &str, text: &str) {
-        let _ = self.cmd_tx.send(AcpCommand::Prompt {
-            session_id: session_id.to_string(),
-            text: text.to_string(),
-        });
-    }
-
-    pub fn try_recv(&self) -> Option<AcpEvent> {
-        self.event_rx.try_recv().ok()
-    }
-
-    pub fn cancel(&self, session_id: &str) {
-        let _ = self.cmd_tx.send(AcpCommand::Cancel {
-            session_id: session_id.to_string(),
-        });
-    }
-
-    /// Request creation of a new session (call after initialize succeeds).
-    pub fn request_session(&self, cwd: &str) {
-        let _ = self.cmd_tx.send(AcpCommand::NewSessionInternal {
+    pub fn request_session(&self, key: TurnKey, cwd: &str) -> Result<(), String> {
+        self.submit(AcpCommand::NewSession {
+            key,
             cwd: cwd.to_string(),
-        });
+        })
+    }
+    pub fn try_recv(&self) -> Option<AcpEvent> {
+        self.events.try_recv().ok()
+    }
+    pub fn retire_turn(&self, key: &TurnKey) {
+        if let Ok(mut state) = self.state.lock() {
+            state
+                .retired
+                .entry(key.local_id.clone())
+                .and_modify(|id| *id = (*id).max(key.turn_id))
+                .or_insert(key.turn_id);
+            state.turns.retain(|_, turn| turn != key);
+            state.requests.retain(|_, request| match request {
+                PendingRequest::Initialize => true,
+                PendingRequest::NewSession(turn) | PendingRequest::Prompt { key: turn, .. } => {
+                    turn != key
+                }
+            });
+        }
     }
 
-    pub fn respond_permission(&self, id: Json, approved: bool) {
-        let _ = self
-            .cmd_tx
-            .send(AcpCommand::PermissionResponse { id, approved });
+    pub fn cancel(&self, remote: &str) -> Result<(), String> {
+        // Retire before sending: late notifications cannot resurrect a cancelled turn.
+        if let Ok(mut state) = self.state.lock() {
+            state.turns.remove(remote);
+            state.requests.retain(|_, request| !matches!(request, PendingRequest::Prompt { remote: id, .. } if id == remote));
+        }
+        self.submit(AcpCommand::Cancel {
+            session_id: remote.to_string(),
+        })
     }
-
+    pub fn respond_permission(&self, id: Json, option: Option<String>) -> Result<(), String> {
+        let outcome = match option {
+            Some(id) => Json::object(vec![
+                ("outcome", Json::String("selected".to_string())),
+                ("optionId", Json::String(id)),
+            ]),
+            None => Json::object(vec![("outcome", Json::String("cancelled".to_string()))]),
+        };
+        self.submit(AcpCommand::Reply {
+            id,
+            result: Some(Json::object(vec![("outcome", outcome)])),
+        })
+    }
     pub fn shutdown(&self) {
-        let _ = self.cmd_tx.send(AcpCommand::Shutdown);
+        self.intentional_shutdown.store(true, Ordering::Release);
+        let _ = self.commands.try_send(AcpCommand::Shutdown);
+        // Child is taken once: explicit shutdown and Drop are idempotent.
         if let Ok(mut guard) = self.child.lock() {
             if let Some(mut child) = guard.take() {
                 let _ = child.kill();
@@ -205,100 +269,76 @@ impl AcpClient {
         }
     }
 }
+impl Drop for AcpClient {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
 
-// ── Writer thread ────────────────────────────────────────────
-
-// Long by design: this is a self-contained thread body (recv loop + command
-// dispatch), splitting it would only add indirection between the match arms.
-#[allow(clippy::too_many_lines)]
-fn writer_thread(
+fn rpc(method: &str, params: Json) -> Json {
+    Json::object(vec![
+        ("jsonrpc", Json::String("2.0".to_string())),
+        ("method", Json::String(method.to_string())),
+        ("params", params),
+    ])
+}
+fn writer(
     mut stdin: ChildStdin,
-    cmd_rx: &Receiver<AcpCommand>,
-    state: &Arc<Mutex<AcpState>>,
-    event_tx: &Sender<AcpEvent>,
+    commands: Receiver<AcpCommand>,
+    state: Arc<Mutex<AcpState>>,
+    events: SyncSender<AcpEvent>,
 ) {
-    while let Ok(cmd) = cmd_rx.recv() {
-        match cmd {
-            AcpCommand::InitInternal => {
-                let id = {
-                    let Ok(mut s) = state.lock() else { continue };
-                    let id = s.next_id;
-                    s.next_id += 1;
-                    id
-                };
-                let msg = Json::object(vec![
-                    ("jsonrpc", Json::String("2.0".to_string())),
-                    ("id", Json::Number(id as f64)),
-                    ("method", Json::String("initialize".to_string())),
-                    (
-                        "params",
-                        Json::object(vec![
-                            ("protocolVersion", Json::Number(1.0)),
-                            ("clientCapabilities", Json::object(vec![])),
-                            (
-                                "clientInfo",
-                                Json::object(vec![
-                                    ("name", Json::String("vibe-chat".to_string())),
-                                    ("version", Json::String("0.1.0".to_string())),
-                                ]),
-                            ),
-                        ]),
-                    ),
-                ]);
-                if send_jsonrpc(&mut stdin, &msg) {
-                    // Wait for response in reader thread
-                } else {
-                    let _ = event_tx.send(AcpEvent::Error("Failed to send initialize".to_string()));
-                    return;
+    while let Ok(command) = commands.recv() {
+        let (mut message, pending) = match command {
+            AcpCommand::Initialize => (
+                rpc(
+                    "initialize",
+                    Json::object(vec![
+                        ("protocolVersion", Json::Integer(1)),
+                        ("clientCapabilities", Json::object(vec![])),
+                        (
+                            "clientInfo",
+                            Json::object(vec![
+                                ("name", Json::String("vibe-chat".to_string())),
+                                (
+                                    "version",
+                                    Json::String(env!("CARGO_PKG_VERSION").to_string()),
+                                ),
+                            ]),
+                        ),
+                    ]),
+                ),
+                Some(PendingRequest::Initialize),
+            ),
+            AcpCommand::NewSession { key, cwd } => (
+                rpc(
+                    "session/new",
+                    Json::object(vec![
+                        ("cwd", Json::String(cwd)),
+                        ("mcpServers", Json::Array(vec![])),
+                    ]),
+                ),
+                Some(PendingRequest::NewSession(key)),
+            ),
+            AcpCommand::Prompt {
+                key,
+                session_id,
+                text,
+            } => {
+                match state.lock() {
+                    Ok(mut s) => {
+                        s.turns.insert(session_id.clone(), key.clone());
+                    }
+                    Err(_) => {
+                        let _ = events.send(AcpEvent::Error("ACP state lock poisoned".to_string()));
+                        return;
+                    }
                 }
-            }
-            AcpCommand::NewSessionInternal { cwd } => {
-                let id = {
-                    let Ok(mut s) = state.lock() else { continue };
-                    let id = s.next_id;
-                    s.next_id += 1;
-                    id
-                };
-                let msg = Json::object(vec![
-                    ("jsonrpc", Json::String("2.0".to_string())),
-                    ("id", Json::Number(id as f64)),
-                    ("method", Json::String("session/new".to_string())),
-                    (
-                        "params",
+                (
+                    rpc(
+                        "session/prompt",
                         Json::object(vec![
-                            ("cwd", Json::String(cwd)),
-                            ("mcpServers", Json::Array(vec![])),
-                        ]),
-                    ),
-                ]);
-                let _ = send_jsonrpc(&mut stdin, &msg);
-            }
-            AcpCommand::Prompt { session_id, text } => {
-                // Reject an empty session id up front: the request would
-                // never be routed to a session, so allocating an id for it
-                // would leak an entry in `pending_prompts` forever.
-                if session_id.is_empty() {
-                    let _ = event_tx.send(AcpEvent::Error(
-                        "Session not ready, prompt queued".to_string(),
-                    ));
-                    continue;
-                }
-                let sid = session_id;
-                let id = {
-                    let Ok(mut s) = state.lock() else { continue };
-                    let id = s.next_id;
-                    s.next_id += 1;
-                    s.pending_prompts.insert(id, sid.clone());
-                    id
-                };
-                let msg = Json::object(vec![
-                    ("jsonrpc", Json::String("2.0".to_string())),
-                    ("id", Json::Number(id as f64)),
-                    ("method", Json::String("session/prompt".to_string())),
-                    (
-                        "params",
-                        Json::object(vec![
-                            ("sessionId", Json::String(sid)),
+                            ("sessionId", Json::String(session_id.clone())),
                             (
                                 "prompt",
                                 Json::Array(vec![Json::object(vec![
@@ -308,292 +348,279 @@ fn writer_thread(
                             ),
                         ]),
                     ),
-                ]);
-                if !send_jsonrpc(&mut stdin, &msg) {
-                    let _ = event_tx.send(AcpEvent::Error("Failed to send prompt".to_string()));
-                    return;
-                }
+                    Some(PendingRequest::Prompt {
+                        key,
+                        remote: session_id,
+                    }),
+                )
             }
-            AcpCommand::Cancel { session_id } => {
-                let msg = Json::object(vec![
-                    ("jsonrpc", Json::String("2.0".to_string())),
-                    ("method", Json::String("session/cancel".to_string())),
-                    (
-                        "params",
-                        Json::object(vec![("sessionId", Json::String(session_id))]),
-                    ),
-                ]);
-                let _ = send_jsonrpc(&mut stdin, &msg);
-            }
-            AcpCommand::PermissionResponse { id, approved } => {
-                let outcome = if approved { "allow" } else { "deny" };
-                let msg = Json::object(vec![
-                    ("jsonrpc", Json::String("2.0".to_string())),
-                    ("id", id),
-                    (
-                        "result",
-                        Json::object(vec![(
-                            "outcome",
-                            Json::object(vec![("outcome", Json::String(outcome.to_string()))]),
-                        )]),
-                    ),
-                ]);
-                let _ = send_jsonrpc(&mut stdin, &msg);
-            }
-            AcpCommand::Shutdown => {
+            AcpCommand::Cancel { session_id } => (
+                rpc(
+                    "session/cancel",
+                    Json::object(vec![("sessionId", Json::String(session_id))]),
+                ),
+                None,
+            ),
+            AcpCommand::Reply { id, result } => (
+                match result {
+                    Some(result) => Json::object(vec![
+                        ("jsonrpc", Json::String("2.0".to_string())),
+                        ("id", id),
+                        ("result", result),
+                    ]),
+                    None => Json::object(vec![
+                        ("jsonrpc", Json::String("2.0".to_string())),
+                        ("id", id),
+                        (
+                            "error",
+                            Json::object(vec![
+                                ("code", Json::Integer(-32601)),
+                                ("message", Json::String("Method not supported".to_string())),
+                            ]),
+                        ),
+                    ]),
+                },
+                None,
+            ),
+            AcpCommand::Shutdown => return,
+        };
+        if let Some(pending) = pending {
+            let Ok(mut s) = state.lock() else {
+                let _ = events.send(AcpEvent::Error("ACP state lock poisoned".to_string()));
                 return;
-            }
-        }
-    }
-}
-
-fn send_jsonrpc(stdin: &mut ChildStdin, msg: &Json) -> bool {
-    let line = msg.to_string();
-    match writeln!(stdin, "{line}") {
-        Ok(()) => {
-            let _ = stdin.flush();
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-// ── Reader thread ────────────────────────────────────────────
-
-fn reader_thread(
-    stdout: ChildStdout,
-    state: &Arc<Mutex<AcpState>>,
-    event_tx: &Sender<AcpEvent>,
-    died_sent: &Arc<AtomicBool>,
-) {
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let msg = match json::parse(trimmed) {
-            Ok(m) => m,
-            Err(e) => {
-                let _ = event_tx.send(AcpEvent::Error(format!("JSON parse error: {e}")));
+            };
+            let key = match &pending {
+                PendingRequest::Initialize => None,
+                PendingRequest::NewSession(key) | PendingRequest::Prompt { key, .. } => Some(key),
+            };
+            if key.is_some_and(|key| {
+                s.retired
+                    .get(&key.local_id)
+                    .is_some_and(|id| *id >= key.turn_id)
+            }) {
                 continue;
             }
-        };
-
-        handle_message(&msg, state, event_tx);
-    }
-
-    // EOF - process ended. Only send ProcessDied if the monitor thread hasn't already.
-    if !died_sent.swap(true, Ordering::SeqCst) {
-        let _ = event_tx.send(AcpEvent::ProcessDied { code: None });
-    }
-}
-
-fn handle_message(msg: &Json, state: &Arc<Mutex<AcpState>>, event_tx: &Sender<AcpEvent>) {
-    // Check for requests/notifications first (has "method") - agent→client requests
-    // like session/request_permission have both "id" and "method"
-    if let Some(method) = msg.get("method").and_then(Json::as_str) {
-        let params = msg.get("params").cloned().unwrap_or(Json::Null);
-        let request_id = msg.get("id").cloned();
-        handle_notification(method, &params, request_id, event_tx);
-        return;
-    }
-
-    // Response (has "id" and "result" or "error")
-    if let Some(id) = msg.get("id").and_then(Json::as_i64) {
-        if let Some(result) = msg.get("result") {
-            handle_result(id, result, state, event_tx);
-        } else if let Some(error) = msg.get("error") {
-            let err_msg = error
-                .get("message")
-                .and_then(Json::as_str)
-                .unwrap_or("Unknown error")
-                .to_string();
-            let _ = event_tx.send(AcpEvent::Error(format!("RPC error: {err_msg}")));
+            let id = s.next_id;
+            let Some(next) = id.checked_add(1) else {
+                let _ = events.send(AcpEvent::Error("ACP request ID exhausted".to_string()));
+                return;
+            };
+            s.next_id = next;
+            s.requests.insert(id, pending);
+            if let Json::Object(fields) = &mut message {
+                fields.push(("id".to_string(), Json::Integer(i128::from(id))));
+            }
+        }
+        if let Err(e) = writeln!(stdin, "{message}").and_then(|()| stdin.flush()) {
+            let _ = events.send(AcpEvent::Error(format!("Write/flush agent stdin: {e}")));
+            return;
         }
     }
 }
-
-fn handle_result(
-    id: i64,
-    result: &Json,
-    state: &Arc<Mutex<AcpState>>,
-    event_tx: &Sender<AcpEvent>,
+fn reader(
+    stdout: ChildStdout,
+    state: Arc<Mutex<AcpState>>,
+    events: &SyncSender<AcpEvent>,
+    replies: SyncSender<AcpCommand>,
 ) {
-    // Check if this is a session/new response
-    if let Some(session_id) = result.get("sessionId").and_then(Json::as_str) {
-        let _ = event_tx.send(AcpEvent::SessionReady {
-            session_id: session_id.to_string(),
-        });
-        return;
-    }
-
-    // Check for stopReason (prompt response) - PromptResponse has no sessionId,
-    // so look up the session from the pending_prompts map
-    if let Some(stop_reason) = result.get("stopReason").and_then(Json::as_str) {
-        let session_id = {
-            let Ok(mut s) = state.lock() else { return };
-            s.pending_prompts.remove(&id).unwrap_or_default()
+    let mut reader = BufReader::new(stdout);
+    loop {
+        let mut line = String::new();
+        match reader
+            .by_ref()
+            .take((json::MAX_INPUT_BYTES + 1) as u64)
+            .read_line(&mut line)
+        {
+            Ok(0) => return,
+            Ok(_) if line.len() <= json::MAX_INPUT_BYTES => {}
+            Ok(_) => {
+                let _ = events.send(AcpEvent::Error("Agent line exceeded 16 MiB".to_string()));
+                return;
+            }
+            Err(e) => {
+                let _ = events.send(AcpEvent::Error(format!("Read agent stdout: {e}")));
+                return;
+            }
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        let message = match json::parse(line.trim()) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = events.send(AcpEvent::Error(format!("Invalid agent JSON: {e}")));
+                return;
+            }
         };
-        let _ = event_tx.send(AcpEvent::TurnComplete {
-            session_id,
-            stop_reason: stop_reason.to_string(),
-        });
-        return;
-    }
-
-    // Initialize response
-    if result.get("protocolVersion").is_some() {
-        let _ = event_tx.send(AcpEvent::Connected);
-    }
-}
-
-fn handle_notification(
-    method: &str,
-    params: &Json,
-    request_id: Option<Json>,
-    event_tx: &Sender<AcpEvent>,
-) {
-    // Extract sessionId from params for routing
-    let session_id = params
-        .get("sessionId")
-        .and_then(Json::as_str)
-        .unwrap_or("")
-        .to_string();
-
-    match method {
-        "session/update" => {
-            // The update payload is nested under params.update, discriminated by sessionUpdate
-            if let Some(update) = params.get("update") {
-                let update_type = update
-                    .get("sessionUpdate")
-                    .and_then(Json::as_str)
-                    .unwrap_or("");
-
-                match update_type {
-                    "agent_message_chunk" => {
-                        if let Some(text) = update
-                            .get("content")
-                            .and_then(|c| c.get("text"))
+        if let Some(method) = message.get("method").and_then(Json::as_str) {
+            let params = message.get("params").cloned().unwrap_or(Json::Null);
+            let id = message.get("id").cloned();
+            let remote = params.get("sessionId").and_then(Json::as_str).unwrap_or("");
+            let key = match state.lock() {
+                Ok(s) => s.turns.get(remote).cloned(),
+                Err(_) => return,
+            };
+            if method == "session/request_permission" {
+                if let Some(id) = id {
+                    if let Some(key) = key {
+                        let title = params
+                            .get("toolCall")
+                            .and_then(|t| t.get("title"))
                             .and_then(Json::as_str)
+                            .unwrap_or("Tool permission")
+                            .to_string();
+                        if events
+                            .send(AcpEvent::PermissionRequest {
+                                id,
+                                key,
+                                method: title,
+                                params,
+                            })
+                            .is_err()
                         {
-                            let _ = event_tx.send(AcpEvent::StreamChunk {
-                                session_id,
-                                text: text.to_string(),
-                            });
+                            return;
+                        }
+                    } else {
+                        let outcome = Json::object(vec![(
+                            "outcome",
+                            Json::object(vec![("outcome", Json::String("cancelled".to_string()))]),
+                        )]);
+                        if replies
+                            .try_send(AcpCommand::Reply {
+                                id,
+                                result: Some(outcome),
+                            })
+                            .is_err()
+                        {
+                            return;
                         }
                     }
-                    "agent_thought_chunk" => {
-                        if let Some(text) = update
-                            .get("content")
-                            .and_then(|c| c.get("text"))
-                            .and_then(Json::as_str)
-                        {
-                            let _ = event_tx.send(AcpEvent::ThoughtChunk {
-                                session_id,
-                                text: text.to_string(),
-                            });
+                }
+            } else if id.is_some() {
+                if replies
+                    .try_send(AcpCommand::Reply {
+                        id: id.unwrap_or(Json::Null),
+                        result: None,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            } else if method == "session/update" {
+                if let (Some(key), Some(update)) = (key, params.get("update")) {
+                    let kind = update
+                        .get("sessionUpdate")
+                        .and_then(Json::as_str)
+                        .unwrap_or("");
+                    let text = update
+                        .get("content")
+                        .and_then(|v| v.get("text"))
+                        .and_then(Json::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let event = match kind {
+                        "agent_message_chunk" => Some(AcpEvent::StreamChunk { key, text }),
+                        "agent_thought_chunk" => Some(AcpEvent::ThoughtChunk { key, text }),
+                        "tool_call" => Some(AcpEvent::ToolCall {
+                            key,
+                            name: update
+                                .get("title")
+                                .and_then(Json::as_str)
+                                .unwrap_or("Tool")
+                                .to_string(),
+                            input: update
+                                .get("rawInput")
+                                .map(ToString::to_string)
+                                .unwrap_or_default(),
+                        }),
+                        "tool_call_update" => Some(AcpEvent::ToolResult {
+                            key,
+                            call_id: update
+                                .get("toolCallId")
+                                .and_then(Json::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            output: update
+                                .get("rawOutput")
+                                .or_else(|| update.get("content"))
+                                .map(ToString::to_string)
+                                .unwrap_or_default(),
+                        }),
+                        _ => None,
+                    };
+                    if let Some(event) = event {
+                        if events.send(event).is_err() {
+                            return;
                         }
-                    }
-                    "tool_call" => {
-                        let name = update
-                            .get("title")
-                            .and_then(Json::as_str)
-                            .unwrap_or("unknown")
-                            .to_string();
-                        let input = update
-                            .get("rawInput")
-                            .map(ToString::to_string)
-                            .unwrap_or_default();
-                        let _ = event_tx.send(AcpEvent::ToolCall {
-                            session_id,
-                            name,
-                            input,
-                        });
-                    }
-                    "tool_call_update" => {
-                        let output = update
-                            .get("rawOutput")
-                            .or_else(|| update.get("content"))
-                            .map(ToString::to_string)
-                            .unwrap_or_default();
-                        let call_id = update
-                            .get("toolCallId")
-                            .and_then(Json::as_str)
-                            .unwrap_or("")
-                            .to_string();
-                        let _ = event_tx.send(AcpEvent::ToolResult {
-                            session_id,
-                            call_id,
-                            output,
-                        });
-                    }
-                    _ => {
-                        // Other update types (usage_update, available_commands_update, etc.) - ignore
                     }
                 }
             }
+            continue;
         }
-        "session/request_permission" => {
-            let id = request_id.unwrap_or(Json::Null);
-            let method_name = params
-                .get("toolCall")
-                .and_then(|tc| tc.get("title"))
-                .and_then(Json::as_str)
-                .unwrap_or("unknown")
-                .to_string();
-            let _ = event_tx.send(AcpEvent::PermissionRequest {
-                id,
-                session_id,
-                method: method_name,
-                params: params.clone(),
-            });
-        }
-        "session/cancel" => {
-            let _ = event_tx.send(AcpEvent::TurnComplete {
-                session_id,
-                stop_reason: "cancelled".to_string(),
-            });
-        }
-        _ => {
-            // Unknown notification, ignore
-        }
-    }
-}
-
-// ── Monitor thread ───────────────────────────────────────────
-
-fn monitor_thread(
-    child_arc: &Arc<Mutex<Option<Child>>>,
-    event_tx: &Sender<AcpEvent>,
-    died_sent: &Arc<AtomicBool>,
-) {
-    loop {
-        thread::sleep(std::time::Duration::from_millis(500));
-        let Ok(mut child_lock) = child_arc.lock() else {
+        let Some(id) = message.get("id").and_then(Json::as_i64) else {
             continue;
         };
-        let Some(child) = child_lock.as_mut() else {
-            return;
+        let pending = match state.lock() {
+            Ok(mut s) => {
+                let pending = s.requests.remove(&id);
+                if let Some(PendingRequest::Prompt { remote, .. }) = &pending {
+                    s.turns.remove(remote);
+                }
+                pending
+            }
+            Err(_) => return,
         };
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !died_sent.swap(true, Ordering::SeqCst) {
-                    let _ = event_tx.send(AcpEvent::ProcessDied {
-                        code: status.code(),
-                    });
+        let Some(pending) = pending else {
+            continue;
+        };
+        let result = message.get("result");
+        let error = message
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(Json::as_str)
+            .unwrap_or("Invalid ACP response");
+        let event = match pending {
+            PendingRequest::Initialize => {
+                if result
+                    .and_then(|r| r.get("protocolVersion"))
+                    .and_then(Json::as_i64)
+                    == Some(1)
+                {
+                    AcpEvent::Connected
+                } else {
+                    AcpEvent::Error(error.to_string())
                 }
-                return;
             }
-            Ok(None) => {}
-            Err(_) => {
-                if !died_sent.swap(true, Ordering::SeqCst) {
-                    let _ = event_tx.send(AcpEvent::ProcessDied { code: None });
-                }
-                return;
-            }
+            PendingRequest::NewSession(key) => match result
+                .and_then(|r| r.get("sessionId"))
+                .and_then(Json::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                Some(id) => AcpEvent::SessionReady {
+                    key,
+                    session_id: id.to_string(),
+                },
+                None => AcpEvent::RequestFailed {
+                    key,
+                    message: error.to_string(),
+                },
+            },
+            PendingRequest::Prompt { key, .. } => match result
+                .and_then(|r| r.get("stopReason"))
+                .and_then(Json::as_str)
+            {
+                Some(reason) => AcpEvent::TurnComplete {
+                    key,
+                    stop_reason: reason.to_string(),
+                },
+                None => AcpEvent::RequestFailed {
+                    key,
+                    message: error.to_string(),
+                },
+            },
+        };
+        if events.send(event).is_err() {
+            return;
         }
     }
 }
