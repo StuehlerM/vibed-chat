@@ -70,55 +70,61 @@ pub const DEFAULT_MODEL: &str = "mistral-large-latest";
 pub const MAX_OUTPUT_TOKENS: i64 = 4096;
 
 pub struct ResponsesClient {
-    commands: SyncSender<Request>,
-    events: Receiver<ResponsesEvent>,
+    commands: Option<SyncSender<Request>>,
+    events: Option<Receiver<ResponsesEvent>>,
     cancellations: Arc<Mutex<HashMap<TurnKey, Arc<Cancellation>>>>,
+    worker: Option<thread::JoinHandle<()>>,
 }
 impl ResponsesClient {
-    pub fn new(transport: Box<dyn HttpTransport + Send>) -> Self {
+    pub fn new(transport: Box<dyn HttpTransport + Send>) -> Result<Self, String> {
         let (commands, requests) = sync_channel::<Request>(8);
         let (event_tx, events) = sync_channel(512);
         let cancellations = Arc::new(Mutex::new(HashMap::new()));
         let worker_cancellations = Arc::clone(&cancellations);
-        thread::spawn(move || {
-            while let Ok(request) = requests.recv() {
-                let outcome = if request
-                    .cancelled
-                    .phase
-                    .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    let body = build_request_body(&request.history, request.reasoning, true);
-                    do_stream(
-                        transport.as_ref(),
-                        &body,
-                        &request.key,
-                        &request.cancelled.flag,
-                        &event_tx,
-                    )
-                } else {
-                    StreamOutcome::Cancelled
-                };
-                request.cancelled.phase.store(2, Ordering::Release);
-                if let Ok(mut map) = worker_cancellations.lock() {
-                    map.remove(&request.key);
+        let worker = thread::Builder::new()
+            .name("direct-requests".to_string())
+            .spawn(move || {
+                while let Ok(request) = requests.recv() {
+                    let outcome = if !request.cancelled.flag.load(Ordering::Acquire)
+                        && request
+                            .cancelled
+                            .phase
+                            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok()
+                    {
+                        let body = build_request_body(&request.history, request.reasoning, true);
+                        do_stream(
+                            transport.as_ref(),
+                            &body,
+                            &request.key,
+                            &request.cancelled.flag,
+                            &event_tx,
+                        )
+                    } else {
+                        StreamOutcome::Cancelled
+                    };
+                    request.cancelled.phase.store(2, Ordering::Release);
+                    if let Ok(mut map) = worker_cancellations.lock() {
+                        map.remove(&request.key);
+                    }
+                    if event_tx
+                        .send(ResponsesEvent::Terminal {
+                            key: request.key,
+                            outcome,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
                 }
-                if event_tx
-                    .send(ResponsesEvent::Terminal {
-                        key: request.key,
-                        outcome,
-                    })
-                    .is_err()
-                {
-                    return;
-                }
-            }
-        });
-        Self {
-            commands,
-            events,
+            })
+            .map_err(|e| format!("Create Direct worker: {e}"))?;
+        Ok(Self {
+            commands: Some(commands),
+            events: Some(events),
             cancellations,
-        }
+            worker: Some(worker),
+        })
     }
     pub fn send(
         &self,
@@ -127,6 +133,7 @@ impl ResponsesClient {
         reasoning: ReasoningEffort,
     ) -> Result<(), String> {
         auth_headers()?; // fail locally before queueing an unauthenticated request
+        let commands = self.commands.as_ref().ok_or("Direct worker stopped")?;
         let cancelled = Arc::new(Cancellation {
             flag: AtomicBool::new(false),
             phase: AtomicU8::new(0),
@@ -136,7 +143,7 @@ impl ResponsesClient {
             .lock()
             .map_err(|_| "Direct cancellation state poisoned")?;
         map.insert(key.clone(), cancelled.clone());
-        if let Err(error) = self.commands.try_send(Request {
+        if let Err(error) = commands.try_send(Request {
             key: key.clone(),
             history,
             reasoning,
@@ -162,16 +169,59 @@ impl ResponsesClient {
         false
     }
     pub fn try_recv(&self) -> Option<ResponsesEvent> {
-        self.events.try_recv().ok()
+        self.events.as_ref()?.try_recv().ok()
     }
-}
-impl Drop for ResponsesClient {
-    fn drop(&mut self) {
+    fn cancel_all(&self) {
         if let Ok(map) = self.cancellations.lock() {
             for flag in map.values() {
                 flag.flag.store(true, Ordering::Release);
             }
         }
+    }
+    /// Called only after the native window closes. Disconnect events first so
+    /// a worker blocked on backpressure can observe shutdown and finish cleanup.
+    pub fn finish(mut self, timeout: std::time::Duration) -> Result<(), String> {
+        self.cancel_all();
+        self.commands.take();
+        self.events.take();
+        let started = std::time::Instant::now();
+        while self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            if started.elapsed() >= timeout {
+                return Err(
+                    "Direct shutdown timed out; native request cleanup remains worker-owned"
+                        .to_string(),
+                );
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if let Some(worker) = self.worker.take() {
+            worker
+                .join()
+                .map_err(|_| "Direct worker exited unexpectedly")?;
+        }
+        Ok(())
+    }
+}
+impl Drop for ResponsesClient {
+    fn drop(&mut self) {
+        self.cancel_all();
+        self.commands.take();
+        self.events.take();
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(thread::JoinHandle::is_finished)
+        {
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+        // A timed-out worker retains all callback/request storage it owns; never
+        // free its native buffers from the UI thread or wait without a deadline.
     }
 }
 fn api_key() -> Option<String> {

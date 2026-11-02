@@ -168,9 +168,21 @@ pub fn app_entry() {
         if GetWindowLongPtrW(hwnd, window::GWLP_USERDATA) != 0 {
             DestroyWindow(hwnd);
         }
-        // Dropping the client signals cancellation independently of its queue.
-        app_state.responses.take();
+        // Cancel independently of queue order, release backpressure, and wait
+        // only after native callbacks can no longer borrow application state.
+        let direct_shutdown = app_state
+            .responses
+            .take()
+            .map(|client| client.finish(std::time::Duration::from_secs(2)));
         app_state.finish_saves();
+        if let Some(Err(error)) = direct_shutdown {
+            MessageBoxW(
+                ptr::null_mut(),
+                to_wide(&error).as_ptr(),
+                to_wide("Direct shutdown").as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
+        }
         if let Some(error) = app_state.persistence_error.clone() {
             MessageBoxW(
                 ptr::null_mut(),

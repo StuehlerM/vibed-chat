@@ -29,11 +29,13 @@ pub enum AcpEvent {
         key: TurnKey,
         name: String,
         input: String,
+        payload: Json,
     },
     ToolResult {
         key: TurnKey,
         call_id: String,
         output: String,
+        payload: Json,
     },
     PermissionRequest {
         id: Json,
@@ -588,6 +590,7 @@ fn reader(
                                 .get("rawInput")
                                 .map(ToString::to_string)
                                 .unwrap_or_default(),
+                            payload: update.clone(),
                         }),
                         "tool_call_update" => Some(AcpEvent::ToolResult {
                             key,
@@ -601,6 +604,7 @@ fn reader(
                                 .or_else(|| update.get("content"))
                                 .map(ToString::to_string)
                                 .unwrap_or_default(),
+                            payload: update.clone(),
                         }),
                         _ => None,
                     };

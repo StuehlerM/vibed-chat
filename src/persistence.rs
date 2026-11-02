@@ -87,6 +87,7 @@ struct StoredMessage {
     backend: Option<SessionMode>,
     model: Option<String>,
     outcome: Option<crate::chat::TurnStatus>,
+    tool: Option<crate::chat::ToolActivity>,
 }
 struct StoredSession {
     local_id: String,
@@ -160,6 +161,7 @@ impl SaveSnapshot {
                             backend: m.backend,
                             model: m.model.clone(),
                             outcome: m.outcome,
+                            tool: m.tool.clone(),
                         })
                         .collect(),
                 })
@@ -447,6 +449,25 @@ fn message_to_json(m: &StoredMessage) -> Json {
                 Json::String(outcome.as_str().to_string())
             }),
         ),
+        (
+            "tool",
+            m.tool.as_ref().map_or(Json::Null, |tool| {
+                Json::object(vec![
+                    ("call_id", Json::String(tool.call_id.clone())),
+                    (
+                        "status",
+                        tool.status
+                            .as_ref()
+                            .map_or(Json::Null, |status| Json::String(status.clone())),
+                    ),
+                    (
+                        "kind",
+                        Json::String(if tool.is_update { "update" } else { "call" }.to_string()),
+                    ),
+                    ("payload", tool.payload.as_ref().clone()),
+                ])
+            }),
+        ),
     ])
 }
 fn required_str<'a>(value: &'a Json, key: &str) -> Result<&'a str, String> {
@@ -481,6 +502,32 @@ fn message_from_json(j: &Json) -> Result<Message, String> {
         _ => return Err("Invalid message backend".to_string()),
     };
     msg.model = j.get("model").and_then(Json::as_str).map(str::to_string);
+    if let Some(tool) = j.get("tool").filter(|value| !value.is_null()) {
+        let is_update = match required_str(tool, "kind")? {
+            "update" => true,
+            "call" => false,
+            _ => return Err("Invalid tool activity kind".to_string()),
+        };
+        let payload = tool
+            .get("payload")
+            .filter(|value| matches!(value, Json::Object(_)))
+            .ok_or("Missing/invalid tool activity payload")?;
+        msg.tool = Some(crate::chat::ToolActivity {
+            call_id: required_str(tool, "call_id")?.to_string(),
+            status: tool
+                .get("status")
+                .filter(|value| !value.is_null())
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or("Invalid tool status")
+                })
+                .transpose()?,
+            is_update,
+            payload: std::sync::Arc::new(payload.clone()),
+        });
+    }
     msg.outcome = j
         .get("outcome")
         .filter(|value| !value.is_null())

@@ -683,23 +683,31 @@ impl AppState {
                 AcpEvent::RequestFailed { key, message } => {
                     self.settle_turn(&key, &format!("Failed: {message}"))
                 }
-                AcpEvent::ToolCall { key, name, input } => {
-                    if let Some(idx) = self.turn_index(&key) {
-                        self.sessions[idx]
-                            .chat
-                            .add_system_message(&format!("[Tool: {name}] {input}"));
-                    }
+                AcpEvent::ToolCall {
+                    key,
+                    name,
+                    input,
+                    payload,
+                } => {
+                    self.record_tool_activity(
+                        &key,
+                        format!("[Tool: {name}] {input}"),
+                        payload,
+                        false,
+                    );
                 }
                 AcpEvent::ToolResult {
                     key,
                     call_id,
                     output,
+                    payload,
                 } => {
-                    if let Some(idx) = self.turn_index(&key) {
-                        self.sessions[idx]
-                            .chat
-                            .add_system_message(&format!("[Result {call_id}] {output}"));
-                    }
+                    self.record_tool_activity(
+                        &key,
+                        format!("[Result {call_id}] {output}"),
+                        payload,
+                        true,
+                    );
                 }
                 AcpEvent::PermissionRequest {
                     id,
@@ -848,6 +856,38 @@ impl AppState {
         if let Some(acp) = &self.acp {
             if let Err(e) = acp.respond_permission(permission.id, selected) {
                 self.connection_failed(&e);
+            }
+        }
+    }
+
+    fn record_tool_activity(
+        &mut self,
+        key: &TurnKey,
+        display: String,
+        payload: crate::json::Json,
+        is_update: bool,
+    ) {
+        if let Some(idx) = self.delta_turn_index(key) {
+            let activity = crate::chat::ToolActivity {
+                call_id: payload
+                    .get("toolCallId")
+                    .and_then(crate::json::Json::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                status: payload
+                    .get("status")
+                    .and_then(crate::json::Json::as_str)
+                    .map(str::to_string),
+                is_update,
+                payload: std::sync::Arc::new(payload),
+            };
+            let session = &mut self.sessions[idx];
+            session.chat.add_system_message(&display);
+            if let Some(message) = session.chat.messages.back_mut() {
+                message.turn_id = Some(key.turn_id);
+                message.backend = Some(SessionMode::Code);
+                message.outcome = Some(crate::chat::TurnStatus::Streaming);
+                message.tool = Some(activity);
             }
         }
     }
@@ -1062,7 +1102,10 @@ impl AppState {
         transport: Box<dyn crate::responses::HttpTransport + Send>,
     ) {
         if self.responses.is_none() {
-            self.responses = Some(ResponsesClient::new(transport));
+            match ResponsesClient::new(transport) {
+                Ok(client) => self.responses = Some(client),
+                Err(error) => self.show_toast(&error, ToastKind::Error),
+            }
         }
         self.responses_wanted = false;
     }

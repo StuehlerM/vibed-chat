@@ -81,6 +81,15 @@ impl TurnStatus {
 }
 
 #[derive(Debug, Clone)]
+pub struct ToolActivity {
+    pub call_id: String,
+    pub status: Option<String>,
+    pub is_update: bool,
+    /// Full protocol update, independently retained from display/context text.
+    pub payload: std::sync::Arc<crate::json::Json>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Message {
     pub id: u64,
     pub revision: u64,
@@ -88,6 +97,7 @@ pub struct Message {
     pub backend: Option<crate::session::SessionMode>,
     pub model: Option<String>,
     pub outcome: Option<TurnStatus>,
+    pub tool: Option<ToolActivity>,
     pub role: Role,
     pub text: String,
     pub runs: Vec<StyledRun>,
@@ -123,6 +133,7 @@ impl Message {
             backend: None,
             model: None,
             outcome: None,
+            tool: None,
             role,
             text: text.to_string(),
             runs,
