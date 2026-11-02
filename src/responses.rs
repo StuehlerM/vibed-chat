@@ -5,7 +5,7 @@ use crate::http::SseParser;
 use crate::json::{self, Json};
 use crate::session::{HistoryItem, ReasoningEffort, TurnKey};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -36,7 +36,12 @@ struct Request {
     key: TurnKey,
     history: Vec<HistoryItem>,
     reasoning: ReasoningEffort,
-    cancelled: Arc<AtomicBool>,
+    cancelled: Arc<Cancellation>,
+}
+struct Cancellation {
+    flag: AtomicBool,
+    // 0 queued, 1 worker owns it, 2 terminal, 3 cancelled before worker start.
+    phase: AtomicU8,
 }
 pub struct HttpResponse {
     pub status: u16,
@@ -67,7 +72,7 @@ pub const MAX_OUTPUT_TOKENS: i64 = 4096;
 pub struct ResponsesClient {
     commands: SyncSender<Request>,
     events: Receiver<ResponsesEvent>,
-    cancellations: Arc<Mutex<HashMap<TurnKey, Arc<AtomicBool>>>>,
+    cancellations: Arc<Mutex<HashMap<TurnKey, Arc<Cancellation>>>>,
 }
 impl ResponsesClient {
     pub fn new(transport: Box<dyn HttpTransport + Send>) -> Self {
@@ -77,14 +82,24 @@ impl ResponsesClient {
         let worker_cancellations = Arc::clone(&cancellations);
         thread::spawn(move || {
             while let Ok(request) = requests.recv() {
-                let body = build_request_body(&request.history, request.reasoning, true);
-                let outcome = do_stream(
-                    transport.as_ref(),
-                    &body,
-                    &request.key,
-                    &request.cancelled,
-                    &event_tx,
-                );
+                let outcome = if request
+                    .cancelled
+                    .phase
+                    .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    let body = build_request_body(&request.history, request.reasoning, true);
+                    do_stream(
+                        transport.as_ref(),
+                        &body,
+                        &request.key,
+                        &request.cancelled.flag,
+                        &event_tx,
+                    )
+                } else {
+                    StreamOutcome::Cancelled
+                };
+                request.cancelled.phase.store(2, Ordering::Release);
                 if let Ok(mut map) = worker_cancellations.lock() {
                     map.remove(&request.key);
                 }
@@ -112,7 +127,10 @@ impl ResponsesClient {
         reasoning: ReasoningEffort,
     ) -> Result<(), String> {
         auth_headers()?; // fail locally before queueing an unauthenticated request
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(Cancellation {
+            flag: AtomicBool::new(false),
+            phase: AtomicU8::new(0),
+        });
         let mut map = self
             .cancellations
             .lock()
@@ -129,12 +147,19 @@ impl ResponsesClient {
         }
         Ok(())
     }
-    pub fn abort(&self, key: &TurnKey) {
+    /// True means atomically retired before the worker acquired it: no native
+    /// request exists, so the UI need not wait behind another chat's request.
+    pub fn abort(&self, key: &TurnKey) -> bool {
         if let Ok(map) = self.cancellations.lock() {
             if let Some(cancelled) = map.get(key) {
-                cancelled.store(true, Ordering::Release);
+                cancelled.flag.store(true, Ordering::Release);
+                return cancelled
+                    .phase
+                    .compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok();
             }
         }
+        false
     }
     pub fn try_recv(&self) -> Option<ResponsesEvent> {
         self.events.try_recv().ok()
@@ -144,7 +169,7 @@ impl Drop for ResponsesClient {
     fn drop(&mut self) {
         if let Ok(map) = self.cancellations.lock() {
             for flag in map.values() {
-                flag.store(true, Ordering::Release);
+                flag.flag.store(true, Ordering::Release);
             }
         }
     }

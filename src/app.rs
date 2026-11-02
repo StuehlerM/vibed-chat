@@ -1168,7 +1168,10 @@ impl AppState {
         }
         if turn.backend == SessionMode::Direct {
             if let Some(ref client) = self.responses {
-                client.abort(&turn.key);
+                if client.abort(&turn.key) {
+                    self.settle_turn(&turn.key, "Cancelled");
+                    return;
+                }
                 if let Some(active) = &mut self.sessions[idx].active_turn {
                     active.cancelling = true;
                 }
