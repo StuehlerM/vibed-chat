@@ -49,7 +49,12 @@ pub enum InputResult {
 
 /// Handle a key press. Returns an `InputResult` if something happened.
 pub fn handle_key(chat: &mut ChatState, key: Key, mods: Modifiers) -> InputResult {
-    match key {
+    let anchor = chat.selection_start.unwrap_or(chat.cursor_pos);
+    let motion = matches!(
+        key,
+        Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End
+    );
+    let result = match key {
         Key::Return => {
             if !mods.shift && !chat.input_buffer.trim().is_empty() && !chat.is_waiting_for_agent {
                 let text = chat.take_input();
@@ -137,7 +142,11 @@ pub fn handle_key(chat: &mut ChatState, key: Key, mods: Modifiers) -> InputResul
         Key::Char(b'X' | b'C') if mods.ctrl => InputResult::None,
         Key::Char(b'V') if mods.ctrl => InputResult::Repaint, // paste handled by platform
         _ => InputResult::None,
+    };
+    if motion {
+        chat.selection_start = if mods.shift { Some(anchor) } else { None };
     }
+    result
 }
 
 /// Handle a Unicode character input.

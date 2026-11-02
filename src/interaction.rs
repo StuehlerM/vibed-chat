@@ -80,12 +80,19 @@ impl AppState {
         let mut order: Vec<FocusedElement> = Vec::new();
         order.push(FocusedElement::NewChat);
         order.push(FocusedElement::NewProject);
-        for i in 0..self.projects.len() {
-            order.push(FocusedElement::ProjectHeader(i));
-        }
-        for i in 0..self.sessions.len() {
-            order.push(FocusedElement::SidebarItem(i));
-        }
+        self.with_sidebar_layout(|_, _, entries| {
+            for entry in entries {
+                match *entry {
+                    SidebarEntry::ProjectHeader { project_idx, .. } => {
+                        order.push(FocusedElement::ProjectHeader(project_idx))
+                    }
+                    SidebarEntry::SessionItem { session_idx, .. } => {
+                        order.push(FocusedElement::SidebarItem(session_idx))
+                    }
+                    SidebarEntry::NewProjectBtn { .. } => {}
+                }
+            }
+        });
         order.push(FocusedElement::SettingsBtn);
         order.push(FocusedElement::Input);
         order.push(FocusedElement::SendButton);
@@ -128,11 +135,6 @@ impl AppState {
         );
 
         self.focused_element = Some(order[next]);
-
-        if self.focused_element == Some(FocusedElement::Input) && !self.sessions.is_empty() {
-            let idx = self.active_session.min(self.sessions.len() - 1);
-            self.sessions[idx].chat.input_focused = true;
-        }
     }
 
     /// Activate the currently focused element (Enter/Space).
@@ -315,7 +317,7 @@ impl AppState {
             }
         }
 
-        if !entries.is_empty() {
+        if matches!(entries.last(), Some(SidebarEntry::SessionItem { .. })) {
             total_h = total_h.saturating_sub(item_gap).max(0);
         }
 
@@ -406,6 +408,7 @@ impl AppState {
                 }
 
                 if let Some(idx) = self.settings_toggle_at(x, y) {
+                    self.focused_element = Some(FocusedElement::SettingsToggle(idx));
                     self.toggle_setting(idx);
                     return true;
                 }
@@ -420,6 +423,7 @@ impl AppState {
             let btn_bottom = btn_top + header_h - pad * 2;
             if x >= pad && x <= sidebar_w - pad && y >= btn_top && y <= btn_bottom {
                 self.pressed_element = Some(PressedElement::NewChat);
+                self.focused_element = Some(FocusedElement::NewChat);
                 self.new_chat();
                 return true;
             }
@@ -432,6 +436,7 @@ impl AppState {
             let client_height = self.client_height;
             let sidebar_scroll_offset = self.sidebar_scroll_offset;
             let projects_len = self.projects.len();
+            let active_session = self.active_session;
             let hit = self.with_sidebar_layout(|list_top, total_list_height, entries| {
                 let list_bottom = client_height - footer_h - pad;
                 let avail_height = list_bottom - list_top;
@@ -440,11 +445,12 @@ impl AppState {
 
                 // "+ New Project" button sits above list_top
                 if let Some(SidebarEntry::NewProjectBtn { top, bottom }) = entries.first() {
-                    let adj_top = top - sidebar_scroll;
-                    let adj_bottom = bottom - sidebar_scroll;
-                    if y >= adj_top && y <= adj_bottom && x >= pad && x <= sidebar_w - pad {
+                    if y >= *top && y < *bottom && x >= pad && x < sidebar_w - pad {
                         return Some(SidebarHit::NewProject);
                     }
+                }
+                if y < list_top || y >= list_bottom {
+                    return None;
                 }
 
                 for entry in entries {
@@ -485,7 +491,13 @@ impl AppState {
                                 continue;
                             }
 
-                            // Check archive/delete buttons first (they're on top of the item)
+                            if y < adj_top || y >= adj_bottom {
+                                continue;
+                            }
+                            if session_idx == active_session {
+                                return Some(SidebarHit::SessionItem(session_idx));
+                            }
+                            // Only inactive rows paint action buttons.
                             let (archive_rect, delete_rect) = session_action_rects(
                                 sidebar_inner_left,
                                 sidebar_inner_right,
@@ -528,6 +540,7 @@ impl AppState {
             match hit {
                 Some(SidebarHit::NewProject) => {
                     self.pressed_element = Some(PressedElement::NewProject);
+                    self.focused_element = Some(FocusedElement::NewProject);
                     self.new_project_requested = true;
                     return true;
                 }
@@ -565,7 +578,9 @@ impl AppState {
             if x >= pad && x <= sidebar_w - pad && y >= settings_btn_top && y <= settings_btn_bottom
             {
                 self.pressed_element = Some(PressedElement::SettingsBtn);
+                self.focused_element = Some(FocusedElement::SettingsBtn);
                 self.show_settings = !self.show_settings;
+                self.invalidate_sidebar_cache();
                 return true;
             }
 
@@ -647,8 +662,6 @@ impl AppState {
                 && y <= input_bottom
                 && !self.sessions.is_empty()
             {
-                let idx = self.active_session.min(self.sessions.len() - 1);
-                self.sessions[idx].chat.input_focused = true;
                 self.focused_element = Some(FocusedElement::Input);
             }
         }
@@ -657,6 +670,9 @@ impl AppState {
 
     /// Check if a click landed on a link rect. Returns the URL if so.
     pub fn click_link(&self, x: i32, y: i32) -> Option<String> {
+        if !self.in_transcript(x, y) {
+            return None;
+        }
         self.link_rects
             .iter()
             .find(|(left, top, right, bottom, _)| {
@@ -666,7 +682,17 @@ impl AppState {
     }
 
     /// Check if a click landed on a code block copy button. Returns the code text if so.
+    fn in_transcript(&self, x: i32, y: i32) -> bool {
+        x >= self.chat_left()
+            && x < self.chat_right()
+            && y >= self.messages_viewport_top()
+            && y < self.messages_viewport_bottom()
+    }
+
     pub fn click_code_copy(&self, x: i32, y: i32) -> Option<String> {
+        if !self.in_transcript(x, y) {
+            return None;
+        }
         self.code_block_rects
             .iter()
             .find(|(left, top, right, bottom, _)| {
@@ -823,6 +849,7 @@ impl AppState {
             let client_height = self.client_height;
             let sidebar_scroll_offset = self.sidebar_scroll_offset;
             let projects_len = self.projects.len();
+            let active_session = self.active_session;
             let hover_hit = self.with_sidebar_layout(|list_top, total_list_height, entries| {
                 let list_bottom = client_height - footer_h - pad;
                 let avail_height = list_bottom - list_top;
@@ -831,11 +858,12 @@ impl AppState {
 
                 // "+ New Project" button sits above list_top
                 if let Some(SidebarEntry::NewProjectBtn { top, bottom }) = entries.first() {
-                    let adj_top = top - sidebar_scroll;
-                    let adj_bottom = bottom - sidebar_scroll;
-                    if y >= adj_top && y <= adj_bottom && x >= pad && x <= sidebar_w - pad {
+                    if y >= *top && y < *bottom && x >= pad && x < sidebar_w - pad {
                         return Some(HoverHit::NewProject);
                     }
+                }
+                if y < list_top || y >= list_bottom {
+                    return None;
                 }
 
                 if total_list_height > avail_height {
@@ -887,7 +915,13 @@ impl AppState {
                                 continue;
                             }
 
-                            // Check archive/delete button hover first
+                            if y < adj_top || y >= adj_bottom {
+                                continue;
+                            }
+                            if session_idx == active_session {
+                                return Some(HoverHit::SessionItem(session_idx));
+                            }
+                            // Only inactive rows paint action buttons.
                             let (archive_rect, delete_rect) = session_action_rects(
                                 sidebar_inner_left,
                                 sidebar_inner_right,

@@ -148,6 +148,11 @@ pub struct AppState {
     pub new_project_requested: bool,
     /// Modal platform effects block further interactive commands, not timer/paint.
     pub modal_active: bool,
+    pub window_focused: bool,
+    pub pending_high_surrogate: Option<u16>,
+    pub consumed_character: Option<u32>,
+    pub ime_composing: bool,
+    pub wheel_remainder: i32,
     /// Set by interaction when a project's menu button is clicked;
     /// the platform backend shows the project context menu.
     pub project_menu_requested: Option<usize>,
@@ -212,6 +217,11 @@ impl AppState {
             last_reconnect_attempt: None,
             new_project_requested: false,
             modal_active: false,
+            window_focused: true,
+            pending_high_surrogate: None,
+            consumed_character: None,
+            ime_composing: false,
+            wheel_remainder: 0,
             project_menu_requested: None,
             sidebar_cache: SidebarLayoutCache::default(),
             sidebar_version: 0,
@@ -220,7 +230,9 @@ impl AppState {
 
     /// Invalidate the cached sidebar layout. Call after any change that can
     /// affect the sidebar's structure or geometry.
-    pub const fn invalidate_sidebar_cache(&mut self) {
+    pub fn invalidate_sidebar_cache(&mut self) {
+        self.link_rects.clear();
+        self.code_block_rects.clear();
         self.sidebar_version = self.sidebar_version.wrapping_add(1);
     }
 
@@ -355,9 +367,13 @@ impl AppState {
         self.create_local_session(&wd);
     }
 
-    pub const fn switch_session(&mut self, idx: usize) {
+    pub fn switch_session(&mut self, idx: usize) {
         if idx < self.sessions.len() {
             self.active_session = idx;
+            self.cancel_rename();
+            self.link_rects.clear();
+            self.code_block_rects.clear();
+            self.hover = HoverState::default();
         }
     }
 

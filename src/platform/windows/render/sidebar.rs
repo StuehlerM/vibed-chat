@@ -39,7 +39,6 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
         let header_h = (SIDEBAR_HEADER_HEIGHT as f32 * scale) as i32;
         let item_h = (SIDEBAR_ITEM_HEIGHT as f32 * scale) as i32;
-        let item_gap = (SIDEBAR_ITEM_MARGIN as f32 * scale) as i32;
         let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
 
         // ── "+ New Chat" button ──
@@ -94,6 +93,8 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                 DeleteObject(btn_brush as HGDIOBJ);
             }
         }
+
+        drop(gfx); // no GDI+ graphics object survives unrelated GDI drawing
 
         // Focus ring for New Chat button
         if ctx.app.focused_element == Some(FocusedElement::NewChat) {
@@ -184,6 +185,8 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             }
         }
 
+        drop(np_gfx);
+
         // Focus ring for New Project button
         if ctx.app.focused_element == Some(FocusedElement::NewProject) {
             let focus_pen = CreatePen(PS_SOLID, (2.0 * scale).max(2.0) as i32, FOCUS_RING);
@@ -237,49 +240,35 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
 
         let other_idx = ctx.app.projects.len();
 
-        let mut grouped: Vec<(usize, bool, String, Vec<usize>)> = Vec::new();
-        for (pidx, project) in ctx.app.projects.iter().enumerate() {
-            let visible: Vec<usize> = project
-                .session_indices
-                .iter()
-                .copied()
-                .filter(|&i| {
-                    ctx.app
-                        .sessions
-                        .get(i)
-                        .map(|s| ctx.app.settings.show_archived || !s.archived)
-                        .unwrap_or(false)
-                })
-                .collect();
-            grouped.push((pidx, project.expanded, project.name.clone(), visible));
-        }
-        let show_archived = ctx.app.settings.show_archived;
-        let other_sessions: Vec<usize> = ctx
+        // Consume the exact layout used by hit-testing and focus. Each row
+        // retains its authoritative y, even when earlier rows are clipped out.
+        let (total_list_height, entries) = ctx
             .app
-            .sessions
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| {
-                (show_archived || !s.archived)
-                    && !ctx.app.projects.iter().any(|p| p.path == s.working_dir)
-            })
-            .map(|(i, _)| i)
-            .collect();
-        if !other_sessions.is_empty() {
-            grouped.push((other_idx, true, "Other".to_string(), other_sessions));
-        }
-
-        // Calculate total height (New Project button + headers + items)
-        let mut total_list_height = new_proj_h + (SPACE_1 as f32 * scale) as i32;
-        for (_, expanded, _, indices) in &grouped {
-            total_list_height += proj_h;
-            if *expanded {
-                total_list_height += indices.len() as i32 * (item_h + item_gap);
+            .with_sidebar_layout(|_, height, entries| (height, entries.to_vec()));
+        let mut grouped: Vec<(usize, bool, String, i32, Vec<(usize, i32)>)> = Vec::new();
+        for entry in entries {
+            match entry {
+                crate::interaction::SidebarEntry::ProjectHeader {
+                    project_idx, top, ..
+                } => {
+                    let project = ctx.app.projects.get(project_idx);
+                    grouped.push((
+                        project_idx,
+                        project.is_none_or(|p| p.expanded),
+                        project.map_or_else(|| "Other".to_string(), |p| p.name.clone()),
+                        top,
+                        Vec::new(),
+                    ));
+                }
+                crate::interaction::SidebarEntry::SessionItem {
+                    session_idx, top, ..
+                } => {
+                    if let Some(group) = grouped.last_mut() {
+                        group.4.push((session_idx, top));
+                    }
+                }
+                crate::interaction::SidebarEntry::NewProjectBtn { .. } => {}
             }
-            total_list_height += (SPACE_1 as f32 * scale) as i32;
-        }
-        if !grouped.is_empty() {
-            total_list_height -= item_gap;
         }
 
         let needs_scroll = total_list_height > avail_height;
@@ -302,12 +291,8 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         SelectClipRgn(hdc, clip_rgn);
 
         let accent_bar_w = (SIDEBAR_ACCENT_BAR_W as f32 * scale).max(2.0) as i32;
-        let group_gap = (SPACE_1 as f32 * scale) as i32;
-
-        let mut y = list_top - sidebar_scroll;
-        for (group_pos, &(pidx, expanded, ref group_name, ref indices)) in
-            grouped.iter().enumerate()
-        {
+        for &(pidx, expanded, ref group_name, header_top, ref indices) in &grouped {
+            let y = header_top - sidebar_scroll;
             // ── Project header ──
             if y + proj_h > list_top - proj_h && y < list_bottom + proj_h {
                 let is_hover = ctx.app.hover.project == Some(pidx);
@@ -524,16 +509,15 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     DeleteObject(focus_pen as HGDIOBJ);
                 }
             }
-            y += proj_h;
 
             // ── Session items in this project ──
             if expanded {
-                for (item_idx_in_group, &i) in indices.iter().enumerate() {
+                for &(i, row_top) in indices {
+                    let y = row_top - sidebar_scroll;
                     if y + item_h > list_bottom + item_h {
                         break;
                     }
                     if y + item_h < list_top - item_h {
-                        y += item_h + item_gap;
                         continue;
                     }
 
@@ -543,7 +527,6 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                     let is_pressed =
                         ctx.app.pressed_element == Some(PressedElement::SidebarItem(i));
                     let is_archived = session.archived;
-                    let is_last_in_group = item_idx_in_group == indices.len() - 1;
 
                     let item_rect = RECT {
                         left: pad + indent,
@@ -639,7 +622,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                         item_h,
                         scale,
                     );
-                    let show_actions = is_hover && !is_active;
+                    let show_actions = !is_active; // never expose invisible destructive hit targets
 
                     let ts_text = relative_time(&session.created_at);
                     let ts_font = ctx.fonts.timestamp;
@@ -964,12 +947,6 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
                             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
                         );
                         SelectObject(hdc, old_font as HGDIOBJ);
-                    }
-
-                    y += item_h + item_gap;
-
-                    if is_last_in_group && group_pos + 1 < grouped.len() {
-                        y += group_gap;
                     }
                 }
             }

@@ -10,6 +10,8 @@ use crate::platform::windows::paint::PaintContext;
 use crate::theme::*;
 
 pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
+    ctx.app.link_rects.clear();
+    ctx.app.code_block_rects.clear();
     if ctx.app.sessions.is_empty() {
         return;
     }
@@ -88,7 +90,7 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             let chat = &mut ctx.app.sessions[idx].chat;
             let viewport_h = messages_area_bottom - messages_area_top;
             compute_message_heights(hdc, ctx.fonts, chat, content_width, line_height, scale);
-            if chat.is_at_bottom {
+            if ctx.app.settings.auto_scroll && chat.is_at_bottom {
                 chat.scroll_to_bottom(viewport_h);
             }
         }
@@ -153,7 +155,7 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             input_h,
             line_height,
             scale,
-            ctx.app.cursor_visible,
+            ctx.app.cursor_visible && ctx.app.window_focused,
             ctx.app.focused_element,
             ctx.app.hover.send_btn,
             ctx.app.pressed_element,

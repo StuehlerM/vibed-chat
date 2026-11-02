@@ -96,6 +96,21 @@ pub fn draw_messages(
         );
     }
 
+    // Pixels and interactive regions share the same half-open viewport clip.
+    let clip = |rect: &mut crate::app::ClickableRect| {
+        rect.0 = rect.0.max(chat_left);
+        rect.1 = rect.1.max(area_top);
+        rect.2 = rect.2.min(chat_right);
+        rect.3 = rect.3.min(area_bottom);
+    };
+    for rect in &mut link_rects {
+        clip(rect);
+    }
+    for rect in &mut code_block_rects {
+        clip(rect);
+    }
+    link_rects.retain(|r| r.0 < r.2 && r.1 < r.3);
+    code_block_rects.retain(|r| r.0 < r.2 && r.1 < r.3);
     ctx.app.link_rects = link_rects;
     ctx.app.code_block_rects = code_block_rects;
 }

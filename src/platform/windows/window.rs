@@ -330,10 +330,15 @@ pub unsafe extern "system" fn wnd_proc(
                     return 0;
                 }
 
-                // Enter/Space activates the focused element
+                // Enter used to commit an IME composition must not submit a turn.
+                if wparam as u8 == VK_RETURN && state.ime_composing {
+                    return DefWindowProcW(hwnd, msg, wparam, lparam);
+                }
+                // Consume the WM_CHAR queued by TranslateMessage for activation.
                 if (wparam as u8 == VK_RETURN || wparam as u8 == VK_SPACE)
                     && state.activate_focused_element()
                 {
+                    state.consumed_character = Some(wparam as u32);
                     // Handle deferred platform requests from the activation
                     if state.new_project_requested {
                         state.new_project_requested = false;
@@ -343,7 +348,9 @@ pub unsafe extern "system" fn wnd_proc(
                     return 0;
                 }
 
-                if state.sessions.is_empty() {
+                if state.sessions.is_empty()
+                    || state.focused_element != Some(crate::ui::FocusedElement::Input)
+                {
                     return 0;
                 }
 
@@ -398,47 +405,58 @@ pub unsafe extern "system" fn wnd_proc(
             }
             return 0;
         }
-        WM_UNICHAR => {
-            let app_state = get_app_state(hwnd);
-            if !app_state.is_null() {
-                let state = &mut *app_state;
-                if wparam == VK_BACK as WPARAM
-                    || wparam == VK_RETURN as WPARAM
-                    || wparam == VK_ESCAPE as WPARAM
-                {
-                    return DefWindowProcW(hwnd, msg, wparam, lparam);
-                }
-                if state.rename_target.is_some() {
-                    if let Some(c) = char::from_u32(wparam as u32) {
-                        state.rename_insert_char(c);
-                    }
-                } else if !state.sessions.is_empty() {
-                    if let Some(chat) = state.active_chat() {
-                        if let Some(c) = char::from_u32(wparam as u32) {
-                            let _ = input::handle_char_input(chat, c);
-                        }
-                    }
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 0);
-            }
-            return 1;
-        }
-        WM_CHAR => {
-            let app_state = get_app_state(hwnd);
-            if !app_state.is_null() {
-                let state = &mut *app_state;
-                if !state.sessions.is_empty() {
-                    if let Some(chat) = state.active_chat() {
-                        if let Some(c) = char::from_u32(wparam as u32) {
-                            if c >= ' ' && c != '\u{7F}' {
-                                let _ = input::handle_char_input(chat, c);
-                            }
-                        }
-                    }
-                }
+        WM_SETFOCUS | WM_KILLFOCUS => {
+            let pointer = get_app_state(hwnd);
+            if !pointer.is_null() {
+                (*pointer).window_focused = msg == WM_SETFOCUS;
+                (*pointer).pending_high_surrogate = None;
+                (*pointer).cursor_visible = true;
+                (*pointer).last_cursor_blink = std::time::Instant::now();
                 InvalidateRect(hwnd, std::ptr::null(), 0);
             }
             return 0;
+        }
+        WM_IME_STARTCOMPOSITION | WM_IME_ENDCOMPOSITION => {
+            let pointer = get_app_state(hwnd);
+            if !pointer.is_null() {
+                (*pointer).ime_composing = msg == WM_IME_STARTCOMPOSITION;
+            }
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        }
+        WM_UNICHAR | WM_CHAR => {
+            if msg == WM_UNICHAR && wparam == 0xffff {
+                return 1;
+            } // UNICODE_NOCHAR probe
+            let pointer = get_app_state(hwnd);
+            if !pointer.is_null() {
+                let state = &mut *pointer;
+                if state.consumed_character.take() == Some(wparam as u32) {
+                    return 0;
+                }
+                let scalar = if msg == WM_UNICHAR {
+                    state.pending_high_surrogate = None;
+                    u32::try_from(wparam).ok()
+                } else {
+                    let unit = wparam as u16;
+                    if (0xd800..=0xdbff).contains(&unit) {
+                        state.pending_high_surrogate = Some(unit);
+                        return 0;
+                    }
+                    let high = state.pending_high_surrogate.take();
+                    if (0xdc00..=0xdfff).contains(&unit) {
+                        high.map(|high| {
+                            0x10000 + ((u32::from(high) - 0xd800) << 10) + u32::from(unit) - 0xdc00
+                        })
+                    } else {
+                        Some(u32::from(unit))
+                    }
+                };
+                if let Some(c) = scalar.and_then(char::from_u32) {
+                    route_character(state, c);
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+            }
+            return if msg == WM_UNICHAR { 1 } else { 0 };
         }
         WM_LBUTTONDOWN => {
             let app_state = get_app_state(hwnd);
@@ -533,14 +551,29 @@ pub unsafe extern "system" fn wnd_proc(
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
                 let delta = ((wparam >> 16) as i16) as i32;
+                let mut point = POINT {
+                    x: (lparam & 0xffff) as i16 as i32,
+                    y: ((lparam >> 16) & 0xffff) as i16 as i32,
+                };
+                if ScreenToClient(hwnd, &mut point) == 0 {
+                    return 0;
+                }
                 let state = &mut *app_state;
+                state.link_rects.clear();
+                state.code_block_rects.clear();
                 if state.sessions.is_empty() {
                     return 0;
                 }
-                let scroll_amount = (delta / WHEEL_DELTA) * 40;
+                state.wheel_remainder += delta;
                 let scale = state.dpi as f32 / 96.0;
+                let scroll_amount =
+                    ((state.wheel_remainder as f32 / WHEEL_DELTA as f32) * 40.0 * scale) as i32;
+                if scroll_amount == 0 {
+                    return 0;
+                }
+                state.wheel_remainder = 0;
                 let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
-                let x = (lparam & 0xFFFF) as i16 as i32;
+                let x = point.x;
 
                 // Sidebar scroll
                 if x < sidebar_w {
@@ -580,13 +613,20 @@ pub unsafe extern "system" fn wnd_proc(
             return 0;
         }
         WM_SETCURSOR => {
+            if (lparam & 0xffff) != 1 {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
+            let mut point = POINT { x: 0, y: 0 };
+            if GetCursorPos(&mut point) == 0 || ScreenToClient(hwnd, &mut point) == 0 {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
                 let state = &*app_state;
                 let scale = state.dpi as f32 / 96.0;
                 let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
-                let x = (lparam & 0xFFFF) as i16 as i32;
-                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
+                let x = point.x;
+                let y = point.y;
 
                 if x < sidebar_w
                     && (state.hover.new_chat
@@ -629,7 +669,14 @@ pub unsafe extern "system" fn wnd_proc(
                     }
                 }
             }
-            let hcursor = LoadCursorW(std::ptr::null_mut(), IDC_IBEAM);
+            let is_input = !app_state.is_null()
+                && point.x >= (*app_state).chat_left()
+                && point.x < (*app_state).chat_right()
+                && point.y >= (*app_state).input_box_top();
+            let hcursor = LoadCursorW(
+                std::ptr::null_mut(),
+                if is_input { IDC_IBEAM } else { IDC_ARROW },
+            );
             SetCursor(hcursor);
             return 1;
         }
@@ -656,6 +703,21 @@ pub unsafe extern "system" fn wnd_proc(
 }
 
 // ── Helpers ──────────────────────────────────────────────────
+
+fn route_character(state: &mut AppState, c: char) {
+    if !state.window_focused || c.is_control() {
+        return;
+    }
+    if state.rename_target.is_some() {
+        state.rename_insert_char(c);
+    } else if state.focused_element == Some(crate::ui::FocusedElement::Input) {
+        if let Some(chat) = state.active_chat() {
+            let _ = input::handle_char_input(chat, c);
+        }
+    }
+    state.cursor_visible = true;
+    state.last_cursor_blink = std::time::Instant::now();
+}
 
 fn get_app_state(hwnd: HWND) -> *mut AppState {
     // SAFETY: GWLP_USERDATA was set in WM_CREATE to the `*mut AppState` passed

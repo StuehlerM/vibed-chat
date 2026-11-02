@@ -112,7 +112,7 @@ pub fn draw_input_box(
     let idx = active_session.min(sessions.len().saturating_sub(1));
     let chat = &mut sessions[idx].chat;
     let is_disabled = chat.is_waiting_for_agent;
-    let is_focused = focused_element == Some(FocusedElement::Input) || chat.input_focused;
+    let is_focused = focused_element == Some(FocusedElement::Input);
 
     let send_btn_size = (SEND_BTN_SIZE as f32 * scale) as i32;
     let send_btn_margin = (SEND_BTN_MARGIN as f32 * scale) as i32;
@@ -330,34 +330,6 @@ pub fn draw_input_box(
         let scroll = scroll.max(0).min(max_scroll);
         chat.input_scroll_offset = scroll;
 
-        // Draw visible wrapped lines
-        SetBkMode(hdc, OPAQUE);
-        SetBkColor(hdc, bg_color);
-
-        let mut y = text_top;
-        for i in scroll..(scroll + visible_lines).min(total_wrapped) {
-            let wl = &wrapped_lines[i as usize];
-            if wl.text.is_empty() {
-                y += line_height;
-                continue;
-            }
-            let wide = to_wide(&wl.text);
-            let mut text_rect = RECT {
-                left: text_left,
-                top: y,
-                right: text_right,
-                bottom: y + line_height,
-            };
-            DrawTextW(
-                hdc,
-                wide.as_ptr(),
-                wide.len() as i32 - 1,
-                &mut text_rect as LPRECT,
-                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOCLIP | DT_NOPREFIX,
-            );
-            y += line_height;
-        }
-
         // Selection highlight
         if let Some((sel_start, sel_end)) = chat.selection_range() {
             let sel_brush = CreateSolidBrush(SELECTION_COLOR);
@@ -412,8 +384,30 @@ pub fn draw_input_box(
             DeleteObject(sel_brush as HGDIOBJ);
         }
 
+        // Paint selection first, then transparent glyphs; highlights must not
+        // cover the selected text or be erased by opaque text backgrounds.
+        SetBkMode(hdc, TRANSPARENT);
+        for i in scroll..(scroll + visible_lines).min(total_wrapped) {
+            let line = &wrapped_lines[i as usize];
+            let wide = to_wide(&line.text);
+            let y = text_top + (i - scroll) * line_height;
+            let mut rect = RECT {
+                left: text_left,
+                top: y,
+                right: text_right,
+                bottom: y + line_height,
+            };
+            DrawTextW(
+                hdc,
+                wide.as_ptr(),
+                wide.len() as i32 - 1,
+                &mut rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX,
+            );
+        }
+
         // Cursor
-        if cursor_visible && chat.input_focused {
+        if cursor_visible && is_focused {
             let cursor_byte = chat.cursor_pos;
             let cursor_wrapped = cursor_wrapped_idx as i32;
             if cursor_wrapped >= scroll && cursor_wrapped < scroll + visible_lines {
@@ -437,7 +431,7 @@ pub fn draw_input_box(
         }
 
         // Placeholder
-        if chat.input_buffer.is_empty() && !chat.input_focused {
+        if chat.input_buffer.is_empty() && !is_focused {
             SetTextColor(hdc, INPUT_PLACEHOLDER);
             let placeholder = if chat.is_waiting_for_agent {
                 to_wide("Waiting for response... (Esc to cancel)")
