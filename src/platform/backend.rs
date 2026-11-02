@@ -5,7 +5,7 @@
 
 /// Clipboard operations available on all platforms.
 pub trait Clipboard {
-    fn set_text(&self, text: &str);
+    fn set_text(&self, text: &str) -> Result<(), String>;
     fn get_text(&self) -> Option<String>;
 }
 

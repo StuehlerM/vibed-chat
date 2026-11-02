@@ -40,8 +40,8 @@ impl Platform for LinuxPlatform {
 pub struct LinuxClipboard;
 
 impl Clipboard for LinuxClipboard {
-    fn set_text(&self, _text: &str) {
-        // TODO: implement via X11/Wayland clipboard
+    fn set_text(&self, _text: &str) -> Result<(), String> {
+        Err("Linux clipboard is not implemented".to_string())
     }
 
     fn get_text(&self) -> Option<String> {

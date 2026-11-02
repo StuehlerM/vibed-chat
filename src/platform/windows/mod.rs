@@ -25,8 +25,8 @@ pub struct WindowsPlatform {
 impl WindowsPlatform {
     pub fn new() -> Self {
         Self {
-            clipboard: clipboard::WinClipboard,
-            dialogs: dialogs::WinDialogs,
+            clipboard: clipboard::WinClipboard(std::ptr::null_mut()),
+            dialogs: dialogs::WinDialogs(std::ptr::null_mut()),
         }
     }
 }

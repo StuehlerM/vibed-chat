@@ -678,22 +678,11 @@ pub fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-pub fn from_wide(ptr: *const u16) -> String {
-    if ptr.is_null() {
-        return String::new();
-    }
-    let mut len = 0usize;
-    // SAFETY: `ptr` must point to a valid, NUL-terminated UTF-16 buffer
-    // (Win32 convention). We only read within `[ptr, ptr + len)` where `len`
-    // is bounded by the first NUL, so the slice is in-bounds and properly
-    // aligned for `u16`. Callers pass buffers owned by Win32 or local Vecs.
-    unsafe {
-        while *ptr.add(len) != 0 {
-            len += 1;
-        }
-        let slice = std::slice::from_raw_parts(ptr, len);
-        String::from_utf16_lossy(slice)
-    }
+/// Decode a bounded, NUL-terminated UTF-16 buffer. Reject missing terminators
+/// and malformed UTF-16 instead of scanning beyond the supplied allocation.
+pub fn from_wide(buffer: &[u16]) -> Option<String> {
+    let len = buffer.iter().position(|&unit| unit == 0)?;
+    String::from_utf16(&buffer[..len]).ok()
 }
 
 // ── Helper: RGB color ────────────────────────────────────────
@@ -868,6 +857,7 @@ extern "system" {
 extern "system" {
     pub fn CoTaskMemFree(pv: *mut std::ffi::c_void);
     pub fn OleInitialize(pvReserved: *mut std::ffi::c_void) -> HRESULT;
+    pub fn OleUninitialize();
 }
 
 // ─── GDI+ flat API (system DLL, zero external crates) ────────────────────────
@@ -896,9 +886,12 @@ pub const GDIPLUS_OK: i32 = 0;
 pub const GDIPLUS_VERSION_1: u32 = 1;
 
 /// Convert a 0x00BBGGRR COLORREF-style u32 (as used by `rgb()`) to
-/// GDI+ ARGB (0xAABBGGRR with alpha 255).
-pub fn argb_from_rgb(color: u32) -> u32 {
-    0xFF00_0000 | (color & 0x00FF_FFFF)
+/// GDI+ ARGB (0xAARRGGBB with alpha 255).
+pub const fn argb_from_rgb(color: u32) -> u32 {
+    0xFF00_0000
+        | ((color & 0x0000_00FF) << 16)
+        | (color & 0x0000_FF00)
+        | ((color & 0x00FF_0000) >> 16)
 }
 
 pub const SMOOTHING_MODE_ANTI_ALIAS: i32 = 4;

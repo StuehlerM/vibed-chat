@@ -156,13 +156,17 @@ pub fn handle_char_input(chat: &mut ChatState, c: char) -> InputResult {
 
 /// Copy the current selection to the clipboard.
 /// The platform backend provides the actual clipboard implementation.
-pub fn copy_selection(chat: &ChatState, clipboard: &dyn crate::platform::backend::Clipboard) {
+pub fn copy_selection(
+    chat: &ChatState,
+    clipboard: &dyn crate::platform::backend::Clipboard,
+) -> Result<(), String> {
     if let Some((start, end)) = chat.selection_range() {
         if start < end {
             let text = &chat.input_buffer[start..end];
-            clipboard.set_text(text);
+            return clipboard.set_text(text);
         }
     }
+    Ok(())
 }
 
 /// Paste text from the clipboard into the chat input.

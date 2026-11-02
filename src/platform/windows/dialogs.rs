@@ -1,21 +1,20 @@
-// Windows dialog implementations using Win32 API.
+// Windows dialogs. Callers must release application borrows before entering.
 #![allow(dead_code)]
 
 use crate::platform::backend::Dialogs;
 use crate::platform::windows::ffi::*;
 
-pub struct WinDialogs;
+pub struct WinDialogs(pub HWND);
 
 impl Dialogs for WinDialogs {
     fn pick_folder(&self, title: &str) -> Option<String> {
+        // SAFETY: OLE is initialized once on the UI thread. All buffers and
+        // strings outlive the modal call, and the returned PIDL is freed once.
         unsafe {
-            let _ = OleInitialize(std::ptr::null_mut());
-
             let title_wide = to_wide(title);
-            let mut display_name: Vec<u16> = vec![0; 260];
-
+            let mut display_name = vec![0u16; 260];
             let mut bi = BROWSEINFOW {
-                hwndOwner: std::ptr::null_mut(),
+                hwndOwner: self.0,
                 pidlRoot: std::ptr::null(),
                 pszDisplayName: display_name.as_mut_ptr(),
                 lpszTitle: title_wide.as_ptr(),
@@ -24,46 +23,39 @@ impl Dialogs for WinDialogs {
                 lParam: 0,
                 iImage: 0,
             };
-
             let pidl = SHBrowseForFolderW(&mut bi);
             if pidl.is_null() {
                 return None;
             }
-
-            let mut path_buf: Vec<u16> = vec![0; 260];
-            let ok = SHGetPathFromIDListW(pidl, path_buf.as_mut_ptr());
+            let mut path = vec![0u16; 260];
+            let ok = SHGetPathFromIDListW(pidl, path.as_mut_ptr());
             CoTaskMemFree(pidl);
-
             if ok == 0 {
                 return None;
             }
-
-            Some(from_wide(path_buf.as_ptr()))
+            from_wide(&path)
         }
     }
 
     fn confirm(&self, title: &str, message: &str) -> bool {
+        // SAFETY: owner belongs to this UI thread; strings live across the call.
         unsafe {
-            let msg = to_wide(message);
-            let t = to_wide(title);
-            let result = MessageBoxW(
-                std::ptr::null_mut(),
-                msg.as_ptr(),
-                t.as_ptr(),
+            MessageBoxW(
+                self.0,
+                to_wide(message).as_ptr(),
+                to_wide(title).as_ptr(),
                 MB_YESNO | MB_ICONWARNING,
-            );
-            result == IDYES as i32
+            ) == IDYES as i32
         }
     }
 
     fn show_error(&self, title: &str, message: &str) {
+        // SAFETY: owner belongs to this UI thread; strings live across the call.
         unsafe {
-            let msg = to_wide(message);
-            let t = to_wide(title);
             MessageBoxW(
-                std::ptr::null_mut(),
-                msg.as_ptr(),
-                t.as_ptr(),
+                self.0,
+                to_wide(message).as_ptr(),
+                to_wide(title).as_ptr(),
                 MB_OK | MB_ICONERROR,
             );
         }

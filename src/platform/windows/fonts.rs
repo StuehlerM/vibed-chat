@@ -4,12 +4,6 @@
 use crate::platform::windows::ffi::*;
 use crate::theme::*;
 
-// SAFETY: `Fonts` holds GDI HFONT handles, which are raw pointers and thus
-// neither `Send` nor `Sync`. The handles are created on the UI thread and are
-// only ever selected into a DC on that same UI thread; they are never used
-// from another thread, so transferring ownership across threads is sound.
-unsafe impl Send for Fonts {}
-
 pub struct Fonts {
     pub normal: HFONT,
     pub bold: HFONT,

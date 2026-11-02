@@ -40,8 +40,8 @@ impl Platform for MacosPlatform {
 pub struct MacosClipboard;
 
 impl Clipboard for MacosClipboard {
-    fn set_text(&self, _text: &str) {
-        // TODO: implement via NSPasteboard
+    fn set_text(&self, _text: &str) -> Result<(), String> {
+        Err("macOS clipboard is not implemented".to_string())
     }
 
     fn get_text(&self) -> Option<String> {

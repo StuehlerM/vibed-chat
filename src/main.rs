@@ -55,6 +55,31 @@ pub fn app_entry() {
             return;
         }
 
+        // OLE is UI-thread-affine and must be balanced, including early returns.
+        struct OleGuard;
+        impl Drop for OleGuard {
+            fn drop(&mut self) {
+                // SAFETY: created only after successful initialization on this thread.
+                unsafe {
+                    OleUninitialize();
+                }
+            }
+        }
+        let ole_result = OleInitialize(ptr::null_mut());
+        let _ole = if ole_result >= 0 {
+            Some(OleGuard)
+        } else {
+            None
+        };
+        if ole_result < 0 {
+            MessageBoxW(
+                ptr::null_mut(),
+                to_wide("Failed to initialize OLE").as_ptr(),
+                to_wide("Error").as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
         let caret_blink = GetCaretBlinkTime();
         let mut app_state = Box::new(AppState::new(caret_blink));
 

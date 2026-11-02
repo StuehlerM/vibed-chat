@@ -13,14 +13,15 @@ use crate::ui::{FocusedElement, RenameTarget, Toast, ToastKind};
 /// Opaque handle to platform-specific font resources.
 /// On Windows this wraps GDI HFONT handles; on other platforms it will
 /// wrap the native font handles. The core app never inspects the contents.
+#[derive(Clone)]
 pub struct FontsHandle {
-    inner: Box<dyn std::any::Any + Send>,
+    inner: std::rc::Rc<dyn std::any::Any>,
 }
 
 impl FontsHandle {
-    pub fn new<T: Send + 'static>(fonts: T) -> Self {
+    pub fn new<T: 'static>(fonts: T) -> Self {
         Self {
-            inner: Box::new(fonts),
+            inner: std::rc::Rc::new(fonts),
         }
     }
 
@@ -131,6 +132,8 @@ pub struct AppState {
     /// Set by interaction when the "+ New Project" button is clicked;
     /// the platform backend picks a folder and calls `create_project`.
     pub new_project_requested: bool,
+    /// Modal platform effects block further interactive commands, not timer/paint.
+    pub modal_active: bool,
     /// Set by interaction when a project's menu button is clicked;
     /// the platform backend shows the project context menu.
     pub project_menu_requested: Option<usize>,
@@ -190,6 +193,7 @@ impl AppState {
             reconnect_attempts: 0,
             last_reconnect_attempt: None,
             new_project_requested: false,
+            modal_active: false,
             project_menu_requested: None,
             sidebar_cache: SidebarLayoutCache::default(),
             sidebar_version: 0,
@@ -666,7 +670,7 @@ impl AppState {
     }
 
     /// Show a transient toast (replaces any previous one) in the top-right corner.
-    fn show_toast(&mut self, text: &str, kind: ToastKind) {
+    pub(crate) fn show_toast(&mut self, text: &str, kind: ToastKind) {
         self.toast = Some(Toast {
             text: text.to_string(),
             kind,

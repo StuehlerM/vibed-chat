@@ -29,6 +29,17 @@ pub unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // Modal effects allow paint/timer re-entry, but not nested UI commands.
+    let pointer = get_app_state(hwnd);
+    if !pointer.is_null()
+        && (*pointer).modal_active
+        && matches!(
+            msg,
+            WM_KEYDOWN | WM_CHAR | WM_UNICHAR | WM_LBUTTONDOWN | WM_LBUTTONDBLCLK
+        )
+    {
+        return 0;
+    }
     match msg {
         WM_GETMINMAXINFO => {
             let app_state = get_app_state(hwnd);
@@ -162,14 +173,15 @@ pub unsafe extern "system" fn wnd_proc(
                     state.fonts = Some(FontsHandle::new(fonts));
                 }
 
-                let fonts_ptr: *const Fonts =
-                    match state.fonts.as_ref().and_then(|f| f.downcast_ref::<Fonts>()) {
-                        Some(f) => f as *const Fonts,
-                        None => return 0,
-                    };
-                // SAFETY: fonts outlive the paint pass; the AppState borrow for
-                // fonts is released here, and the paint pass only reads fonts.
-                let fonts_ref = unsafe { &*fonts_ptr };
+                // A separate resource owner, not a reference into mutable AppState.
+                let fonts_handle = match state.fonts.clone() {
+                    Some(fonts) => fonts,
+                    None => return 0,
+                };
+                let fonts_ref = match fonts_handle.downcast_ref::<Fonts>() {
+                    Some(fonts) => fonts,
+                    None => return 0,
+                };
 
                 let mut ps = PAINTSTRUCT {
                     hdc: std::ptr::null_mut(),
@@ -262,13 +274,7 @@ pub unsafe extern "system" fn wnd_proc(
                 if wparam as u8 == VK_N
                     && (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0
                 {
-                    let dialogs = WinDialogs;
-                    if let Some(path) = crate::platform::backend::Dialogs::pick_folder(
-                        &dialogs,
-                        "Select a project folder",
-                    ) {
-                        state.new_chat_in_dir(&path);
-                    }
+                    execute_effect(hwnd, NativeEffect::PickProjectFolder);
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                     return 0;
                 }
@@ -293,19 +299,11 @@ pub unsafe extern "system" fn wnd_proc(
                 {
                     if !state.sessions.is_empty() {
                         let idx = state.active_session.min(state.sessions.len() - 1);
-                        let session_name = state.sessions[idx].name.clone();
-                        let dialogs = WinDialogs;
-                        let confirmed = crate::platform::backend::Dialogs::confirm(
-                            &dialogs,
-                            "Delete Session",
-                            &format!(
-                                "Delete session \"{}\"? This cannot be undone.",
-                                session_name
-                            ),
-                        );
-                        if confirmed {
-                            state.delete_session(idx);
-                        }
+                        let effect = NativeEffect::ConfirmDelete {
+                            local_id: state.sessions[idx].local_id.clone(),
+                            name: state.sessions[idx].name.clone(),
+                        };
+                        execute_effect(hwnd, effect);
                     }
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                     return 0;
@@ -333,13 +331,7 @@ pub unsafe extern "system" fn wnd_proc(
                     // Handle deferred platform requests from the activation
                     if state.new_project_requested {
                         state.new_project_requested = false;
-                        let dialogs = WinDialogs;
-                        if let Some(path) = crate::platform::backend::Dialogs::pick_folder(
-                            &dialogs,
-                            "Select a project folder",
-                        ) {
-                            state.new_chat_in_dir(&path);
-                        }
+                        execute_effect(hwnd, NativeEffect::PickProjectFolder);
                     }
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                     return 0;
@@ -355,10 +347,15 @@ pub unsafe extern "system" fn wnd_proc(
                         ctrl: (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0,
                         shift: (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0,
                     };
-                    let clipboard = WinClipboard;
+                    let clipboard = WinClipboard(hwnd);
                     let result = match key {
                         Some(Key::Char(b'C')) if mods.ctrl => {
-                            input::copy_selection(chat, &clipboard);
+                            if input::copy_selection(chat, &clipboard).is_err() {
+                                state.show_toast(
+                                    "Copy failed: clipboard unavailable",
+                                    crate::ui::ToastKind::Error,
+                                );
+                            }
                             InputResult::None
                         }
                         Some(Key::Char(b'V')) if mods.ctrl => {
@@ -366,8 +363,14 @@ pub unsafe extern "system" fn wnd_proc(
                             InputResult::Repaint
                         }
                         Some(Key::Char(b'X')) if mods.ctrl => {
-                            input::copy_selection(chat, &clipboard);
-                            chat.delete_selection();
+                            if input::copy_selection(chat, &clipboard).is_ok() {
+                                chat.delete_selection();
+                            } else {
+                                state.show_toast(
+                                    "Cut failed: selection preserved",
+                                    crate::ui::ToastKind::Error,
+                                );
+                            }
                             InputResult::Repaint
                         }
                         Some(k) => input::handle_key(chat, k, mods),
@@ -437,39 +440,29 @@ pub unsafe extern "system" fn wnd_proc(
                 let state = &mut *app_state;
                 let x = (lparam & 0xFFFF) as i16 as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-                if let Some(url) = state.click_link(x, y) {
-                    let url_wide = to_wide(&url);
-                    let open_wide = to_wide("open");
-                    unsafe {
-                        ShellExecuteW(
-                            hwnd,
-                            open_wide.as_ptr(),
-                            url_wide.as_ptr(),
-                            std::ptr::null(),
-                            std::ptr::null(),
-                            SW_SHOW,
-                        );
-                    }
+                let effect = if let Some(url) = state.click_link(x, y) {
+                    Some(NativeEffect::OpenLink(url))
                 } else if let Some(code) = state.click_code_copy(x, y) {
-                    let clipboard = WinClipboard;
-                    crate::platform::backend::Clipboard::set_text(&clipboard, &code);
+                    Some(NativeEffect::CopyCode(code))
                 } else {
                     state.handle_click(x, y);
-                }
-
-                // Handle deferred platform requests from interaction handlers
-                if state.new_project_requested {
-                    state.new_project_requested = false;
-                    let dialogs = WinDialogs;
-                    if let Some(path) = crate::platform::backend::Dialogs::pick_folder(
-                        &dialogs,
-                        "Select a project folder",
-                    ) {
-                        state.new_chat_in_dir(&path);
+                    if std::mem::take(&mut state.new_project_requested) {
+                        Some(NativeEffect::PickProjectFolder)
+                    } else {
+                        state
+                            .project_menu_requested
+                            .take()
+                            .and_then(|idx| state.projects.get(idx))
+                            .map(|project| NativeEffect::ProjectMenu {
+                                path: project.path.clone(),
+                                name: project.name.clone(),
+                                session_count: project.session_indices.len(),
+                            })
                     }
-                }
-                if let Some(pidx) = state.project_menu_requested.take() {
-                    show_project_menu(hwnd, state, pidx);
+                };
+                // All application borrows end before a native modal call.
+                if let Some(effect) = effect {
+                    execute_effect(hwnd, effect);
                 }
 
                 InvalidateRect(hwnd, std::ptr::null(), 0);
@@ -646,6 +639,7 @@ pub unsafe extern "system" fn wnd_proc(
             return 0;
         }
         WM_DESTROY => {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             PostQuitMessage(0);
             return 0;
         }
@@ -665,21 +659,125 @@ fn get_app_state(hwnd: HWND) -> *mut AppState {
     unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState }
 }
 
+/// Owned data only: no application borrow may cross execution of an effect.
+enum NativeEffect {
+    PickProjectFolder,
+    ConfirmDelete {
+        local_id: String,
+        name: String,
+    },
+    ProjectMenu {
+        path: String,
+        name: String,
+        session_count: usize,
+    },
+    OpenLink(String),
+    CopyCode(String),
+}
+
+fn execute_effect(hwnd: HWND, effect: NativeEffect) {
+    use crate::platform::backend::{Clipboard, Dialogs};
+    // SAFETY: UI-thread-only pointer is resolved anew after every modal call.
+    // The boxed application outlives window destruction and nested dispatch.
+    unsafe {
+        let pointer = get_app_state(hwnd);
+        if pointer.is_null() || (*pointer).modal_active {
+            return;
+        }
+        (*pointer).modal_active = true;
+        let dialogs = WinDialogs(hwnd);
+        match effect {
+            NativeEffect::PickProjectFolder => {
+                let result = dialogs.pick_folder("Select a project folder");
+                let pointer = get_app_state(hwnd);
+                if !pointer.is_null() {
+                    if let Some(path) = result {
+                        (*pointer).new_chat_in_dir(&path);
+                    }
+                }
+            }
+            NativeEffect::ConfirmDelete { local_id, name } => {
+                let confirmed = dialogs.confirm(
+                    "Delete Session",
+                    &format!("Delete session \"{name}\"? This cannot be undone."),
+                );
+                let pointer = get_app_state(hwnd);
+                if confirmed && !pointer.is_null() {
+                    let state = &mut *pointer;
+                    if let Some(idx) = state.sessions.iter().position(|s| s.local_id == local_id) {
+                        state.delete_session(idx);
+                    }
+                }
+            }
+            NativeEffect::ProjectMenu {
+                path,
+                name,
+                session_count,
+            } => {
+                let cmd = show_project_menu(hwnd);
+                let confirmed = cmd == PROJECT_MENU_DELETE && dialogs.confirm("Delete Project",
+                    &format!("Delete project \"{name}\" and its {session_count} chat(s)? Workspace files are not deleted. This cannot be undone."));
+                let pointer = get_app_state(hwnd);
+                if !pointer.is_null() {
+                    let state = &mut *pointer;
+                    if let Some(idx) = state.projects.iter().position(|p| p.path == path) {
+                        if cmd == PROJECT_MENU_RENAME {
+                            state.start_rename_project(idx);
+                        } else if confirmed {
+                            state.remove_project(idx);
+                        }
+                    }
+                }
+            }
+            NativeEffect::OpenLink(url) => {
+                let allowed = !url.contains('\0')
+                    && (url.starts_with("https://") || url.starts_with("http://"));
+                let result = if allowed {
+                    ShellExecuteW(
+                        hwnd,
+                        to_wide("open").as_ptr(),
+                        to_wide(&url).as_ptr(),
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        SW_SHOW,
+                    ) as isize
+                } else {
+                    0
+                };
+                let pointer = get_app_state(hwnd);
+                if result <= 32 && !pointer.is_null() {
+                    (*pointer).show_toast("Unable to open link", crate::ui::ToastKind::Error);
+                }
+            }
+            NativeEffect::CopyCode(code) => {
+                let result = WinClipboard(hwnd).set_text(&code);
+                let pointer = get_app_state(hwnd);
+                if !pointer.is_null() {
+                    match result {
+                        Ok(()) => {
+                            (*pointer).show_toast("Code copied", crate::ui::ToastKind::Success)
+                        }
+                        Err(e) => (*pointer).show_toast(&e, crate::ui::ToastKind::Error),
+                    }
+                }
+            }
+        }
+        let pointer = get_app_state(hwnd);
+        if !pointer.is_null() {
+            (*pointer).modal_active = false;
+        }
+    }
+}
+
 const PROJECT_MENU_RENAME: usize = 1;
 const PROJECT_MENU_DELETE: usize = 2;
 
 /// Show the project context menu (Rename / Delete) at the cursor position.
-fn show_project_menu(hwnd: HWND, state: &mut AppState, project_idx: usize) {
-    if project_idx >= state.projects.len() {
-        return;
-    }
-    let project_name = state.projects[project_idx].name.clone();
-    let session_count = state.projects[project_idx].session_indices.len();
-
+fn show_project_menu(hwnd: HWND) -> usize {
     unsafe {
         let menu = CreatePopupMenu();
         if menu.is_null() {
-            return;
+            return 0;
         }
         let rename_wide = to_wide("Rename project");
         let delete_wide = to_wide("Delete project");
@@ -700,26 +798,7 @@ fn show_project_menu(hwnd: HWND, state: &mut AppState, project_idx: usize) {
         );
         DestroyMenu(menu);
 
-        match cmd as usize {
-            PROJECT_MENU_RENAME => {
-                state.start_rename_project(project_idx);
-            }
-            PROJECT_MENU_DELETE => {
-                let dialogs = WinDialogs;
-                let confirmed = crate::platform::backend::Dialogs::confirm(
-                    &dialogs,
-                    "Delete Project",
-                    &format!(
-                        "Delete project \"{}\" and its {} session(s)? This cannot be undone.",
-                        project_name, session_count
-                    ),
-                );
-                if confirmed {
-                    state.remove_project(project_idx);
-                }
-            }
-            _ => {}
-        }
+        cmd as usize
     }
 }
 
