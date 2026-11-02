@@ -82,6 +82,7 @@ pub struct PendingPermission {
     pub id: crate::json::Json,
     pub key: TurnKey,
     pub title: String,
+    pub details: String,
     pub options: Vec<(String, String)>,
 }
 
@@ -101,6 +102,7 @@ pub struct AppState {
     pub acp: Option<AcpClient>,
     pub acp_connected: bool,
     pub acp_connecting: bool,
+    pub configure_agent_process: fn(&mut std::process::Command),
     pub pending_permissions: std::collections::VecDeque<PendingPermission>,
     /// Direct-mode (Responses API) client. Created once on first use.
     pub responses: Option<ResponsesClient>,
@@ -123,6 +125,7 @@ pub struct AppState {
     pub pending_new_session: bool,
     pub pending_working_dir: String,
     pub session_counter: usize,
+    next_turn_id: u64,
     pub default_working_dir: String,
     pub toast: Option<Toast>,
     pub config_dir: String,
@@ -184,6 +187,7 @@ impl AppState {
             acp: None,
             acp_connected: false,
             acp_connecting: false,
+            configure_agent_process: |_| {},
             pending_permissions: std::collections::VecDeque::new(),
             responses: None,
             responses_wanted: false,
@@ -206,6 +210,7 @@ impl AppState {
             pending_new_session: false,
             pending_working_dir: String::new(),
             session_counter: 0,
+            next_turn_id: 1,
             default_working_dir: default_wd,
             toast: None,
             config_dir: crate::persistence::default_config_dir(),
@@ -476,6 +481,13 @@ impl AppState {
                 self.active_session = self.nearest_visible_session(idx);
             }
         }
+        if !self.settings.show_archived && self.sessions.iter().all(|s| s.archived) {
+            self.settings.show_archived = true;
+            self.show_toast(
+                "All chats are archived; showing archived chats",
+                ToastKind::Info,
+            );
+        }
         self.invalidate_sidebar_cache();
         self.save_index();
     }
@@ -485,7 +497,8 @@ impl AppState {
         let Some(session) = self.sessions.get(idx) else {
             return false;
         };
-        self.remove_sessions(&[session.local_id.clone()], None)
+        let id = session.local_id.clone();
+        self.remove_sessions(std::slice::from_ref(&id), None)
     }
 
     /// One removal path for individual chats and project groups. Refuse active
@@ -687,8 +700,12 @@ impl AppState {
                     {
                         self.pending_permissions.push_back(PendingPermission {
                             id,
-                            key,
-                            title: method,
+                            key: key.clone(),
+                            title: format!("{} — {method}", key.local_id),
+                            details: params
+                                .get("toolCall")
+                                .map(ToString::to_string)
+                                .unwrap_or_default(),
                             options,
                         });
                     } else if let Some(acp) = &self.acp {
@@ -731,6 +748,31 @@ impl AppState {
             if let Some(acp) = &self.acp {
                 acp.retire_turn(key);
             }
+            use crate::chat::TurnStatus;
+            let status = if outcome.starts_with("Failed") {
+                TurnStatus::Failed
+            } else if outcome.eq_ignore_ascii_case("cancelled") {
+                TurnStatus::Cancelled
+            } else if outcome.starts_with("Incomplete") || outcome == "max_tokens" {
+                TurnStatus::Incomplete
+            } else {
+                TurnStatus::Completed
+            };
+            let session = &mut self.sessions[idx];
+            if status == TurnStatus::Failed {
+                session.failed_turn = session.active_turn.clone();
+                if session.chat.input_buffer.is_empty() {
+                    if let Some(turn) = &session.active_turn {
+                        session.chat.input_buffer = turn.text.clone();
+                        session.chat.cursor_pos = session.chat.input_buffer.len();
+                    }
+                }
+            }
+            for message in &mut session.chat.messages {
+                if message.turn_id == Some(key.turn_id) {
+                    message.outcome = Some(status);
+                }
+            }
             self.sessions[idx].chat.finish_streaming();
             self.sessions[idx].active_turn = None;
             self.sessions[idx].last_activity = std::time::SystemTime::now();
@@ -769,6 +811,16 @@ impl AppState {
     }
 
     fn connection_failed(&mut self, message: &str) {
+        let diagnostics = self
+            .acp
+            .as_ref()
+            .map(AcpClient::diagnostic_tail)
+            .unwrap_or_default();
+        let message = if diagnostics.is_empty() {
+            message.to_string()
+        } else {
+            format!("{message}\nAgent diagnostics:\n{diagnostics}")
+        };
         self.acp_connected = false;
         self.acp_connecting = false;
         self.reconnect_attempts = self.reconnect_attempts.max(1);
@@ -790,7 +842,7 @@ impl AppState {
             self.settle_turn(&key, &format!("Failed: {message}"));
         }
         self.last_reconnect_attempt = Some(std::time::Instant::now());
-        self.show_toast(message, ToastKind::Error);
+        self.show_toast(&message, ToastKind::Error);
     }
 
     fn advance_code_turns(&mut self) {
@@ -817,12 +869,13 @@ impl AppState {
                         acp.send_prompt(turn.key.clone(), &session.acp_session_id, &turn.text);
                     if result.is_ok() {
                         turn.submitted = true;
-                        session.chat.start_streaming();
                     }
                     result
                 };
                 if let Err(error) = result {
                     failures.push((turn.key.clone(), error));
+                } else if turn.submitted {
+                    session.start_turn_streaming();
                 }
             }
         }
@@ -870,14 +923,39 @@ impl AppState {
         if text.trim().is_empty() || session.active_turn.is_some() {
             return;
         }
-        static NEXT_TURN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let turn_id = NEXT_TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let turn_id = self.next_turn_id;
+        let Some(next) = turn_id.checked_add(1) else {
+            session.chat.input_buffer = text.to_string();
+            session.chat.cursor_pos = text.len();
+            self.show_toast("Turn identity space exhausted", ToastKind::Error);
+            return;
+        };
+        self.next_turn_id = next;
         let key = TurnKey {
             local_id: session.local_id.clone(),
             turn_id,
         };
         let mode = session.mode;
-        session.chat.add_message(Role::User, text);
+        let retry = session
+            .failed_turn
+            .take()
+            .is_some_and(|turn| turn.text == text && turn.backend == mode);
+        if !retry {
+            session.chat.add_message(Role::User, text);
+        }
+        if let Some(message) = session
+            .chat
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|message| message.role == Role::User)
+        {
+            message.turn_id = Some(turn_id);
+            message.backend = Some(mode);
+            message.model =
+                (mode == SessionMode::Direct).then(|| crate::responses::DEFAULT_MODEL.to_string());
+            message.outcome = Some(crate::chat::TurnStatus::Queued);
+        }
         session.last_activity = std::time::SystemTime::now();
         session.auto_name();
         session.active_turn = Some(ActiveTurn {
@@ -925,7 +1003,7 @@ impl AppState {
                 if let Some(turn) = &mut self.sessions[idx].active_turn {
                     turn.submitted = true;
                 }
-                self.sessions[idx].chat.start_streaming();
+                self.sessions[idx].start_turn_streaming();
             }
             Err(error) => {
                 self.settle_turn(&turn.key, &format!("Failed: {error}"));
@@ -997,11 +1075,13 @@ impl AppState {
         let idx = self.active_session.min(self.sessions.len() - 1);
         if self.sessions[idx].mode != mode {
             self.sessions[idx].mode = mode;
+            let notice = match mode {
+                SessionMode::Code => "Code mode uses agent context, not the Direct transcript. A fresh agent session does not know earlier Direct messages.",
+                SessionMode::Direct => "Direct mode uploads user/assistant text from this chat to the API. Tool activity and displayed thinking are not uploaded.",
+            };
+            self.sessions[idx].chat.add_system_message(notice);
+            self.show_toast(notice, ToastKind::Info);
             self.save_index();
-            if mode == SessionMode::Code && self.acp.is_none() {
-                // Lazy spawn: connect the agent on first Code-mode use.
-                self.connect_acp();
-            }
         }
     }
 
@@ -1019,7 +1099,7 @@ impl AppState {
         for session in &mut self.sessions {
             session.acp_session_id.clear();
         }
-        match AcpClient::spawn() {
+        match AcpClient::spawn(self.configure_agent_process) {
             Ok(client) => {
                 self.acp = Some(client);
                 self.show_toast("Connecting to agent...", ToastKind::Info);
@@ -1154,6 +1234,17 @@ impl AppState {
             self.settings = loaded.settings;
             self.projects = loaded.projects;
             self.sessions = loaded.sessions;
+            if !self.sessions.is_empty() && self.sessions.iter().all(|s| s.archived) {
+                self.settings.show_archived = true;
+            }
+            self.next_turn_id = self
+                .sessions
+                .iter()
+                .flat_map(|s| s.chat.messages.iter())
+                .filter_map(|message| message.turn_id)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
             self.active_session = 0;
             self.session_counter = self
                 .sessions

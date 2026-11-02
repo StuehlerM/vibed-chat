@@ -44,10 +44,50 @@ pub fn next_char_boundary(s: &str, pos: usize) -> usize {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnStatus {
+    Queued,
+    Streaming,
+    Completed,
+    Cancelled,
+    Incomplete,
+    Failed,
+    Interrupted,
+}
+impl TurnStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Streaming => "streaming",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Incomplete => "incomplete",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "queued" => Some(Self::Queued),
+            "streaming" => Some(Self::Streaming),
+            "completed" => Some(Self::Completed),
+            "cancelled" => Some(Self::Cancelled),
+            "incomplete" => Some(Self::Incomplete),
+            "failed" => Some(Self::Failed),
+            "interrupted" => Some(Self::Interrupted),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Message {
     pub id: u64,
     pub revision: u64,
+    pub turn_id: Option<u64>,
+    pub backend: Option<crate::session::SessionMode>,
+    pub model: Option<String>,
+    pub outcome: Option<TurnStatus>,
     pub role: Role,
     pub text: String,
     pub runs: Vec<StyledRun>,
@@ -79,6 +119,10 @@ impl Message {
         Self {
             id,
             revision: 0,
+            turn_id: None,
+            backend: None,
+            model: None,
+            outcome: None,
             role,
             text: text.to_string(),
             runs,

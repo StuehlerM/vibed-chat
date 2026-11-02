@@ -55,6 +55,21 @@ impl Json {
             _ => None,
         }
     }
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::Integer(n) => u64::try_from(*n).ok(),
+            Self::Number(n)
+                if n.is_finite()
+                    && n.fract() == 0.0
+                    && *n >= 0.0
+                    && *n < 18_446_744_073_709_551_616.0 =>
+            {
+                Some(*n as u64)
+            }
+            _ => None,
+        }
+    }
+
     pub const fn as_bool(&self) -> Option<bool> {
         if let Self::Bool(b) = self {
             Some(*b)

@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use super::ffi::*;
-use crate::responses::{HttpResponse, HttpTransport};
+use crate::responses::{HttpRequest, HttpResponse, HttpTransport};
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -141,14 +141,17 @@ impl Drop for RequestHandle {
 impl HttpTransport for WinHttpTransport {
     fn post_stream(
         &self,
-        host: &str,
-        path: &str,
-        headers: &[(String, String)],
-        body: &str,
-        cancelled: &AtomicBool,
+        request: &HttpRequest<'_>,
         on_response: &mut dyn FnMut(&HttpResponse) -> Result<(), String>,
         on_chunk: &mut dyn FnMut(&[u8]),
     ) -> Result<(), String> {
+        let HttpRequest {
+            host,
+            path,
+            headers,
+            body,
+            cancelled,
+        } = *request;
         if cancelled.load(Ordering::Acquire) {
             return Err("HTTP request cancelled".to_string());
         }

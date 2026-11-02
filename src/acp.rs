@@ -94,24 +94,27 @@ pub struct AcpClient {
     child: Arc<Mutex<Option<Child>>>,
     state: Arc<Mutex<AcpState>>,
     intentional_shutdown: Arc<AtomicBool>,
+    diagnostics: Arc<Mutex<std::collections::VecDeque<String>>>,
 }
 impl AcpClient {
-    pub fn spawn() -> Result<Self, String> {
-        Self::spawn_with_command("vibe-acp", &[])
+    pub fn spawn(configure: fn(&mut Command)) -> Result<Self, String> {
+        Self::spawn_configured("vibe-acp", &[], configure)
     }
     pub fn spawn_with_command(program: &str, args: &[&str]) -> Result<Self, String> {
+        Self::spawn_configured(program, args, |_| {})
+    }
+    fn spawn_configured(
+        program: &str,
+        args: &[&str],
+        configure: fn(&mut Command),
+    ) -> Result<Self, String> {
         let mut command = Command::new(program);
         command
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        // Process creation is std-only; no backend import in the protocol core.
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
+            .stderr(Stdio::piped());
+        configure(&mut command); // OS process setup belongs to the backend.
         let mut child = command
             .spawn()
             .map_err(|e| format!("Spawn {program}: {e}"))?;
@@ -133,7 +136,9 @@ impl AcpClient {
             turns: HashMap::new(),
             retired: HashMap::new(),
         }));
+        let stderr = child.stderr.take();
         let child = Arc::new(Mutex::new(Some(child)));
+        let diagnostics = Arc::new(Mutex::new(std::collections::VecDeque::new()));
         let intentional_shutdown = Arc::new(AtomicBool::new(false));
         let died = Arc::new(AtomicBool::new(false));
         let client = Self {
@@ -142,7 +147,51 @@ impl AcpClient {
             child: child.clone(),
             state: state.clone(),
             intentional_shutdown: intentional_shutdown.clone(),
+            diagnostics: diagnostics.clone(),
         };
+        if let Some(stderr) = stderr {
+            thread::Builder::new()
+                .name("acp-stderr".to_string())
+                .spawn(move || {
+                    let mut reader = BufReader::new(stderr);
+                    loop {
+                        let mut line = String::new();
+                        match reader.by_ref().take(65_537).read_line(&mut line) {
+                            Ok(0) | Err(_) => return,
+                            Ok(_) if line.len() <= 65_536 => {}
+                            Ok(_) => return,
+                        }
+                        let lower = line.to_ascii_lowercase();
+                        let sensitive = [
+                            "authorization",
+                            "bearer",
+                            "token",
+                            "api_key",
+                            "api key",
+                            "secret",
+                        ]
+                        .iter()
+                        .any(|word| lower.contains(word))
+                            || ["API_KEY", "MISTRAL_API_KEY"]
+                                .iter()
+                                .filter_map(|key| std::env::var(key).ok())
+                                .any(|key| !key.is_empty() && line.contains(&key));
+                        let line = if sensitive {
+                            "[redacted agent diagnostic]".to_string()
+                        } else {
+                            line.trim().chars().take(512).collect()
+                        };
+                        let Ok(mut tail) = diagnostics.lock() else {
+                            return;
+                        };
+                        if tail.len() >= 16 {
+                            tail.pop_front();
+                        }
+                        tail.push_back(line);
+                    }
+                })
+                .map_err(|e| format!("Create ACP diagnostics reader: {e}"))?;
+        }
         let writer_state = state.clone();
         let writer_events = event_tx.clone();
         thread::Builder::new()
@@ -257,6 +306,13 @@ impl AcpClient {
             result: Some(Json::object(vec![("outcome", outcome)])),
         })
     }
+    pub fn diagnostic_tail(&self) -> String {
+        self.diagnostics
+            .lock()
+            .map(|tail| tail.iter().cloned().collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default()
+    }
+
     pub fn shutdown(&self) {
         self.intentional_shutdown.store(true, Ordering::Release);
         let _ = self.commands.try_send(AcpCommand::Shutdown);

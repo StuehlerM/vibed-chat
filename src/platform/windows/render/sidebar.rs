@@ -245,26 +245,33 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         let (total_list_height, entries) = ctx
             .app
             .with_sidebar_layout(|_, height, entries| (height, entries.to_vec()));
-        let mut grouped: Vec<(usize, bool, String, i32, Vec<(usize, i32)>)> = Vec::new();
+        struct ProjectGroup {
+            index: usize,
+            expanded: bool,
+            name: String,
+            top: i32,
+            sessions: Vec<(usize, i32)>,
+        }
+        let mut grouped: Vec<ProjectGroup> = Vec::new();
         for entry in entries {
             match entry {
                 crate::interaction::SidebarEntry::ProjectHeader {
                     project_idx, top, ..
                 } => {
                     let project = ctx.app.projects.get(project_idx);
-                    grouped.push((
-                        project_idx,
-                        project.is_none_or(|p| p.expanded),
-                        project.map_or_else(|| "Other".to_string(), |p| p.name.clone()),
+                    grouped.push(ProjectGroup {
+                        index: project_idx,
+                        expanded: project.is_none_or(|p| p.expanded),
+                        name: project.map_or_else(|| "Other".to_string(), |p| p.name.clone()),
                         top,
-                        Vec::new(),
-                    ));
+                        sessions: Vec::new(),
+                    });
                 }
                 crate::interaction::SidebarEntry::SessionItem {
                     session_idx, top, ..
                 } => {
                     if let Some(group) = grouped.last_mut() {
-                        group.4.push((session_idx, top));
+                        group.sessions.push((session_idx, top));
                     }
                 }
                 crate::interaction::SidebarEntry::NewProjectBtn { .. } => {}
@@ -291,8 +298,12 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         SelectClipRgn(hdc, clip_rgn);
 
         let accent_bar_w = (SIDEBAR_ACCENT_BAR_W as f32 * scale).max(2.0) as i32;
-        for &(pidx, expanded, ref group_name, header_top, ref indices) in &grouped {
-            let y = header_top - sidebar_scroll;
+        for group in &grouped {
+            let pidx = group.index;
+            let expanded = group.expanded;
+            let group_name = &group.name;
+            let indices = &group.sessions;
+            let y = group.top - sidebar_scroll;
             // ── Project header ──
             if y + proj_h > list_top - proj_h && y < list_bottom + proj_h {
                 let is_hover = ctx.app.hover.project == Some(pidx);

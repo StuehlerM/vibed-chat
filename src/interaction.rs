@@ -98,9 +98,7 @@ impl AppState {
         order.push(FocusedElement::SendButton);
         if self.show_settings {
             order.push(FocusedElement::SettingsClose);
-            order.push(FocusedElement::SettingsToggle(0));
             order.push(FocusedElement::SettingsToggle(1));
-            order.push(FocusedElement::SettingsToggle(2));
             order.push(FocusedElement::SettingsToggle(3));
             order.push(FocusedElement::Reconnect);
         }
@@ -1222,6 +1220,9 @@ impl AppState {
 
         if x >= panel_left + spad && x <= self.client_width - spad {
             for (idx, &top) in layout.toggle_tops.iter().enumerate() {
+                if idx == 0 || idx == 2 {
+                    continue;
+                }
                 if y >= top && y <= top + layout.toggle_row_h {
                     return Some(idx);
                 }

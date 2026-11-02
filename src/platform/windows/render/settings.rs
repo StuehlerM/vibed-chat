@@ -159,18 +159,17 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             section_h,
             "Appearance",
         );
-        draw_settings_switch(
+        draw_settings_info(
             hdc,
             ctx,
             panel_left + pad,
             width - pad,
             &mut y,
+            row_h + gap,
             scale,
-            row_h,
-            gap,
-            "Dark theme",
-            ctx.app.settings.dark_theme,
-            0,
+            "Theme",
+            "Warm dark (fixed)",
+            SETTINGS_TEXT,
         );
         draw_settings_switch(
             hdc,
@@ -198,18 +197,17 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             section_h,
             "Agent",
         );
-        draw_settings_switch(
+        draw_settings_info(
             hdc,
             ctx,
             panel_left + pad,
             width - pad,
             &mut y,
+            row_h + gap,
             scale,
-            row_h,
-            gap,
-            "Auto-approve",
-            ctx.app.settings.auto_approve,
-            2,
+            "Permissions",
+            "Always ask",
+            SETTINGS_TEXT,
         );
         y += extra_gap;
 

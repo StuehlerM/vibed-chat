@@ -144,10 +144,20 @@ pub fn draw_session_header(
         }
 
         // Connection status indicator (right-aligned)
-        let (status_text, status_color, pulse_dot) = if session.chat.is_waiting_for_agent {
-            ("Agent responding...".to_string(), ACCENT, true)
+        let (status_text, status_color, pulse_dot) = if session
+            .active_turn
+            .as_ref()
+            .is_some_and(|turn| turn.cancelling)
+        {
+            ("Cancelling...".to_string(), ACCENT, false)
+        } else if session.chat.is_waiting_for_agent {
+            ("Responding...".to_string(), ACCENT, true)
         } else if session.chat.streaming_message_idx.is_some() {
             ("Streaming".to_string(), ACCENT, false)
+        } else if session.mode == crate::session::SessionMode::Direct {
+            ("Direct API".to_string(), TEXT_SECONDARY, false)
+        } else if ctx.app.acp_connecting {
+            ("Connecting...".to_string(), ACCENT, false)
         } else if !ctx.app.acp_connected {
             ("Disconnected".to_string(), ERROR_COLOR, false)
         } else {

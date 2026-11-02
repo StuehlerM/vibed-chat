@@ -44,14 +44,17 @@ pub struct HttpResponse {
 }
 /// Transport delivers decoded entity bytes (never HTTP transfer framing).
 /// Metadata must be delivered and accepted before any body bytes.
+pub struct HttpRequest<'a> {
+    pub host: &'a str,
+    pub path: &'a str,
+    pub headers: &'a [(String, String)],
+    pub body: &'a str,
+    pub cancelled: &'a AtomicBool,
+}
 pub trait HttpTransport {
     fn post_stream(
         &self,
-        host: &str,
-        path: &str,
-        headers: &[(String, String)],
-        body: &str,
-        cancelled: &AtomicBool,
+        request: &HttpRequest<'_>,
         on_response: &mut dyn FnMut(&HttpResponse) -> Result<(), String>,
         on_chunk: &mut dyn FnMut(&[u8]),
     ) -> Result<(), String>;
@@ -226,11 +229,13 @@ fn do_stream(
     // Metadata and body callbacks share only a Cell, not overlapping mutable borrows.
     let accepted_status = std::cell::Cell::new(0);
     let result = transport.post_stream(
-        API_HOST,
-        RESPONSES_PATH,
-        &headers,
-        body,
-        cancelled,
+        &HttpRequest {
+            host: API_HOST,
+            path: RESPONSES_PATH,
+            headers: &headers,
+            body,
+            cancelled,
+        },
         &mut |metadata| {
             status = metadata.status;
             accepted_status.set(status);

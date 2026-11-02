@@ -179,6 +179,29 @@ fn message_to_json(m: &Message) -> Json {
         ("text", Json::String(m.text.clone())),
         ("thinking", Json::String(m.thinking.clone())),
         ("thinking_collapsed", Json::Bool(m.thinking_collapsed)),
+        (
+            "turn_id",
+            m.turn_id
+                .map_or(Json::Null, |id| Json::Integer(i128::from(id))),
+        ),
+        (
+            "backend",
+            m.backend.map_or(Json::Null, |backend| {
+                Json::String(backend.as_str().to_string())
+            }),
+        ),
+        (
+            "model",
+            m.model
+                .as_ref()
+                .map_or(Json::Null, |model| Json::String(model.clone())),
+        ),
+        (
+            "outcome",
+            m.outcome.map_or(Json::Null, |outcome| {
+                Json::String(outcome.as_str().to_string())
+            }),
+        ),
     ])
 }
 fn required_str<'a>(value: &'a Json, key: &str) -> Result<&'a str, String> {
@@ -201,6 +224,34 @@ fn message_from_json(j: &Json) -> Result<Message, String> {
         _ => return Err("Invalid role".to_string()),
     };
     let mut msg = Message::new(role, required_str(j, "text")?);
+    msg.turn_id = j
+        .get("turn_id")
+        .filter(|value| !value.is_null())
+        .map(|value| value.as_u64().ok_or("Invalid turn ID"))
+        .transpose()?;
+    msg.backend = match j.get("backend").and_then(Json::as_str) {
+        None => None,
+        Some("direct") => Some(SessionMode::Direct),
+        Some("code") => Some(SessionMode::Code),
+        _ => return Err("Invalid message backend".to_string()),
+    };
+    msg.model = j.get("model").and_then(Json::as_str).map(str::to_string);
+    msg.outcome = j
+        .get("outcome")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_str()
+                .and_then(crate::chat::TurnStatus::parse)
+                .ok_or("Invalid turn outcome")
+        })
+        .transpose()?;
+    if matches!(
+        msg.outcome,
+        Some(crate::chat::TurnStatus::Queued | crate::chat::TurnStatus::Streaming)
+    ) {
+        msg.outcome = Some(crate::chat::TurnStatus::Interrupted);
+    }
     msg.thinking = required_str(j, "thinking")?.to_string();
     msg.thinking_runs = crate::markdown::parse(&msg.thinking);
     msg.thinking_collapsed = j
@@ -444,7 +495,7 @@ fn load_index(config: &str, backup: bool) -> Result<Option<LoadedState>, LoadErr
         return Err(LoadError::UnsupportedVersion(version));
     }
     let generation = if version == VERSION {
-        let g = required_str(&root, "generation").map_err(&malformed)?;
+        let g = required_str(&root, "generation").map_err(malformed)?;
         if !valid_generation(g) {
             return Err(malformed("Invalid generation".to_string()));
         }
@@ -470,13 +521,13 @@ fn load_index(config: &str, backup: bool) -> Result<Option<LoadedState>, LoadErr
     }
     let mut projects = Vec::new();
     let mut project_paths = HashSet::new();
-    for item in required_array(&root, "projects").map_err(&malformed)? {
-        let location = required_str(item, "path").map_err(&malformed)?;
+    for item in required_array(&root, "projects").map_err(malformed)? {
+        let location = required_str(item, "path").map_err(malformed)?;
         if location.is_empty() || !project_paths.insert(location) {
             return Err(malformed("Empty/duplicate project path".to_string()));
         }
         let mut project = Project::new(location);
-        project.name = required_str(item, "name").map_err(&malformed)?.to_string();
+        project.name = required_str(item, "name").map_err(malformed)?.to_string();
         project.expanded = item.get("expanded").and_then(Json::as_bool).unwrap_or(true);
         projects.push(project);
     }
@@ -484,17 +535,17 @@ fn load_index(config: &str, backup: bool) -> Result<Option<LoadedState>, LoadErr
     let mut sessions = Vec::new();
     let mut warnings = Vec::new();
     // Validate every identity before doing any session-file I/O.
-    let metadata = required_array(&root, "sessions").map_err(&malformed)?;
+    let metadata = required_array(&root, "sessions").map_err(malformed)?;
     for item in metadata {
-        let id = LocalSessionId::parse(required_str(item, "local_id").map_err(&malformed)?)
-            .map_err(&malformed)?;
+        let id = LocalSessionId::parse(required_str(item, "local_id").map_err(malformed)?)
+            .map_err(malformed)?;
         if !ids.insert(id) {
             return Err(malformed("Duplicate session ID".to_string()));
         }
     }
     for item in metadata {
-        let id = LocalSessionId::parse(required_str(item, "local_id").map_err(&malformed)?)
-            .map_err(&malformed)?;
+        let id = LocalSessionId::parse(required_str(item, "local_id").map_err(malformed)?)
+            .map_err(malformed)?;
         let mode = match item.get("mode").and_then(Json::as_str) {
             Some("direct") => SessionMode::Direct,
             Some("code") => SessionMode::Code,
@@ -503,8 +554,8 @@ fn load_index(config: &str, backup: bool) -> Result<Option<LoadedState>, LoadErr
         };
         let mut session = Session::new(
             "",
-            required_str(item, "name").map_err(&malformed)?,
-            required_str(item, "working_dir").map_err(&malformed)?,
+            required_str(item, "name").map_err(malformed)?,
+            required_str(item, "working_dir").map_err(malformed)?,
         );
         session.local_id = id.0.clone();
         session.title_is_automatic = item
@@ -543,6 +594,30 @@ fn load_index(config: &str, backup: bool) -> Result<Option<LoadedState>, LoadErr
             if let Some(draft) = value.get("draft").and_then(Json::as_str) {
                 session.chat.input_buffer = draft.to_string();
                 session.chat.cursor_pos = draft.len();
+            }
+            if let Some(message) = session
+                .chat
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == Role::User)
+            {
+                if message.outcome == Some(crate::chat::TurnStatus::Failed)
+                    && message.text == session.chat.input_buffer
+                {
+                    session.failed_turn = Some(crate::session::ActiveTurn {
+                        key: crate::session::TurnKey {
+                            local_id: session.local_id.clone(),
+                            turn_id: message.turn_id.unwrap_or(0),
+                        },
+                        backend: message.backend.unwrap_or(mode),
+                        text: message.text.clone(),
+                        submitted: false,
+                        session_requested: false,
+                        cancelling: false,
+                        started: std::time::Instant::now(),
+                    });
+                }
             }
             if value.get("interrupted").and_then(Json::as_bool) == Some(true) {
                 session.chat.add_system_message(

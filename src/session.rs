@@ -120,6 +120,8 @@ pub struct Session {
     pub archived: bool,
     pub mode: SessionMode,
     pub active_turn: Option<ActiveTurn>,
+    /// Failed submission can be retried without duplicating its user entry.
+    pub failed_turn: Option<ActiveTurn>,
     pub title_is_automatic: bool,
 }
 
@@ -136,7 +138,27 @@ impl Session {
             archived: false,
             mode: SessionMode::Direct,
             active_turn: None,
+            failed_turn: None,
             title_is_automatic: true,
+        }
+    }
+
+    pub fn start_turn_streaming(&mut self) {
+        let Some(turn) = self.active_turn.as_ref() else {
+            return;
+        };
+        self.chat.start_streaming();
+        if let Some(message) = self.chat.messages.back_mut() {
+            message.turn_id = Some(turn.key.turn_id);
+            message.backend = Some(turn.backend);
+            message.model = (turn.backend == SessionMode::Direct)
+                .then(|| crate::responses::DEFAULT_MODEL.to_string());
+            message.outcome = Some(crate::chat::TurnStatus::Streaming);
+        }
+        for message in &mut self.chat.messages {
+            if message.turn_id == Some(turn.key.turn_id) {
+                message.outcome = Some(crate::chat::TurnStatus::Streaming);
+            }
         }
     }
 

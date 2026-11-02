@@ -797,7 +797,17 @@ fn execute_effect(hwnd: HWND, effect: NativeEffect) {
         let dialogs = WinDialogs(hwnd);
         match effect {
             NativeEffect::Permission(permission) => {
-                let menu = CreatePopupMenu();
+                // Details are owned, so both nested modal loops can repaint and
+                // settle/disconnect the original turn without aliasing AppState.
+                let details: String = permission.details.chars().take(8000).collect();
+                let review = MessageBoxW(hwnd,
+                    to_wide(&format!("{}\n\n{details}\n\nReview offered permission choices? No cancels this request.", permission.title)).as_ptr(),
+                    to_wide("Tool permission required").as_ptr(), MB_YESNO | MB_ICONWARNING | 0x100) == IDYES as i32;
+                let menu = if review {
+                    CreatePopupMenu()
+                } else {
+                    std::ptr::null_mut()
+                };
                 let mut selected = None;
                 if !menu.is_null() {
                     AppendMenuW(

@@ -35,8 +35,8 @@ fn main() {
 /// On Windows this is called from platform::windows::run().
 #[cfg(windows)]
 pub fn app_entry() {
-    use crate::app::{AppState, FontsHandle};
-    use crate::platform::windows::{ffi::*, fonts::Fonts, window};
+    use crate::app::AppState;
+    use crate::platform::windows::{ffi::*, window};
     use std::ptr;
 
     unsafe {
@@ -82,8 +82,12 @@ pub fn app_entry() {
         }
         let caret_blink = GetCaretBlinkTime();
         let mut app_state = Box::new(AppState::new(caret_blink));
+        app_state.configure_agent_process = |command| {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(CREATE_NO_WINDOW);
+        };
 
-        let loaded = app_state.load_state();
+        app_state.load_state();
         if app_state.persistence_blocked {
             let error = app_state.persistence_error.clone().unwrap_or_default();
             let use_backup = MessageBoxW(ptr::null_mut(),
@@ -93,7 +97,7 @@ pub fn app_entry() {
                 app_state.load_backup();
             }
         }
-        if (!loaded && app_state.sessions.is_empty()) || app_state.sessions.is_empty() {
+        if app_state.sessions.is_empty() {
             app_state.create_local_session_default();
         }
 
@@ -113,10 +117,6 @@ pub fn app_entry() {
             );
             return;
         }
-
-        // Initialize fonts and store them in the platform-agnostic handle
-        let fonts = Fonts::new(app_state.dpi);
-        app_state.fonts = Some(FontsHandle::new(fonts));
 
         // Direct mode is the default backend; the agent is spawned lazily on
         // the first Code-mode turn (or Code session). Install the WinHTTP
@@ -140,7 +140,21 @@ pub fn app_entry() {
             pt: POINT { x: 0, y: 0 },
         };
 
-        while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
+        loop {
+            let status = GetMessageW(&mut msg, ptr::null_mut(), 0, 0);
+            if status == 0 {
+                break;
+            }
+            if status == -1 {
+                let error = std::io::Error::last_os_error();
+                MessageBoxW(
+                    hwnd,
+                    to_wide(&format!("GetMessageW: {error}")).as_ptr(),
+                    to_wide("Window message loop failed").as_ptr(),
+                    MB_OK | MB_ICONERROR,
+                );
+                break;
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
 
@@ -150,6 +164,8 @@ pub fn app_entry() {
             }
         }
 
+        // Dropping the client signals cancellation independently of its queue.
+        app_state.responses.take();
         app_state.save_all();
         if let Some(error) = &app_state.persistence_error {
             MessageBoxW(
