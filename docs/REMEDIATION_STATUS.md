@@ -65,8 +65,8 @@ The first UX batch implements the following source changes against
 | Finding | Source changes | Still open |
 | --- | --- | --- |
 | UX-01/02 | Consistent vibe-chat naming and Chat/Code labels; removed startup transcript notice; local key readiness without exposing/persisting credentials; owned setup-help dialog; useful missing-agent errors; turn-backend/phase status; title/status clipped around shared mode geometry; removed unexplained/flashing status dots. | Separate discoverable Code setup action, project/path detail, adaptive header reflow, per-turn producing-backend presentation, live first-launch/agent acceptance. |
-| UX-04 | Next draft remains editable during a turn; busy Enter preserves it; Shift+Enter inserts newline; idle Escape never clears it; busy composer no longer appears disabled. | Release-bound Send/Stop and pointer capture; full editor behavior; manual persistence/navigation/restart checks. |
-| UX-09/12 | Destructive confirmations default to No; darker orange user bubbles, readable labels/timestamps/archived text, stronger input/scroll boundaries and Stop contrast. | Pointer-release safety, consistent mouse/keyboard confirmation, reversible archive/project actions, real GDI/GDI+ visual/accessibility audit. |
+| UX-04 | Next draft remains editable during a turn; busy Enter preserves it; Shift+Enter inserts newline; idle Escape never clears it; busy composer no longer appears disabled. Send/Stop now activates only on release inside the original target, bound to the chat and exact turn/draft. Double-click cannot immediately stop a newly sent turn. | Full editor behavior; manual persistence/navigation/restart and native capture checks. |
+| UX-09/12 | Destructive confirmations default to No; mouse and keyboard session deletion share one owned confirmation effect with stable targets. Pointer commands use the same hit-test on down/release, stable chat/project/message identities, native capture and drag-out/loss/cancel handling. Darker orange user bubbles, readable labels/timestamps/archived text, stronger input/scroll boundaries and Stop contrast. | Native pointer/modal acceptance, reversible archive/project actions, row-menu/accessibility coverage, real GDI/GDI+ visual/accessibility audit. |
 | UX-10/13/15/16 | Previews ignore system/tool notices; mode-specific settings/setup, honest Follow new replies and Code safety labels; finished reasoning disclosure no longer says Thinking; setup help explains environment precedence and plaintext local retention. | Structured tool/permission cards, fuller privacy/settings discoverability, history search/Archived view, reasoning anchors and accessible controls. |
 
 Added std-only regression cases for busy Enter, busy newline, Unicode editing,
@@ -75,6 +75,22 @@ and meaningful previews. Formatting, warning-free Clippy, and Rust 1.85
 all-target compilation passed for Windows, Linux, and macOS after these changes.
 Tests have **compiled only**, not run: the MSVC linker/Windows SDK limitation above
 still applies. No native UI or live-provider acceptance was performed.
+
+A second batch moves button, sidebar, mode, transcript link/code-copy/reasoning,
+and scrollbar-click commands from pointer down to validated release. Input focus
+still follows pointer down. Session rename double-click is also release-bound;
+project double-click no longer toggles twice. A press is cancelled by observed
+drag-out, capture loss, cancellation, keyboard input, wheel input, resize/DPI
+change, navigation, or modal entry. Native capture/release is performed without
+an application borrow surviving synchronous re-entry. Transcript action rectangles
+are still paint-produced; generation-bound regions and true scrollbar dragging
+remain open. Toast hit interception also remains open.
+
+Eleven additional std-only pointer tests cover release-once semantics, drag-out
+and cancellation, owned delete intent, row-index reuse, Send/Stop transitions,
+turn identity, double-click behavior, draft/session changes, and half-open action
+rectangles. These tests compile but have not run. Formatting, warning-free Clippy
+and Rust 1.85 all-target checks passed again for Windows, Linux and macOS.
 
 The native composer/rename proposal, adaptive sidebar/settings layout, additional
 shortcuts and new accessibility modules still require explicit design approval.

@@ -6,7 +6,7 @@
 
 use crate::app::{AppState, HoverState};
 use crate::chat::Role;
-use crate::session::SessionMode;
+use crate::session::{SessionMode, TurnKey};
 use crate::theme::{
     compute_mode_radio_layout, compute_settings_layout, HINT_ROW_HEIGHT, INPUT_MARGIN,
     MESSAGE_INNER_PADDING, MESSAGE_MAX_WIDTH_RATIO, MESSAGE_PADDING, MODE_RADIO_OPTION_W,
@@ -50,14 +50,6 @@ enum SidebarHit {
     SessionItem(usize),
 }
 
-/// What a double-click on the sidebar list hit, computed inside
-/// `with_sidebar_layout` and applied afterwards.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DoubleClickHit {
-    ProjectHeader(usize),
-    SessionItem(usize),
-}
-
 /// What a mouse-move hover hit on the sidebar list, computed inside
 /// `with_sidebar_layout` and applied to `HoverState` afterwards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +61,64 @@ enum HoverHit {
     SessionArchive(usize),
     SessionDelete(usize),
     SessionItem(usize),
+}
+
+/// Stable command identity captured on pointer down, never a mutable row index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PointerAction {
+    NewChat,
+    NewProject,
+    ProjectHeader(String),
+    ProjectMenu(String),
+    SessionItem(String),
+    RenameSession(String),
+    SessionArchive(String),
+    SessionDelete(String),
+    SettingsBtn,
+    SettingsClose,
+    SettingsToggle(usize),
+    BackendSettings {
+        local_id: String,
+        mode: SessionMode,
+    },
+    Mode {
+        local_id: String,
+        mode: SessionMode,
+    },
+    Send {
+        local_id: String,
+        mode: SessionMode,
+        draft: String,
+        last_message: Option<u64>,
+    },
+    Stop(TurnKey),
+    Scrollbar(String),
+    Reasoning {
+        local_id: String,
+        message_id: u64,
+    },
+    OpenLink {
+        local_id: String,
+        url: String,
+    },
+    CopyCode {
+        local_id: String,
+        code: String,
+    },
+    Input,
+}
+
+#[derive(Debug)]
+pub struct PointerPress {
+    action: PointerAction,
+    origin: (i32, i32),
+}
+
+/// Owned platform work emitted only after a valid release.
+pub enum PointerEffect {
+    DeleteSession(String),
+    OpenLink(String),
+    CopyCode(String),
 }
 
 impl AppState {
@@ -324,60 +374,11 @@ impl AppState {
 
     // ── Click handling ───────────────────────────────────────
 
-    // Central mouse dispatch: one match arm per UI region/element.
+    // One hit-test path for both pointer down and release. No command is run here.
     #[allow(clippy::too_many_lines)]
-    pub fn handle_click(&mut self, x: i32, y: i32) -> bool {
-        if self.rename_target.is_some() {
-            let scale = self.dpi as f32 / 96.0;
-            let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
-            let is_in_sidebar = x < sidebar_w;
-            if is_in_sidebar {
-                let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
-                let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
-                let rename_target = self.rename_target;
-                let sidebar_scroll_offset = self.sidebar_scroll_offset;
-                let client_height = self.client_height;
-                let click_on_renaming =
-                    self.with_sidebar_layout(|list_top, total_list_height, entries| {
-                        let list_bottom = client_height - footer_h - pad;
-                        let avail_height = list_bottom - list_top;
-                        let max_scroll = (total_list_height - avail_height).max(0);
-                        let sidebar_scroll = sidebar_scroll_offset.min(max_scroll).max(0);
-                        entries.iter().any(|entry| match (rename_target, entry) {
-                            (
-                                Some(RenameTarget::Session(idx)),
-                                SidebarEntry::SessionItem {
-                                    session_idx,
-                                    top,
-                                    bottom,
-                                    ..
-                                },
-                            ) => {
-                                *session_idx == idx
-                                    && y >= top - sidebar_scroll
-                                    && y <= bottom - sidebar_scroll
-                            }
-                            (
-                                Some(RenameTarget::Project(pidx)),
-                                SidebarEntry::ProjectHeader {
-                                    project_idx,
-                                    top,
-                                    bottom,
-                                },
-                            ) => {
-                                *project_idx == pidx
-                                    && y >= top - sidebar_scroll
-                                    && y <= bottom - sidebar_scroll
-                            }
-                            _ => false,
-                        })
-                    });
-                if !click_on_renaming {
-                    self.cancel_rename();
-                }
-            } else {
-                self.cancel_rename();
-            }
+    pub fn pointer_action_at(&mut self, x: i32, y: i32) -> Option<PointerAction> {
+        if x < 0 || y < 0 || x >= self.client_width || y >= self.client_height {
+            return None;
         }
         let scale = self.dpi as f32 / 96.0;
         let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
@@ -394,23 +395,27 @@ impl AppState {
                 && y >= spad
                 && y <= spad + close_size
             {
-                self.show_settings = false;
-                return true;
+                return Some(PointerAction::SettingsClose);
             }
 
             if x >= panel_left {
                 let layout = compute_settings_layout(scale);
-                if y >= layout.reconnect_y && y <= layout.reconnect_y + layout.reconnect_btn_h {
-                    self.activate_backend_settings();
-                    return true;
+                if x >= panel_left + spad
+                    && x < self.client_width - spad
+                    && y >= layout.reconnect_y
+                    && y < layout.reconnect_y + layout.reconnect_btn_h
+                {
+                    return self.sessions.get(self.active_session).map(|session| {
+                        PointerAction::BackendSettings {
+                            local_id: session.local_id.clone(),
+                            mode: session.mode,
+                        }
+                    });
                 }
 
-                if let Some(idx) = self.settings_toggle_at(x, y) {
-                    self.focused_element = Some(FocusedElement::SettingsToggle(idx));
-                    self.toggle_setting(idx);
-                    return true;
-                }
-                return true;
+                return self
+                    .settings_toggle_at(x, y)
+                    .map(PointerAction::SettingsToggle);
             }
         }
 
@@ -420,10 +425,7 @@ impl AppState {
             let btn_top = pad;
             let btn_bottom = btn_top + header_h - pad * 2;
             if x >= pad && x <= sidebar_w - pad && y >= btn_top && y <= btn_bottom {
-                self.pressed_element = Some(PressedElement::NewChat);
-                self.focused_element = Some(FocusedElement::NewChat);
-                self.new_chat();
-                return true;
+                return Some(PointerAction::NewChat);
             }
 
             // Project-aware sidebar list (matches sidebar rendering)
@@ -447,7 +449,7 @@ impl AppState {
                         return Some(SidebarHit::NewProject);
                     }
                 }
-                if y < list_top || y >= list_bottom {
+                if y < list_top || y >= list_bottom || x < pad || x >= sidebar_w - pad {
                     return None;
                 }
 
@@ -463,7 +465,7 @@ impl AppState {
                             if adj_bottom <= list_top || adj_top >= list_bottom {
                                 continue;
                             }
-                            if y < adj_top || y > adj_bottom {
+                            if y < adj_top || y >= adj_bottom {
                                 continue;
                             }
                             // Menu button on the right (real projects only)
@@ -535,39 +537,30 @@ impl AppState {
                 }
                 None
             });
-            match hit {
-                Some(SidebarHit::NewProject) => {
-                    self.pressed_element = Some(PressedElement::NewProject);
-                    self.focused_element = Some(FocusedElement::NewProject);
-                    self.new_project_requested = true;
-                    return true;
-                }
-                Some(SidebarHit::ProjectMenu(pidx)) => {
-                    self.pressed_element = Some(PressedElement::ProjectMenu(pidx));
-                    self.project_menu_requested = Some(pidx);
-                    return true;
-                }
-                Some(SidebarHit::ProjectHeader(pidx)) => {
-                    self.pressed_element = Some(PressedElement::ProjectHeader(pidx));
-                    self.toggle_project(pidx);
-                    return true;
-                }
-                Some(SidebarHit::SessionArchive(sidx)) => {
-                    self.pressed_element = Some(PressedElement::SessionArchive(sidx));
-                    self.toggle_archive_session(sidx);
-                    return true;
-                }
-                Some(SidebarHit::SessionDelete(sidx)) => {
-                    self.pressed_element = Some(PressedElement::SessionDelete(sidx));
-                    self.delete_session(sidx);
-                    return true;
-                }
-                Some(SidebarHit::SessionItem(sidx)) => {
-                    self.pressed_element = Some(PressedElement::SidebarItem(sidx));
-                    self.switch_session(sidx);
-                    return true;
-                }
-                None => {}
+            if let Some(hit) = hit {
+                return match hit {
+                    SidebarHit::NewProject => Some(PointerAction::NewProject),
+                    SidebarHit::ProjectMenu(idx) => self
+                        .projects
+                        .get(idx)
+                        .map(|p| PointerAction::ProjectMenu(p.path.clone())),
+                    SidebarHit::ProjectHeader(idx) => self
+                        .projects
+                        .get(idx)
+                        .map(|p| PointerAction::ProjectHeader(p.path.clone())),
+                    SidebarHit::SessionArchive(idx) => self
+                        .sessions
+                        .get(idx)
+                        .map(|s| PointerAction::SessionArchive(s.local_id.clone())),
+                    SidebarHit::SessionDelete(idx) => self
+                        .sessions
+                        .get(idx)
+                        .map(|s| PointerAction::SessionDelete(s.local_id.clone())),
+                    SidebarHit::SessionItem(idx) => self
+                        .sessions
+                        .get(idx)
+                        .map(|s| PointerAction::SessionItem(s.local_id.clone())),
+                };
             }
 
             // Settings button
@@ -575,17 +568,13 @@ impl AppState {
             let settings_btn_bottom = self.client_height - pad / 2;
             if x >= pad && x <= sidebar_w - pad && y >= settings_btn_top && y <= settings_btn_bottom
             {
-                self.pressed_element = Some(PressedElement::SettingsBtn);
-                self.focused_element = Some(FocusedElement::SettingsBtn);
-                self.show_settings = !self.show_settings;
-                self.invalidate_sidebar_cache();
-                return true;
+                return Some(PointerAction::SettingsBtn);
             }
 
-            return true;
+            return None;
         }
 
-        // Mode radio (header): Default | Code
+        // Mode radio (header): Chat | Code
         {
             let header_h = (SESSION_HEADER_HEIGHT as f32 * scale) as i32;
             let sidebar_w_scaled = sidebar_w;
@@ -594,14 +583,22 @@ impl AppState {
             if y >= layout.top && y <= layout.top + layout.h {
                 let option_w = (MODE_RADIO_OPTION_W as f32 * scale) as i32;
                 if x >= layout.direct_left && x < layout.direct_left + option_w {
-                    self.pressed_element = Some(PressedElement::ModeRadio(SessionMode::Direct));
-                    self.set_session_mode(SessionMode::Direct);
-                    return true;
+                    return self
+                        .sessions
+                        .get(self.active_session)
+                        .map(|s| PointerAction::Mode {
+                            local_id: s.local_id.clone(),
+                            mode: SessionMode::Direct,
+                        });
                 }
                 if x >= layout.code_left && x < layout.code_left + option_w {
-                    self.pressed_element = Some(PressedElement::ModeRadio(SessionMode::Code));
-                    self.set_session_mode(SessionMode::Code);
-                    return true;
+                    return self
+                        .sessions
+                        .get(self.active_session)
+                        .map(|s| PointerAction::Mode {
+                            local_id: s.local_id.clone(),
+                            mode: SessionMode::Code,
+                        });
                 }
             }
         }
@@ -609,32 +606,36 @@ impl AppState {
         // Send/Stop button click
         if let Some((btn_left, btn_top, btn_right, btn_bottom)) = self.send_btn_rect() {
             if x >= btn_left && x <= btn_right && y >= btn_top && y <= btn_bottom {
-                if !self.sessions.is_empty() {
-                    let idx = self.active_session.min(self.sessions.len() - 1);
-                    if self.sessions[idx].chat.is_waiting_for_agent {
-                        self.pressed_element = Some(PressedElement::SendButton);
-                        self.cancel_turn();
-                    } else {
-                        let chat = &mut self.sessions[idx].chat;
-                        if !chat.input_buffer.trim().is_empty() {
-                            let text = chat.take_input();
-                            self.send_message(&text);
-                        }
-                    }
+                let session = self.sessions.get(self.active_session)?;
+                if let Some(turn) = &session.active_turn {
+                    return (!turn.cancelling).then(|| PointerAction::Stop(turn.key.clone()));
                 }
-                return true;
+                return (!session.chat.is_waiting_for_agent
+                    && !session.chat.input_buffer.trim().is_empty())
+                .then(|| PointerAction::Send {
+                    local_id: session.local_id.clone(),
+                    mode: session.mode,
+                    draft: session.chat.input_buffer.clone(),
+                    last_message: session.chat.messages.back().map(|m| m.id),
+                });
             }
         }
 
-        // Message scrollbar click/drag
-        if self.scrollbar_at(x, y) {
-            self.jump_to_scrollbar_position(x, y);
-            return true;
+        let local_id = self.sessions.get(self.active_session)?.local_id.clone();
+        if let Some(url) = self.click_link(x, y) {
+            return Some(PointerAction::OpenLink { local_id, url });
         }
-
-        // Thinking toggle clicks
-        if self.thinking_toggle_at(x, y) {
-            return true;
+        if let Some(code) = self.click_code_copy(x, y) {
+            return Some(PointerAction::CopyCode { local_id, code });
+        }
+        if self.scrollbar_at(x, y) {
+            return Some(PointerAction::Scrollbar(local_id));
+        }
+        if let Some(message_id) = self.thinking_message_at(x, y) {
+            return Some(PointerAction::Reasoning {
+                local_id,
+                message_id,
+            });
         }
 
         // Click in chat area - focus input
@@ -648,9 +649,7 @@ impl AppState {
             let idx = self
                 .active_session
                 .min(self.sessions.len().saturating_sub(1));
-            let Some(session) = self.sessions.get(idx) else {
-                return false;
-            };
+            let session = self.sessions.get(idx)?;
             let input_h = (session.chat.input_height as f32 * scale) as i32;
             let input_bottom = input_box_top + input_h;
 
@@ -660,10 +659,203 @@ impl AppState {
                 && y <= input_bottom
                 && !self.sessions.is_empty()
             {
-                self.focused_element = Some(FocusedElement::Input);
+                return Some(PointerAction::Input);
             }
         }
-        false
+        None
+    }
+
+    /// Capture intent without executing it. Text focus still follows pointer down.
+    pub fn begin_pointer_press(&mut self, x: i32, y: i32, double_click: bool) -> bool {
+        self.cancel_pointer_press();
+        let mut action = self.pointer_action_at(x, y);
+        if double_click {
+            action = match action {
+                Some(PointerAction::SessionItem(id))
+                    if self.last_pointer_session.as_ref() == Some(&id) =>
+                {
+                    Some(PointerAction::RenameSession(id))
+                }
+                _ => None, // Never turn a double Send into an immediate Stop.
+            };
+        }
+        self.last_pointer_session = None;
+        let on_rename = match (self.rename_target, &action) {
+            (Some(RenameTarget::Session(idx)), Some(PointerAction::SessionItem(id))) => {
+                self.sessions.get(idx).is_some_and(|s| &s.local_id == id)
+            }
+            (Some(RenameTarget::Project(idx)), Some(PointerAction::ProjectHeader(path))) => {
+                self.projects.get(idx).is_some_and(|p| &p.path == path)
+            }
+            _ => false,
+        };
+        if on_rename {
+            return false;
+        }
+        self.cancel_rename(); // Existing click-away policy: cancel, never silently commit.
+        let Some(action) = action else {
+            return false;
+        };
+        if action == PointerAction::Input {
+            self.focused_element = Some(FocusedElement::Input);
+            return false;
+        }
+        self.pressed_element = self.pointer_visual(&action);
+        self.pointer_press = Some(PointerPress {
+            action,
+            origin: (x, y),
+        });
+        true
+    }
+
+    pub fn cancel_pointer_press(&mut self) {
+        self.pointer_press = None;
+        self.pressed_element = None;
+    }
+
+    fn pointer_press_matches(&mut self, press: &PointerPress, x: i32, y: i32) -> bool {
+        let expected = match &press.action {
+            PointerAction::RenameSession(id) => PointerAction::SessionItem(id.clone()),
+            action => action.clone(),
+        };
+        self.pointer_action_at(press.origin.0, press.origin.1)
+            .as_ref()
+            == Some(&expected)
+            && self.pointer_action_at(x, y).as_ref() == Some(&expected)
+    }
+
+    /// Drag-out is a permanent cancellation, even if the pointer later returns.
+    pub fn update_pointer_press(&mut self, x: i32, y: i32) {
+        if let Some(press) = self.pointer_press.take() {
+            if self.pointer_press_matches(&press, x, y) {
+                self.pointer_press = Some(press);
+            } else {
+                self.pressed_element = None;
+            }
+        }
+    }
+
+    pub fn finish_pointer_press(&mut self, x: i32, y: i32) -> Option<PointerEffect> {
+        let press = self.pointer_press.take()?;
+        self.pressed_element = None;
+        if !self.pointer_press_matches(&press, x, y) {
+            return None;
+        }
+        self.activate_pointer_action(press.action, x, y)
+    }
+
+    fn pointer_visual(&self, action: &PointerAction) -> Option<PressedElement> {
+        Some(match action {
+            PointerAction::NewChat => PressedElement::NewChat,
+            PointerAction::NewProject => PressedElement::NewProject,
+            PointerAction::ProjectHeader(path) => {
+                PressedElement::ProjectHeader(self.projects.iter().position(|p| &p.path == path)?)
+            }
+            PointerAction::ProjectMenu(path) => {
+                PressedElement::ProjectMenu(self.projects.iter().position(|p| &p.path == path)?)
+            }
+            PointerAction::SessionItem(id) | PointerAction::RenameSession(id) => {
+                PressedElement::SidebarItem(self.sessions.iter().position(|s| &s.local_id == id)?)
+            }
+            PointerAction::SessionArchive(id) => PressedElement::SessionArchive(
+                self.sessions.iter().position(|s| &s.local_id == id)?,
+            ),
+            PointerAction::SessionDelete(id) => {
+                PressedElement::SessionDelete(self.sessions.iter().position(|s| &s.local_id == id)?)
+            }
+            PointerAction::SettingsBtn => PressedElement::SettingsBtn,
+            PointerAction::SettingsClose => PressedElement::SettingsClose,
+            PointerAction::SettingsToggle(idx) => PressedElement::SettingsToggle(*idx),
+            PointerAction::BackendSettings { .. } => PressedElement::Reconnect,
+            PointerAction::Mode { mode, .. } => PressedElement::ModeRadio(*mode),
+            PointerAction::Send { .. } | PointerAction::Stop(_) => PressedElement::SendButton,
+            _ => return None,
+        })
+    }
+
+    fn activate_pointer_action(
+        &mut self,
+        action: PointerAction,
+        x: i32,
+        y: i32,
+    ) -> Option<PointerEffect> {
+        match action {
+            PointerAction::NewChat => {
+                self.new_chat();
+            }
+            PointerAction::NewProject => {
+                self.focused_element = Some(FocusedElement::NewProject);
+                self.new_project_requested = true;
+            }
+            PointerAction::ProjectHeader(path) => {
+                if let Some(idx) = self.projects.iter().position(|p| p.path == path) {
+                    self.toggle_project(idx);
+                }
+            }
+            PointerAction::ProjectMenu(path) => {
+                self.project_menu_requested = self.projects.iter().position(|p| p.path == path);
+            }
+            PointerAction::SessionItem(id) => {
+                if let Some(idx) = self.sessions.iter().position(|s| s.local_id == id) {
+                    self.switch_session(idx);
+                    self.last_pointer_session = Some(id);
+                }
+            }
+            PointerAction::RenameSession(id) => {
+                if let Some(idx) = self.sessions.iter().position(|s| s.local_id == id) {
+                    self.start_rename(idx);
+                }
+            }
+            PointerAction::SessionArchive(id) => {
+                if let Some(idx) = self.sessions.iter().position(|s| s.local_id == id) {
+                    self.toggle_archive_session(idx);
+                }
+            }
+            PointerAction::SessionDelete(id) => return Some(PointerEffect::DeleteSession(id)),
+            PointerAction::SettingsBtn => {
+                self.focused_element = Some(FocusedElement::SettingsBtn);
+                self.show_settings = !self.show_settings;
+                self.invalidate_sidebar_cache();
+            }
+            PointerAction::SettingsClose => {
+                self.show_settings = false;
+            }
+            PointerAction::SettingsToggle(idx) => {
+                self.focused_element = Some(FocusedElement::SettingsToggle(idx));
+                self.toggle_setting(idx);
+            }
+            PointerAction::BackendSettings { .. } => {
+                self.activate_backend_settings();
+            }
+            PointerAction::Mode { mode, .. } => {
+                self.set_session_mode(mode);
+            }
+            PointerAction::Send { draft, .. } => {
+                if let Some(chat) = self.active_chat() {
+                    chat.take_input();
+                }
+                self.send_message(&draft);
+            }
+            PointerAction::Stop(_) => {
+                self.cancel_turn();
+            }
+            PointerAction::Scrollbar(_) => {
+                self.jump_to_scrollbar_position(x, y);
+            }
+            PointerAction::Reasoning { message_id, .. } => {
+                if let Some(chat) = self.active_chat() {
+                    if let Some(message) = chat.messages.iter_mut().find(|m| m.id == message_id) {
+                        message.thinking_collapsed = !message.thinking_collapsed;
+                    }
+                }
+                self.link_rects.clear();
+                self.code_block_rects.clear();
+            }
+            PointerAction::OpenLink { url, .. } => return Some(PointerEffect::OpenLink(url)),
+            PointerAction::CopyCode { code, .. } => return Some(PointerEffect::CopyCode(code)),
+            PointerAction::Input => {}
+        }
+        None
     }
 
     /// Check if a click landed on a link rect. Returns the URL if so.
@@ -715,81 +907,9 @@ impl AppState {
                 });
     }
 
-    /// Handle a double-click. Returns true if handled.
-    /// Double-clicking a session starts inline rename; double-clicking a
-    /// project header toggles expand/collapse.
-    pub fn handle_double_click(&mut self, x: i32, y: i32) -> bool {
-        let scale = self.dpi as f32 / 96.0;
-        let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
-        if x >= sidebar_w {
-            return false;
-        }
-
-        let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
-        let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
-        let client_height = self.client_height;
-        let sidebar_scroll_offset = self.sidebar_scroll_offset;
-        let projects_len = self.projects.len();
-        let hit = self.with_sidebar_layout(|list_top, total_list_height, entries| {
-            let list_bottom = client_height - footer_h - pad;
-            let avail_height = list_bottom - list_top;
-            let max_scroll = (total_list_height - avail_height).max(0);
-            let sidebar_scroll = sidebar_scroll_offset.min(max_scroll).max(0);
-
-            for entry in entries {
-                match *entry {
-                    SidebarEntry::ProjectHeader {
-                        project_idx,
-                        top,
-                        bottom,
-                    } => {
-                        let adj_top = top - sidebar_scroll;
-                        let adj_bottom = bottom - sidebar_scroll;
-                        if adj_bottom <= list_top || adj_top >= list_bottom {
-                            continue;
-                        }
-                        if y >= adj_top && y <= adj_bottom {
-                            return Some(DoubleClickHit::ProjectHeader(project_idx));
-                        }
-                    }
-                    SidebarEntry::SessionItem {
-                        session_idx,
-                        top,
-                        bottom,
-                        ..
-                    } => {
-                        let adj_top = top - sidebar_scroll;
-                        let adj_bottom = bottom - sidebar_scroll;
-                        if adj_bottom <= list_top || adj_top >= list_bottom {
-                            continue;
-                        }
-                        if y >= adj_top && y <= adj_bottom {
-                            return Some(DoubleClickHit::SessionItem(session_idx));
-                        }
-                    }
-                    SidebarEntry::NewProjectBtn { .. } => {}
-                }
-            }
-            None
-        });
-        match hit {
-            Some(DoubleClickHit::ProjectHeader(pidx)) => {
-                if pidx < projects_len {
-                    self.toggle_project(pidx);
-                }
-                true
-            }
-            Some(DoubleClickHit::SessionItem(sidx)) => {
-                self.start_rename(sidx);
-                true
-            }
-            None => false,
-        }
-    }
-
     // ── Hover handling ───────────────────────────────────────
 
-    // Mirrors handle_click's region layout for hover highlight state.
+    // Mirrors pointer_action_at's region layout for hover highlight state.
     #[allow(clippy::too_many_lines)]
     pub fn update_hover(&mut self, x: i32, y: i32) {
         let scale = self.dpi as f32 / 96.0;
@@ -1231,9 +1351,9 @@ impl AppState {
         None
     }
 
-    fn thinking_toggle_at(&mut self, x: i32, y: i32) -> bool {
-        if self.sessions.is_empty() {
-            return false;
+    fn thinking_message_at(&self, x: i32, y: i32) -> Option<u64> {
+        if !self.in_transcript(x, y) || self.sessions.is_empty() {
+            return None;
         }
         let scale = self.dpi as f32 / 96.0;
         let idx = self.active_session.min(self.sessions.len() - 1);
@@ -1271,13 +1391,11 @@ impl AppState {
                 let toggle_right = bubble_left + bubble_width - bubble_padding;
 
                 if x >= toggle_left && x <= toggle_right && y >= toggle_top && y <= toggle_bottom {
-                    self.sessions[idx].chat.messages[msg_idx].thinking_collapsed =
-                        !self.sessions[idx].chat.messages[msg_idx].thinking_collapsed;
-                    return true;
+                    return Some(msg.id);
                 }
             }
         }
-        false
+        None
     }
 }
 
@@ -1314,5 +1432,221 @@ pub fn session_action_rects(
 
 /// Check if point (x, y) is inside a rect (left, top, right, bottom).
 pub const fn point_in_rect(x: i32, y: i32, left: i32, top: i32, right: i32, bottom: i32) -> bool {
-    x >= left && x <= right && y >= top && y <= bottom
+    x >= left && x < right && y >= top && y < bottom
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{ActiveTurn, Session};
+
+    // In-memory only: never load/save real data or start provider/agent workers.
+    fn app() -> AppState {
+        let mut state = AppState::new(500);
+        state.sessions.push(Session::new("", "First", "."));
+        state.sessions.push(Session::new("", "Second", "."));
+        state.invalidate_sidebar_cache();
+        state
+    }
+
+    fn button_center(state: &AppState) -> (i32, i32) {
+        let (left, top, right, bottom) = state.send_btn_rect().unwrap();
+        ((left + right) / 2, (top + bottom) / 2)
+    }
+
+    fn new_project_center(state: &mut AppState) -> (i32, i32) {
+        state.with_sidebar_layout(|_, _, entries| {
+            entries
+                .iter()
+                .find_map(|entry| match entry {
+                    SidebarEntry::NewProjectBtn { top, bottom } => Some((50, (top + bottom) / 2)),
+                    _ => None,
+                })
+                .unwrap()
+        })
+    }
+
+    fn row_center(state: &mut AppState, idx: usize) -> (i32, i32) {
+        state.with_sidebar_layout(|_, _, entries| {
+            entries
+                .iter()
+                .find_map(|entry| match entry {
+                    SidebarEntry::SessionItem {
+                        session_idx,
+                        top,
+                        bottom,
+                        ..
+                    } if *session_idx == idx => Some((50, (top + bottom) / 2)),
+                    _ => None,
+                })
+                .unwrap()
+        })
+    }
+
+    fn set_turn(state: &mut AppState, turn_id: u64) {
+        let session = &mut state.sessions[state.active_session];
+        session.active_turn = Some(ActiveTurn {
+            key: TurnKey {
+                local_id: session.local_id.clone(),
+                turn_id,
+            },
+            backend: SessionMode::Direct,
+            text: "Question".into(),
+            submitted: true,
+            session_requested: false,
+            cancelling: false,
+            started: std::time::Instant::now(),
+        });
+        session.chat.is_waiting_for_agent = true;
+    }
+
+    #[test]
+    fn button_activates_once_on_release_not_down() {
+        let mut state = app();
+        let (x, y) = new_project_center(&mut state);
+        assert!(state.begin_pointer_press(x, y, false));
+        assert!(!state.new_project_requested);
+        state.finish_pointer_press(x, y);
+        assert!(state.new_project_requested);
+        state.new_project_requested = false;
+        state.finish_pointer_press(x, y);
+        assert!(!state.new_project_requested);
+    }
+
+    #[test]
+    fn drag_out_and_capture_cancellation_never_activate() {
+        let mut state = app();
+        let (x, y) = new_project_center(&mut state);
+        state.begin_pointer_press(x, y, false);
+        state.update_pointer_press(-1, y);
+        state.update_pointer_press(x, y);
+        state.finish_pointer_press(x, y);
+        assert!(!state.new_project_requested);
+        state.begin_pointer_press(x, y, false);
+        state.cancel_pointer_press();
+        state.finish_pointer_press(x, y);
+        assert!(!state.new_project_requested);
+        state.begin_pointer_press(x, y, false);
+        state.finish_pointer_press(x, -1);
+        assert!(!state.new_project_requested);
+    }
+
+    #[test]
+    fn delete_emits_confirmation_target_without_removing_chat() {
+        let mut state = app();
+        let (_, y) = row_center(&mut state, 1);
+        let (x, _, _, _) = session_action_rects(
+            SIDEBAR_PADDING,
+            SIDEBAR_WIDTH - SIDEBAR_PADDING,
+            y - SIDEBAR_ITEM_HEIGHT / 2,
+            SIDEBAR_ITEM_HEIGHT,
+            1.0,
+        )
+        .1;
+        let id = state.sessions[1].local_id.clone();
+        assert!(state.begin_pointer_press(x + 1, y, false));
+        assert_eq!(state.sessions.len(), 2);
+        assert!(
+            matches!(state.finish_pointer_press(x + 1, y), Some(PointerEffect::DeleteSession(target)) if target == id)
+        );
+        assert_eq!(state.sessions.len(), 2);
+    }
+
+    #[test]
+    fn row_index_reuse_does_not_retarget_press() {
+        let mut state = app();
+        let (x, y) = row_center(&mut state, 1);
+        state.begin_pointer_press(x, y, false);
+        // Even without layout invalidation, reordering cannot retarget a press.
+        state.sessions.swap(0, 1);
+        state.finish_pointer_press(x, y);
+        assert_eq!(state.active_session, 0);
+    }
+
+    #[test]
+    fn stop_becoming_send_does_not_submit_next_draft() {
+        let mut state = app();
+        state.sessions[0].chat.insert_str("Keep next draft");
+        set_turn(&mut state, 1);
+        let (x, y) = button_center(&state);
+        state.begin_pointer_press(x, y, false);
+        state.sessions[0].active_turn = None;
+        state.sessions[0].chat.is_waiting_for_agent = false;
+        state.finish_pointer_press(x, y);
+        assert_eq!(state.sessions[0].chat.input_buffer, "Keep next draft");
+        assert!(state.sessions[0].active_turn.is_none());
+    }
+
+    #[test]
+    fn send_becoming_stop_does_not_cancel_new_turn() {
+        let mut state = app();
+        state.sessions[0].chat.insert_str("Keep next draft");
+        let (x, y) = button_center(&state);
+        state.begin_pointer_press(x, y, false);
+        set_turn(&mut state, 1);
+        state.finish_pointer_press(x, y);
+        assert!(!state.sessions[0].active_turn.as_ref().unwrap().cancelling);
+        assert_eq!(state.sessions[0].chat.input_buffer, "Keep next draft");
+    }
+
+    #[test]
+    fn stop_press_is_bound_to_original_turn_not_just_session() {
+        let mut state = app();
+        set_turn(&mut state, 1);
+        let (x, y) = button_center(&state);
+        state.begin_pointer_press(x, y, false);
+        set_turn(&mut state, 2);
+        state.finish_pointer_press(x, y);
+        assert!(!state.sessions[0].active_turn.as_ref().unwrap().cancelling);
+    }
+
+    #[test]
+    fn double_click_cannot_turn_send_into_stop() {
+        let mut state = app();
+        set_turn(&mut state, 1);
+        let (x, y) = button_center(&state);
+        assert!(!state.begin_pointer_press(x, y, true));
+        state.finish_pointer_press(x, y);
+        assert!(!state.sessions[0].active_turn.as_ref().unwrap().cancelling);
+    }
+
+    #[test]
+    fn session_double_click_renames_only_after_release() {
+        let mut state = app();
+        let (x, y) = row_center(&mut state, 1);
+        state.begin_pointer_press(x, y, false);
+        state.finish_pointer_press(x, y);
+        assert_eq!(state.active_session, 1);
+        assert!(state.begin_pointer_press(x, y, true));
+        assert!(state.rename_target.is_none());
+        state.finish_pointer_press(x, y);
+        assert_eq!(state.rename_target, Some(RenameTarget::Session(1)));
+    }
+
+    #[test]
+    fn changed_draft_or_session_cancels_send_press() {
+        let mut state = app();
+        state.sessions[0].chat.insert_str("First draft");
+        state.sessions[1].chat.insert_str("Other draft");
+        let (x, y) = button_center(&state);
+        state.begin_pointer_press(x, y, false);
+        state.sessions[0].chat.insert_char('!');
+        state.finish_pointer_press(x, y);
+        assert_eq!(state.sessions[0].chat.input_buffer, "First draft!");
+        state.begin_pointer_press(x, y, false);
+        state.active_session = 1;
+        state.finish_pointer_press(x, y);
+        assert_eq!(state.sessions[1].chat.input_buffer, "Other draft");
+        assert!(state
+            .sessions
+            .iter()
+            .all(|session| session.active_turn.is_none()));
+    }
+
+    #[test]
+    fn rectangles_are_half_open() {
+        assert!(point_in_rect(0, 0, 0, 0, 10, 10));
+        assert!(!point_in_rect(10, 0, 0, 0, 10, 10));
+        assert!(!point_in_rect(0, 10, 0, 0, 10, 10));
+    }
 }

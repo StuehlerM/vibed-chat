@@ -120,6 +120,8 @@ pub struct AppState {
     pub caret_blink_ms: u32,
     pub hover: HoverState,
     pub pressed_element: Option<crate::ui::PressedElement>,
+    pub pointer_press: Option<crate::interaction::PointerPress>,
+    pub last_pointer_session: Option<String>,
     pub focused_element: Option<FocusedElement>,
     pub sidebar_scroll_offset: i32,
     pub streaming_dots: u8,
@@ -210,6 +212,8 @@ impl AppState {
             },
             hover: HoverState::default(),
             pressed_element: None,
+            pointer_press: None,
+            last_pointer_session: None,
             focused_element: Some(FocusedElement::Input),
             sidebar_scroll_offset: 0,
             streaming_dots: 0,
@@ -254,6 +258,8 @@ impl AppState {
     /// Invalidate the cached sidebar layout. Call after any change that can
     /// affect the sidebar's structure or geometry.
     pub fn invalidate_sidebar_cache(&mut self) {
+        self.cancel_pointer_press();
+        self.last_pointer_session = None;
         self.link_rects.clear();
         self.code_block_rects.clear();
         self.sidebar_version = self.sidebar_version.wrapping_add(1);
@@ -417,6 +423,8 @@ impl AppState {
 
     pub fn switch_session(&mut self, idx: usize) {
         if idx < self.sessions.len() {
+            self.cancel_pointer_press();
+            self.last_pointer_session = None;
             self.active_session = idx;
             self.cancel_rename();
             self.link_rects.clear();

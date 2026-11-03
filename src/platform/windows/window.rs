@@ -35,7 +35,7 @@ pub unsafe extern "system" fn wnd_proc(
         && (*pointer).modal_active
         && matches!(
             msg,
-            WM_KEYDOWN | WM_CHAR | WM_UNICHAR | WM_LBUTTONDOWN | WM_LBUTTONDBLCLK
+            WM_KEYDOWN | WM_CHAR | WM_UNICHAR | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_LBUTTONDBLCLK
         )
     {
         return 0;
@@ -64,6 +64,7 @@ pub unsafe extern "system" fn wnd_proc(
             return 0;
         }
         WM_DPICHANGED => {
+            cancel_pointer_capture(hwnd);
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
                 let new_dpi = (wparam & 0xFFFF) as u32;
@@ -89,6 +90,7 @@ pub unsafe extern "system" fn wnd_proc(
             return 0;
         }
         WM_SIZE => {
+            cancel_pointer_capture(hwnd);
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
                 (*app_state).window_minimized = wparam == SIZE_MINIMIZED;
@@ -224,6 +226,7 @@ pub unsafe extern "system" fn wnd_proc(
             return 1;
         }
         WM_KEYDOWN => {
+            cancel_pointer_capture(hwnd);
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
                 let state = &mut *app_state;
@@ -311,11 +314,11 @@ pub unsafe extern "system" fn wnd_proc(
                 {
                     if !state.sessions.is_empty() {
                         let idx = state.active_session.min(state.sessions.len() - 1);
-                        let effect = NativeEffect::ConfirmDelete {
-                            local_id: state.sessions[idx].local_id.clone(),
-                            name: state.sessions[idx].name.clone(),
-                        };
-                        execute_effect(hwnd, effect);
+                        if let Some(effect) =
+                            delete_session_effect(state, &state.sessions[idx].local_id)
+                        {
+                            execute_effect(hwnd, effect);
+                        }
                     }
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                     return 0;
@@ -419,6 +422,9 @@ pub unsafe extern "system" fn wnd_proc(
             return 0;
         }
         WM_SETFOCUS | WM_KILLFOCUS => {
+            if msg == WM_KILLFOCUS {
+                cancel_pointer_capture(hwnd);
+            }
             let pointer = get_app_state(hwnd);
             if !pointer.is_null() {
                 (*pointer).window_focused = msg == WM_SETFOCUS;
@@ -471,47 +477,64 @@ pub unsafe extern "system" fn wnd_proc(
             }
             return if msg == WM_UNICHAR { 1 } else { 0 };
         }
-        WM_LBUTTONDOWN => {
-            let app_state = get_app_state(hwnd);
-            if !app_state.is_null() {
-                let state = &mut *app_state;
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
+            cancel_pointer_capture(hwnd);
+            let pointer = get_app_state(hwnd);
+            if !pointer.is_null() {
                 let x = (lparam & 0xFFFF) as i16 as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-                let effect = if let Some(url) = state.click_link(x, y) {
-                    Some(NativeEffect::OpenLink(url))
-                } else if let Some(code) = state.click_code_copy(x, y) {
-                    Some(NativeEffect::CopyCode(code))
-                } else {
-                    state.handle_click(x, y);
-                    take_requested_effect(state)
-                };
-                // All application borrows end before a native modal call.
-                if let Some(effect) = effect {
-                    execute_effect(hwnd, effect);
+                let capture = (*pointer).begin_pointer_press(x, y, msg == WM_LBUTTONDBLCLK);
+                // SetCapture can dispatch messages. No application borrow crosses it.
+                if capture {
+                    SetCapture(hwnd);
+                    if GetCapture() != hwnd {
+                        let pointer = get_app_state(hwnd);
+                        if !pointer.is_null() {
+                            (*pointer).cancel_pointer_press();
+                        }
+                    }
                 }
-
-                InvalidateRect(hwnd, std::ptr::null(), 0);
-            }
-            return 0;
-        }
-        WM_LBUTTONDBLCLK => {
-            let app_state = get_app_state(hwnd);
-            if !app_state.is_null() {
-                let state = &mut *app_state;
-                let x = (lparam & 0xFFFF) as i16 as i32;
-                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-                state.handle_double_click(x, y);
                 InvalidateRect(hwnd, std::ptr::null(), 0);
             }
             return 0;
         }
         WM_LBUTTONUP => {
-            let app_state = get_app_state(hwnd);
-            if !app_state.is_null() {
-                let state = &mut *app_state;
-                state.pressed_element = None;
-                InvalidateRect(hwnd, std::ptr::null(), 0);
+            let pointer = get_app_state(hwnd);
+            let effect = if !pointer.is_null() && GetCapture() == hwnd {
+                let x = (lparam & 0xFFFF) as i16 as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
+                let state = &mut *pointer;
+                let effect = state.finish_pointer_press(x, y).and_then(|effect| {
+                    use crate::interaction::PointerEffect;
+                    match effect {
+                        PointerEffect::DeleteSession(id) => delete_session_effect(state, &id),
+                        PointerEffect::OpenLink(url) => Some(NativeEffect::OpenLink(url)),
+                        PointerEffect::CopyCode(code) => Some(NativeEffect::CopyCode(code)),
+                    }
+                });
+                effect.or_else(|| take_requested_effect(state))
+            } else {
+                None
+            };
+            // ReleaseCapture may re-enter WndProc; intent/effects are owned here.
+            cancel_pointer_capture(hwnd);
+            if let Some(effect) = effect {
+                execute_effect(hwnd, effect);
             }
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+            return 0;
+        }
+        WM_CAPTURECHANGED => {
+            let pointer = get_app_state(hwnd);
+            if !pointer.is_null() {
+                (*pointer).cancel_pointer_press();
+            }
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+            return 0;
+        }
+        WM_CANCELMODE => {
+            cancel_pointer_capture(hwnd);
+            InvalidateRect(hwnd, std::ptr::null(), 0);
             return 0;
         }
         WM_MOUSEMOVE => {
@@ -531,9 +554,11 @@ pub unsafe extern "system" fn wnd_proc(
                 TrackMouseEvent(&mut tme);
 
                 let old_hover = state.hover.clone();
+                let old_pressed = state.pressed_element;
+                state.update_pointer_press(x, y);
                 state.update_hover(x, y);
                 state.update_link_hover(x, y);
-                if state.hover != old_hover {
+                if state.hover != old_hover || state.pressed_element != old_pressed {
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                 }
             }
@@ -543,12 +568,14 @@ pub unsafe extern "system" fn wnd_proc(
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
                 let state = &mut *app_state;
+                state.cancel_pointer_press();
                 state.clear_hover();
                 InvalidateRect(hwnd, std::ptr::null(), 0);
             }
             return 0;
         }
         WM_MOUSEWHEEL => {
+            cancel_pointer_capture(hwnd);
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
                 let delta = ((wparam >> 16) as i16) as i32;
@@ -682,6 +709,7 @@ pub unsafe extern "system" fn wnd_proc(
             return 1;
         }
         WM_CLOSE => {
+            cancel_pointer_capture(hwnd);
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
                 (*app_state).should_quit = true;
@@ -705,6 +733,32 @@ pub unsafe extern "system" fn wnd_proc(
 }
 
 // ── Helpers ──────────────────────────────────────────────────
+
+/// Cancel state before releasing native capture, which may synchronously re-enter.
+fn cancel_pointer_capture(hwnd: HWND) {
+    // SAFETY: this helper runs on the owning UI thread. No AppState reference
+    // survives ReleaseCapture, and state is always resolved from the live HWND.
+    unsafe {
+        let pointer = get_app_state(hwnd);
+        if !pointer.is_null() {
+            (*pointer).cancel_pointer_press();
+        }
+        if GetCapture() == hwnd {
+            ReleaseCapture();
+        }
+    }
+}
+
+fn delete_session_effect(state: &AppState, local_id: &str) -> Option<NativeEffect> {
+    state
+        .sessions
+        .iter()
+        .find(|session| session.local_id == local_id)
+        .map(|session| NativeEffect::ConfirmDelete {
+            local_id: session.local_id.clone(),
+            name: session.name.clone(),
+        })
+}
 
 struct WindowPaint {
     hwnd: HWND,
@@ -808,6 +862,7 @@ fn execute_effect(hwnd: HWND, effect: NativeEffect) {
     // SAFETY: UI-thread-only pointer is resolved anew after every modal call.
     // The boxed application outlives window destruction and nested dispatch.
     unsafe {
+        cancel_pointer_capture(hwnd);
         let pointer = get_app_state(hwnd);
         if pointer.is_null() || (*pointer).modal_active {
             return;
