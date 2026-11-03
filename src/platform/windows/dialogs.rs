@@ -44,7 +44,7 @@ impl Dialogs for WinDialogs {
                 self.0,
                 to_wide(message).as_ptr(),
                 to_wide(title).as_ptr(),
-                MB_YESNO | MB_ICONWARNING,
+                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
             ) == IDYES as i32
         }
     }

@@ -39,8 +39,6 @@ pub enum InputResult {
     None,
     /// A message was submitted (Enter pressed with non-empty input)
     Submit(String),
-    /// Input was cleared (Escape pressed)
-    Cleared,
     /// Request to cancel the current agent turn
     Cancel,
     /// Need to repaint
@@ -56,15 +54,18 @@ pub fn handle_key(chat: &mut ChatState, key: Key, mods: Modifiers) -> InputResul
     );
     let result = match key {
         Key::Return => {
-            if !mods.shift && !chat.input_buffer.trim().is_empty() && !chat.is_waiting_for_agent {
+            if chat.is_waiting_for_agent && !mods.shift {
+                return InputResult::None;
+            }
+            if !mods.shift && chat.input_buffer.trim().is_empty() {
+                return InputResult::None;
+            }
+            if !mods.shift {
                 let text = chat.take_input();
                 return InputResult::Submit(text);
             }
-            if !chat.is_waiting_for_agent {
-                chat.insert_char('\n');
-                return InputResult::Repaint;
-            }
-            InputResult::None
+            chat.insert_char('\n');
+            InputResult::Repaint
         }
         Key::Backspace => {
             chat.backspace();
@@ -130,8 +131,7 @@ pub fn handle_key(chat: &mut ChatState, key: Key, mods: Modifiers) -> InputResul
             if chat.is_waiting_for_agent {
                 InputResult::Cancel
             } else {
-                chat.clear_input();
-                InputResult::Cleared
+                InputResult::None
             }
         }
         Key::Char(b'A') if mods.ctrl => {
@@ -151,9 +151,6 @@ pub fn handle_key(chat: &mut ChatState, key: Key, mods: Modifiers) -> InputResul
 
 /// Handle a Unicode character input.
 pub fn handle_char_input(chat: &mut ChatState, c: char) -> InputResult {
-    if chat.is_waiting_for_agent {
-        return InputResult::None;
-    }
     if !c.is_control() {
         chat.insert_char(c);
         return InputResult::Repaint;
@@ -188,5 +185,103 @@ pub fn paste_from_clipboard(
         if !normalized.is_empty() {
             chat.insert_str(&normalized);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn draft(text: &str, busy: bool) -> ChatState {
+        let mut chat = ChatState::new();
+        chat.insert_str(text);
+        chat.is_waiting_for_agent = busy;
+        chat
+    }
+
+    #[test]
+    fn busy_enter_preserves_draft_cursor_and_selection() {
+        let mut chat = draft("next 🙂 question", true);
+        chat.cursor_pos = "next 🙂".len();
+        chat.selection_start = Some(0);
+        assert!(matches!(
+            handle_key(&mut chat, Key::Return, Modifiers::default()),
+            InputResult::None
+        ));
+        assert_eq!(chat.input_buffer, "next 🙂 question");
+        assert_eq!(chat.cursor_pos, "next 🙂".len());
+        assert_eq!(chat.selection_start, Some(0));
+    }
+
+    #[test]
+    fn busy_shift_enter_inserts_newline_at_caret() {
+        let mut chat = draft("a🙂b", true);
+        chat.cursor_pos = "a🙂".len();
+        assert!(matches!(
+            handle_key(
+                &mut chat,
+                Key::Return,
+                Modifiers {
+                    shift: true,
+                    ctrl: false
+                }
+            ),
+            InputResult::Repaint
+        ));
+        assert_eq!(chat.input_buffer, "a🙂\nb");
+        assert_eq!(chat.cursor_pos, "a🙂\n".len());
+    }
+
+    #[test]
+    fn busy_unicode_typing_and_editing_remain_available() {
+        let mut chat = draft("next ", true);
+        assert!(matches!(
+            handle_char_input(&mut chat, '🙂'),
+            InputResult::Repaint
+        ));
+        assert_eq!(chat.input_buffer, "next 🙂");
+        handle_key(&mut chat, Key::Backspace, Modifiers::default());
+        assert_eq!(chat.input_buffer, "next ");
+        assert!(chat.is_waiting_for_agent);
+    }
+
+    #[test]
+    fn escape_never_erases_draft_or_selection() {
+        for busy in [false, true] {
+            let mut chat = draft("keep me", busy);
+            chat.select_all();
+            let result = handle_key(&mut chat, Key::Escape, Modifiers::default());
+            assert!(if busy {
+                matches!(result, InputResult::Cancel)
+            } else {
+                matches!(result, InputResult::None)
+            });
+            assert_eq!(chat.input_buffer, "keep me");
+            assert_eq!(chat.selection_range(), Some((0, 7)));
+        }
+    }
+
+    #[test]
+    fn idle_enter_takes_nonempty_draft_only_once() {
+        let mut chat = draft("question", false);
+        assert!(matches!(
+            handle_key(&mut chat, Key::Return, Modifiers::default()),
+            InputResult::Submit(text) if text == "question"
+        ));
+        assert!(chat.input_buffer.is_empty());
+        assert!(matches!(
+            handle_key(&mut chat, Key::Return, Modifiers::default()),
+            InputResult::None
+        ));
+    }
+
+    #[test]
+    fn empty_enter_does_not_change_whitespace_draft() {
+        let mut chat = draft(" \n\t", false);
+        assert!(matches!(
+            handle_key(&mut chat, Key::Return, Modifiers::default()),
+            InputResult::None
+        ));
+        assert_eq!(chat.input_buffer, " \n\t");
     }
 }

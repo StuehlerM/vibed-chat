@@ -46,7 +46,7 @@ pub fn draw_empty_state(
         // Title - larger
         let old_font = SelectObject(hdc, ctx.fonts.title as HGDIOBJ);
         SetTextColor(hdc, TEXT_PRIMARY);
-        let title = to_wide("ACP Chat");
+        let title = to_wide("vibe-chat");
         let mut title_rect = RECT {
             left: chat_left,
             top: center_y - (32.0 * scale) as i32,
@@ -65,24 +65,41 @@ pub fn draw_empty_state(
         // Subtitle
         let old_font = SelectObject(hdc, ctx.fonts.sidebar as HGDIOBJ);
         SetTextColor(hdc, EMPTY_STATE_SUB);
-        let sub = to_wide("Start a conversation with your agent");
+        let mode = ctx
+            .app
+            .sessions
+            .get(ctx.app.active_session)
+            .map(|session| session.mode)
+            .unwrap_or(crate::session::SessionMode::Direct);
+        let sub = to_wide(match mode {
+            crate::session::SessionMode::Code => {
+                "Work with an agent in a project folder. Requires vibe-acp on PATH."
+            }
+            crate::session::SessionMode::Direct if ctx.app.chat_key_configured => {
+                "Chat with Mistral. API key configured locally; send a question to begin."
+            }
+            crate::session::SessionMode::Direct => {
+                "Chat with Mistral. Requires an API key. Open Settings, then Chat setup."
+            }
+        });
         let mut sub_rect = RECT {
-            left: chat_left,
+            left: chat_left + (SPACE_3 as f32 * scale) as i32,
             top: center_y + (4.0 * scale) as i32,
-            right: chat_right,
-            bottom: center_y + (28.0 * scale) as i32,
+            right: chat_right - (SPACE_3 as f32 * scale) as i32,
+            bottom: center_y + (40.0 * scale) as i32,
         };
         DrawTextW(
             hdc,
             sub.as_ptr(),
             sub.len() as i32 - 1,
             &mut sub_rect as LPRECT,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
+            DT_CENTER | DT_WORDBREAK | DT_NOPREFIX,
         );
         SelectObject(hdc, old_font as HGDIOBJ);
 
         // Keyboard shortcut cards
-        let card_w = (220.0 * scale) as i32;
+        let card_w = ((220.0 * scale) as i32)
+            .min(((chat_right - chat_left - (36.0 * scale) as i32) / 2).max(0));
         let card_h = (36.0 * scale) as i32;
         let card_gap = (SPACE_3 as f32 * scale) as i32;
         let total_w = card_w * 2 + card_gap;
@@ -168,7 +185,7 @@ fn draw_shortcut_card(
             key_wide.as_ptr(),
             key_wide.len() as i32 - 1,
             &mut key_rect as LPRECT,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
 
         // Description
@@ -185,7 +202,7 @@ fn draw_shortcut_card(
             desc_wide.as_ptr(),
             desc_wide.len() as i32 - 1,
             &mut desc_rect as LPRECT,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
         SelectObject(hdc, old_font as HGDIOBJ);
     }

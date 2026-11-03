@@ -91,7 +91,7 @@ pub const LINE_HEIGHT_RATIO: f32 = 1.55;
 //   ACCENT_HOVER    lighter orange for hover/focus
 //   ACCENT_PRESSED  #FA500F - red-orange for pressed
 //   ACCENT_DIM      dimmed orange (streaming dot off, etc.)
-//   ACCENT_DEEP     #FA500F - user bubble (vivid red-orange)
+//   ACCENT_DEEP     #A23B0C - darker warm user bubble
 //
 // Text scale:
 //   TEXT_PRIMARY    #FFFAEB - warm cream (off-white)
@@ -121,7 +121,7 @@ pub const ACCENT: u32 = GRADIENT_ORANGE; // #FF8205
 pub const ACCENT_HOVER: u32 = rgb(255, 155, 40); // lighter orange
 pub const ACCENT_PRESSED: u32 = GRADIENT_RED_ORANGE; // #FA500F
 pub const ACCENT_DIM: u32 = rgb(180, 90, 30); // dimmed orange
-pub const ACCENT_DEEP: u32 = GRADIENT_RED_ORANGE; // #FA500F - user bubble
+pub const ACCENT_DEEP: u32 = rgb(162, 59, 12); // #A23B0C - readable cream pairing
 
 // ── Core text tokens (warm cream + grays) ────────────────────
 pub const TEXT_PRIMARY: u32 = CREAM; // #FFFAEB
@@ -153,7 +153,7 @@ pub const SIDEBAR_ITEM_ACTIVE_BG: u32 = rgb(52, 40, 24); // warm orange-tinted a
 pub const SIDEBAR_ITEM_ACTIVE_BAR: u32 = ACCENT;
 pub const SIDEBAR_ITEM_ACTIVE_TEXT: u32 = TEXT_PRIMARY;
 pub const SIDEBAR_PREVIEW_TEXT: u32 = TEXT_TERTIARY;
-pub const SIDEBAR_TIMESTAMP: u32 = rgb(130, 120, 108);
+pub const SIDEBAR_TIMESTAMP: u32 = rgb(160, 148, 134);
 pub const SIDEBAR_GROUP_TEXT: u32 = TEXT_TERTIARY;
 pub const SIDEBAR_GROUP_DIVIDER: u32 = BORDER_SUBTLE;
 
@@ -176,9 +176,9 @@ pub const SEND_BTN_DISABLED: u32 = SURFACE_4;
 pub const SEND_BTN_ICON: u32 = TEXT_ON_ACCENT;
 
 // ── Stop button (shown when agent is streaming) ──
-pub const STOP_BTN_BG: u32 = ERROR_COLOR;
-pub const STOP_BTN_HOVER: u32 = rgb(240, 100, 90);
-pub const STOP_BTN_PRESSED: u32 = rgb(180, 60, 50);
+pub const STOP_BTN_BG: u32 = rgb(160, 45, 40);
+pub const STOP_BTN_HOVER: u32 = rgb(180, 55, 45);
+pub const STOP_BTN_PRESSED: u32 = rgb(130, 35, 30);
 pub const STOP_BTN_ICON: u32 = CREAM;
 
 // ── Settings button (sidebar footer) ─────────────────────────
@@ -203,7 +203,7 @@ pub const KNOB_OFF: u32 = TEXT_SECONDARY;
 
 // ── Input box ────────────────────────────────────────────────
 pub const INPUT_BG_COLOR: u32 = SURFACE_2;
-pub const INPUT_BORDER_COLOR: u32 = BORDER_DEFAULT;
+pub const INPUT_BORDER_COLOR: u32 = rgb(134, 122, 110);
 pub const INPUT_FOCUS_BORDER: u32 = ACCENT_HOVER;
 pub const INPUT_TEXT_COLOR: u32 = TEXT_PRIMARY;
 pub const INPUT_PLACEHOLDER: u32 = TEXT_TERTIARY;
@@ -211,10 +211,10 @@ pub const INPUT_HINT_TEXT: u32 = TEXT_TERTIARY;
 pub const BORDER_DISABLED: u32 = rgb(52, 48, 43);
 
 // ── Message bubbles ──────────────────────────────────────────
-pub const USER_BUBBLE_BG: u32 = ACCENT_DEEP; // #FA500F - vivid red-orange
+pub const USER_BUBBLE_BG: u32 = ACCENT_DEEP; // #A23B0C - restrained warm orange
 pub const USER_BUBBLE_TEXT: u32 = CREAM; // cream on orange
 pub const AGENT_BUBBLE_BG: u32 = rgb(42, 39, 35); // warm surface 2 variant
-pub const LABEL_USER: u32 = rgb(255, 175, 100); // warm peachy label on user bubble
+pub const LABEL_USER: u32 = rgb(255, 220, 190); // readable peach on the darker user bubble
 pub const LABEL_AGENT: u32 = TEXT_SECONDARY;
 pub const SYSTEM_TEXT_COLOR: u32 = TEXT_SECONDARY;
 
@@ -234,8 +234,8 @@ pub const SELECTION_COLOR: u32 = rgb(140, 80, 30);
 
 // ── Scrollbar ────────────────────────────────────────────────
 pub const SCROLLBAR_TRACK: u32 = SURFACE_1;
-pub const SCROLLBAR_THUMB: u32 = rgb(70, 64, 58);
-pub const SCROLLBAR_THUMB_HOVER: u32 = rgb(90, 82, 74);
+pub const SCROLLBAR_THUMB: u32 = rgb(134, 122, 110);
+pub const SCROLLBAR_THUMB_HOVER: u32 = rgb(160, 148, 134);
 
 // ── Empty state ──────────────────────────────────────────────
 pub const EMPTY_STATE_TITLE: u32 = TEXT_SECONDARY;
@@ -387,13 +387,13 @@ pub const WORKING_DIR_TEXT: u32 = TEXT_TERTIARY;
 // ── Session action buttons (archive / delete) ────────────────
 pub const SESSION_ACTION_BTN_SIZE: i32 = 20;
 pub const SESSION_ACTION_BTN_GAP: i32 = 4;
-pub const SESSION_ARCHIVED_TEXT: u32 = TEXT_DISABLED;
+pub const SESSION_ARCHIVED_TEXT: u32 = TEXT_SECONDARY;
 pub const SESSION_ARCHIVED_BG: u32 = rgb(28, 26, 23);
 pub const SESSION_ACTION_ARCHIVE: u32 = TEXT_TERTIARY;
 pub const SESSION_ACTION_ARCHIVE_HOVER: u32 = ACCENT_HOVER;
 pub const SESSION_ACTION_DELETE: u32 = TEXT_TERTIARY;
 pub const SESSION_ACTION_DELETE_HOVER: u32 = ERROR_COLOR;
-pub const SESSION_ARCHIVED_LABEL: u32 = TEXT_DISABLED;
+pub const SESSION_ARCHIVED_LABEL: u32 = TEXT_SECONDARY;
 
 // ── Mode radio layout (header) ───────────────────────────────────────────
 //

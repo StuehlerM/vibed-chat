@@ -180,7 +180,7 @@ impl AppState {
             }
             Some(FocusedElement::Reconnect) => {
                 self.pressed_element = Some(PressedElement::Reconnect);
-                self.connect_acp();
+                self.activate_backend_settings();
                 true
             }
             Some(FocusedElement::SendButton) => {
@@ -401,7 +401,7 @@ impl AppState {
             if x >= panel_left {
                 let layout = compute_settings_layout(scale);
                 if y >= layout.reconnect_y && y <= layout.reconnect_y + layout.reconnect_btn_h {
-                    self.connect_acp();
+                    self.activate_backend_settings();
                     return true;
                 }
 

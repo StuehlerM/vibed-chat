@@ -207,6 +207,7 @@ pub const MB_OK: UINT = 0x0000_0000;
 pub const MB_ICONERROR: UINT = 0x0000_0010;
 pub const MB_ICONWARNING: UINT = 0x0000_0030;
 pub const MB_YESNO: UINT = 0x0000_0004;
+pub const MB_DEFBUTTON2: UINT = 0x0000_0100;
 pub const IDYES: UINT = 6;
 pub const IDNO: UINT = 7;
 pub const MB_ICONINFORMATION: UINT = 0x0000_0040;

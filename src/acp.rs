@@ -119,7 +119,9 @@ impl AcpClient {
         configure(&mut command); // OS process setup belongs to the backend.
         let mut child = command
             .spawn()
-            .map_err(|e| format!("Spawn {program}: {e}"))?;
+            .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
+                format!("{program} was not found. Install the agent, add its executable to PATH, and restart vibe-chat. Your question has been kept for retry.")
+            } else { format!("Could not start {program}: {e}") })?;
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();
             let _ = child.wait();

@@ -111,13 +111,13 @@ pub fn draw_input_box(
 
     let idx = active_session.min(sessions.len().saturating_sub(1));
     let chat = &mut sessions[idx].chat;
-    let is_disabled = chat.is_waiting_for_agent;
+    let is_waiting = chat.is_waiting_for_agent;
     let is_focused = focused_element == Some(FocusedElement::Input);
 
     let send_btn_size = (SEND_BTN_SIZE as f32 * scale) as i32;
     let send_btn_margin = (SEND_BTN_MARGIN as f32 * scale) as i32;
     let has_text = !chat.input_buffer.trim().is_empty();
-    let send_enabled = has_text && !is_disabled;
+    let send_enabled = has_text && !is_waiting;
 
     unsafe {
         let input_left = chat_left + input_margin;
@@ -131,11 +131,7 @@ pub fn draw_input_box(
         };
 
         // Input background
-        let bg_color = if is_disabled {
-            DISABLED_BG
-        } else {
-            INPUT_BG_COLOR
-        };
+        let bg_color = INPUT_BG_COLOR;
         let bg_brush = CreateSolidBrush(bg_color);
         FillRect(hdc, &input_rect, bg_brush);
         DeleteObject(bg_brush as HGDIOBJ);
@@ -143,8 +139,6 @@ pub fn draw_input_box(
         // Border
         let border_color = if is_focused {
             INPUT_FOCUS_BORDER
-        } else if is_disabled {
-            BORDER_DISABLED
         } else {
             INPUT_BORDER_COLOR
         };
@@ -185,7 +179,7 @@ pub fn draw_input_box(
             hover_send_btn,
             pressed_element,
             focused_element == Some(FocusedElement::SendButton),
-            is_disabled,
+            is_waiting,
             scale,
         );
 
@@ -198,11 +192,7 @@ pub fn draw_input_box(
         let text_width = text_right - text_left;
 
         let old_font = SelectObject(hdc, fonts.normal as HGDIOBJ);
-        let text_color = if is_disabled {
-            DISABLED_TEXT
-        } else {
-            INPUT_TEXT_COLOR
-        };
+        let text_color = INPUT_TEXT_COLOR;
         SetTextColor(hdc, text_color);
 
         let mut tm = TEXTMETRICW {
@@ -434,7 +424,7 @@ pub fn draw_input_box(
         if chat.input_buffer.is_empty() && !is_focused {
             SetTextColor(hdc, INPUT_PLACEHOLDER);
             let placeholder = if chat.is_waiting_for_agent {
-                to_wide("Waiting for response... (Esc to cancel)")
+                to_wide("Compose your next message...")
             } else {
                 to_wide("Type a message... (Shift+Enter for new line)")
             };
@@ -593,7 +583,7 @@ pub fn draw_hint_row(
         let is_waiting = ctx.app.sessions[idx].chat.is_waiting_for_agent;
 
         let hint_text = if is_waiting {
-            "Esc to cancel"
+            "Draft stays editable · Shift+Enter: newline · Esc: stop response"
         } else {
             "Enter to send \u{00B7} Shift+Enter for newline"
         };

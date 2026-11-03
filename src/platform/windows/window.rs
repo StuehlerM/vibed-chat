@@ -11,7 +11,7 @@ use crate::platform::windows::{clipboard::WinClipboard, dialogs::WinDialogs};
 use crate::theme::*;
 
 pub const WINDOW_CLASS_NAME: &str = "AcpChatWindow";
-pub const WINDOW_TITLE: &str = "ACP Chat";
+pub const WINDOW_TITLE: &str = "vibe-chat";
 pub const TIMER_ID_REPAINT: UINT_PTR = 1;
 pub const TIMER_INTERVAL_MS: UINT = 16; // ~60fps
 
@@ -410,7 +410,6 @@ pub unsafe extern "system" fn wnd_proc(
                         InputResult::Cancel => {
                             state.cancel_turn();
                         }
-                        InputResult::Cleared => {}
                         InputResult::Repaint => {}
                         InputResult::None => {}
                     }
@@ -769,6 +768,10 @@ enum NativeEffect {
     },
     OpenLink(String),
     CopyCode(String),
+    SetupHelp {
+        mode: crate::session::SessionMode,
+        storage: String,
+    },
     ModeChange {
         local_id: String,
         mode: crate::session::SessionMode,
@@ -777,6 +780,12 @@ enum NativeEffect {
 }
 
 fn take_requested_effect(state: &mut AppState) -> Option<NativeEffect> {
+    if let Some(mode) = state.setup_help_requested.take() {
+        return Some(NativeEffect::SetupHelp {
+            mode,
+            storage: state.config_dir.clone(),
+        });
+    }
     if let Some((local_id, mode)) = state.mode_change_requested.take() {
         return Some(NativeEffect::ModeChange { local_id, mode });
     }
@@ -806,6 +815,20 @@ fn execute_effect(hwnd: HWND, effect: NativeEffect) {
         (*pointer).modal_active = true;
         let dialogs = WinDialogs(hwnd);
         match effect {
+            NativeEffect::SetupHelp { mode, storage } => {
+                let title = if mode == crate::session::SessionMode::Direct {
+                    "Set up Chat"
+                } else {
+                    "Set up Code"
+                };
+                let help = format!("Chat: chat with Mistral using the Responses API. No project or agent is required.\n\nSet API_KEY in the environment before launching vibe-chat. MISTRAL_API_KEY is used only when API_KEY is absent or blank. Restart the app after changing environment variables. The app reports local key presence, not provider verification. Never paste the key into a conversation.\n\nCode: install vibe-acp, put its executable on PATH, and restart vibe-chat. The agent inherits your environment; use the credentials its documentation requires. Tool permissions are always requested explicitly.\n\nFollow new replies applies only while you are at the bottom. Escape never clears a draft.\n\nPrivacy: histories, drafts, reasoning and tool output are unencrypted JSON in:\n{storage}\nProtect this directory and keep secrets out of prompts/tool output. Chat sends user/assistant history to api.mistral.ai; tool/system text and displayed reasoning are excluded.");
+                MessageBoxW(
+                    hwnd,
+                    to_wide(&help).as_ptr(),
+                    to_wide(title).as_ptr(),
+                    MB_OK | MB_ICONINFORMATION,
+                );
+            }
             NativeEffect::ModeChange { local_id, mode } => {
                 let policy = match mode {
                     crate::session::SessionMode::Direct => "Direct uploads this chat's user and assistant text to api.mistral.ai, including earlier Code assistant text. Tool/system activity and displayed thinking are excluded. No tool summary is supplied.",

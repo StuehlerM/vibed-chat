@@ -102,6 +102,7 @@ pub struct AppState {
     pub acp: Option<AcpClient>,
     pub acp_connected: bool,
     pub acp_connecting: bool,
+    pub chat_key_configured: bool,
     pub configure_agent_process: fn(&mut std::process::Command),
     pub pending_permissions: std::collections::VecDeque<PendingPermission>,
     /// Direct-mode (Responses API) client. Created once on first use.
@@ -166,6 +167,7 @@ pub struct AppState {
     /// the platform backend shows the project context menu.
     pub project_menu_requested: Option<usize>,
     pub mode_change_requested: Option<(String, SessionMode)>,
+    pub setup_help_requested: Option<SessionMode>,
     /// Cache of the last computed sidebar layout plus the structure version it
     /// was computed at. Invalidated (version mismatch) on any structural change.
     pub sidebar_cache: SidebarLayoutCache,
@@ -190,6 +192,7 @@ impl AppState {
             acp: None,
             acp_connected: false,
             acp_connecting: false,
+            chat_key_configured: crate::responses::credentials_configured(),
             configure_agent_process: |_| {},
             pending_permissions: std::collections::VecDeque::new(),
             responses: None,
@@ -242,6 +245,7 @@ impl AppState {
             last_checkpoint: std::time::Instant::now(),
             project_menu_requested: None,
             mode_change_requested: None,
+            setup_help_requested: None,
             sidebar_cache: SidebarLayoutCache::default(),
             sidebar_version: 0,
         }
@@ -1150,6 +1154,62 @@ impl AppState {
                     }
                 }
             }
+        }
+    }
+
+    pub fn activate_backend_settings(&mut self) {
+        match self
+            .sessions
+            .get(self.active_session)
+            .map(|session| session.mode)
+        {
+            Some(SessionMode::Code) => self.connect_acp(),
+            _ => self.setup_help_requested = Some(SessionMode::Direct),
+        }
+    }
+
+    /// Status belongs to the current turn's backend, not the next-turn selector.
+    pub fn active_status(&self) -> &'static str {
+        let Some(session) = self.sessions.get(self.active_session) else {
+            return "No chat selected";
+        };
+        if let Some(turn) = &session.active_turn {
+            if turn.cancelling {
+                return "Stopping...";
+            }
+            if self
+                .pending_permissions
+                .iter()
+                .any(|permission| permission.key == turn.key)
+            {
+                return "Waiting for approval";
+            }
+            match turn.backend {
+                SessionMode::Code if !self.acp_connected => return "Starting agent...",
+                SessionMode::Code if !turn.submitted => return "Opening project session...",
+                SessionMode::Code => return "Agent working...",
+                SessionMode::Direct => {
+                    let received = session
+                        .chat
+                        .streaming_message_idx
+                        .and_then(|idx| session.chat.messages.get(idx))
+                        .is_some_and(|message| {
+                            !message.text.is_empty() || !message.thinking.is_empty()
+                        });
+                    return if received {
+                        "Responding..."
+                    } else {
+                        "Sending..."
+                    };
+                }
+            }
+        }
+        match session.mode {
+            SessionMode::Direct if self.chat_key_configured => "Ready to send",
+            SessionMode::Direct => "API key missing",
+            SessionMode::Code if self.acp_connecting => "Starting agent...",
+            SessionMode::Code if self.acp_connected => "Agent ready",
+            SessionMode::Code => "Agent starts on Send",
         }
     }
 

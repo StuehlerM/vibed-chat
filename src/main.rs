@@ -125,12 +125,6 @@ pub fn app_entry() {
             crate::platform::windows::http::WinHttpTransport::new(),
         ));
 
-        if let Some(session) = app_state.as_mut().sessions.first_mut() {
-            session.chat.add_system_message(
-                "vibe-chat started. Default mode talks to the Mistral Responses API.",
-            );
-        }
-
         let mut msg = MSG {
             hwnd: ptr::null_mut(),
             message: 0,

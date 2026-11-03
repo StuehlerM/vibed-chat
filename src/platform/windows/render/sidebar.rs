@@ -1087,29 +1087,7 @@ pub fn draw_sidebar(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
         );
         SelectObject(hdc, old_font as HGDIOBJ);
 
-        // Connection status dot
-        let dot_color = if ctx.app.acp_connected {
-            SUCCESS
-        } else {
-            ERROR_COLOR
-        };
-        let dot_x = settings_btn_rect.right - pad - (6.0 * scale) as i32;
-        let dot_y = settings_btn_rect.top + settings_btn_rect.height() / 2;
-        let dot_r = (4.0 * scale) as i32;
-        let dot_brush = CreateSolidBrush(dot_color);
-        let dot_pen = CreatePen(PS_SOLID, 1, dot_color);
-        let old_pen = SelectObject(hdc, dot_pen as HGDIOBJ);
-        let old_brush = SelectObject(hdc, dot_brush as HGDIOBJ);
-        Ellipse(
-            hdc,
-            dot_x - dot_r,
-            dot_y - dot_r,
-            dot_x + dot_r,
-            dot_y + dot_r,
-        );
-        SelectObject(hdc, old_pen as HGDIOBJ);
-        SelectObject(hdc, old_brush as HGDIOBJ);
-        DeleteObject(dot_pen as HGDIOBJ);
-        DeleteObject(dot_brush as HGDIOBJ);
+        // Readiness is named in the mode-specific header/settings, not encoded
+        // as an unexplained agent-only red/green dot on the Settings button.
     }
 }

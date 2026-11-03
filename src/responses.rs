@@ -229,6 +229,10 @@ fn api_key() -> Option<String> {
         .iter()
         .find_map(|var| std::env::var(var).ok().filter(|v| !v.trim().is_empty()))
 }
+/// Local readiness only; never claims that credentials were provider-verified.
+pub fn credentials_configured() -> bool {
+    api_key().is_some_and(|key| !key.contains(['\r', '\n', '\0']))
+}
 fn auth_headers() -> Result<Vec<(String, String)>, String> {
     let key = api_key().ok_or("Set API_KEY or MISTRAL_API_KEY before using Direct mode")?;
     if key.contains(['\r', '\n', '\0']) {

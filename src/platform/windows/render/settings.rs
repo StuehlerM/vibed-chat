@@ -180,7 +180,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             scale,
             row_h,
             gap,
-            "Auto-scroll",
+            "Follow new replies",
             ctx.app.settings.auto_scroll,
             1,
         );
@@ -195,7 +195,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             &mut y,
             scale,
             section_h,
-            "Agent",
+            "Code safety",
         );
         draw_settings_info(
             hdc,
@@ -248,16 +248,30 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             section_h,
             "Connection",
         );
-        let conn_status = if ctx.app.acp_connected {
-            "Connected"
+        let is_chat = ctx
+            .app
+            .sessions
+            .get(ctx.app.active_session)
+            .is_none_or(|session| session.mode == crate::session::SessionMode::Direct);
+        let conn_status = if is_chat {
+            if ctx.app.chat_key_configured {
+                "Key configured"
+            } else {
+                "Key missing"
+            }
+        } else if ctx.app.acp_connecting {
+            "Starting agent..."
+        } else if ctx.app.acp_connected {
+            "Agent ready"
         } else {
-            "Disconnected"
+            "Starts on Send"
         };
-        let conn_color = if ctx.app.acp_connected {
-            SUCCESS
-        } else {
-            ERROR_COLOR
-        };
+        let conn_color =
+            if (is_chat && ctx.app.chat_key_configured) || (!is_chat && ctx.app.acp_connected) {
+                SUCCESS
+            } else {
+                SETTINGS_TEXT
+            };
         draw_settings_info(
             hdc,
             ctx,
@@ -310,7 +324,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             info_row_h,
             scale,
             "App",
-            "ACP Chat v0.1.0",
+            "vibe-chat v0.1.0",
             SETTINGS_TEXT,
         );
         draw_settings_info(
@@ -322,7 +336,11 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             info_row_h,
             scale,
             "Protocol",
-            "ACP (JSON-RPC 2.0)",
+            if is_chat {
+                "HTTPS / Responses"
+            } else {
+                "ACP / JSON-RPC"
+            },
             SETTINGS_TEXT,
         );
 
@@ -398,7 +416,11 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
 
         let old_font = SelectObject(hdc, ctx.fonts.sidebar_medium as HGDIOBJ);
         SetTextColor(hdc, NEW_CHAT_BTN_TEXT);
-        let reconnect_wide = to_wide("Reconnect (F5)");
+        let reconnect_wide = to_wide(if is_chat {
+            "Chat setup"
+        } else {
+            "Restart agent (F5)"
+        });
         let mut btn_text_rect = btn_rect;
         DrawTextW(
             hdc,

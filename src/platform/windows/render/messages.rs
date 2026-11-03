@@ -370,11 +370,13 @@ fn draw_message(
             } else {
                 "\u{25BC}"
             };
-            let header_text = if msg.thinking_collapsed {
-                format!("{} Thinking...", arrow)
+            let thinking_now = is_streaming && msg.text.is_empty();
+            let label = if thinking_now {
+                "Thinking..."
             } else {
-                format!("{} Thinking", arrow)
+                "Reasoning"
             };
+            let header_text = format!("{arrow} {label}");
             let header_color = if hover_thinking {
                 ACCENT
             } else {
