@@ -1,8 +1,8 @@
-# vibed-chat
+# vibe-chat
 
 > **Disclaimer:** This is an independent, unofficial project. It is built for use with [vibe-cli](https://github.com/mistralai/vibe) but is **not** affiliated with, endorsed by, or sponsored by Mistral AI. This project does not contain any official Mistral trademarks or branding.
 
-A minimal zero-dependency desktop chat application with two backends: **Direct** sends text to the Mistral Responses API; **Code** connects to a [vibe-cli](https://github.com/mistralai/vibe) ACP agent. No GUI framework, no webview, no Electron. Just a small native binary.
+A minimal zero-dependency desktop chat application with two backends: **Chat** (the Direct backend) sends text to the Mistral Responses API; **Code** connects to a [vibe-cli](https://github.com/mistralai/vibe) ACP agent. No GUI framework, no webview, no Electron. Just a small native binary.
 
 ## Supported Platforms
 
@@ -23,7 +23,9 @@ The core application logic is platform-independent. Each platform has its own ba
 - Connects to `vibe-acp` (the vibe-cli agent) over the Agent Client Protocol (ACP) via JSON-RPC 2.0 on stdio
 - GDI-rendered message bubbles with markdown support (bold, italic, code, code blocks)
 - Streaming responses with live text updates
-- Sidebar with session list
+- Adaptive history sidebar/drawer and docked settings or a dedicated settings page
+- Windows RichEdit composer/rename fields with native selection, IME, clipboard and undo/redo
+- Native primary controls with accessibility names; retained-canvas accessibility is still incomplete
 - Dark theme with warm orange accents
 - Per-monitor v2 DPI awareness (Windows)
 - Mouse-wheel scrolling, clipboard support (Ctrl+C / Ctrl+V)
@@ -69,6 +71,48 @@ On Windows, the output binary is `target\release\vibe-chat.exe`.
 cargo run --release
 ```
 
+## Windows editing and layout
+
+The composer and inline rename use the OS Unicode RichEdit control from
+`Msftedit.dll`, loaded from System32. Native editing provides mouse caret/selection,
+word selection, clipboard commands, undo/redo, and IME/candidate-window behavior.
+These behaviors still need runtime acceptance on Windows. If native initialization
+or loading/reading a draft fails, the app warns and falls back to basic editing,
+keeping the last synchronized draft rather than silently submitting unreadable
+native text. The composer grows using native text layout, capped at
+about eight lines and available height, then scrolls internally.
+
+Rename selects the existing name. Enter commits; Escape, Tab, or clicking another
+app control cancels. Navigating to another chat cancels unfinished IME composition
+rather than transferring it to the next chat. Caret/selection are retained in memory per
+chat; the native undo history resets when the editor is rebound or its document
+is replaced (including submission).
+
+Below 800 logical client pixels, **History** opens a drawer with a Close history
+action. Settings docks only when a usable chat column remains; otherwise it opens
+as a dedicated page. Its title/close area stays fixed, while the body supports
+wheel/scrollbar input and scrolls focused settings into view.
+
+Existing application shortcuts are unchanged:
+
+| Binding | Action |
+| --- | --- |
+| Enter | Send once when idle; preserve the next draft while busy |
+| Shift+Enter | Insert a newline in the composer |
+| Escape | Cancel rename, close a transient panel, otherwise stop the active turn; never erase an idle draft |
+| Tab / Shift+Tab | Move focus; rename follows the cancel-on-leave policy |
+| Ctrl+N | Pick a project folder, **not** New chat |
+| Ctrl+Shift+A / Ctrl+Shift+D | Archive / confirm deletion of the active chat |
+| F5 | Start/restart the Code agent, even when Chat is selected |
+
+Standard native editor commands (including Ctrl+A/C/X/V/Z/Y) and radio-arrow
+navigation are control behavior, not remapped application shortcuts. The native
+fields, primary buttons, mode radios, settings checkboxes/scrollbar and status use
+Windows accessibility providers; names/descriptions are added through MSAA
+annotations. Painted history, transcript and message actions still lack a complete
+accessibility tree. Narrator, high-contrast and text-scaling acceptance is **not**
+claimed.
+
 ## Context, cancellation, and storage
 
 - Changing modes affects future turns, not the backend of a running turn. Code starts a fresh agent context after reconnect; it does **not** receive the prior Direct transcript. Direct sends visible user/assistant text, including Code assistant text, but excludes system/tool activity and displayed reasoning. There is no automatic tool-summary handoff.
@@ -89,7 +133,7 @@ cargo +1.85.0 check --all-targets
 cargo build --release
 ```
 
-CI checks stable and MSRV builds, formatting, focused Clippy diagnostics, and Windows debug/release linking. Linux/macOS checks cover the core only; releases contain a Windows binary only. See [remediation status](docs/REMEDIATION_STATUS.md) for source changes, remaining review items, and the distinction between compilation and manual/live verification.
+CI checks stable and MSRV builds, formatting, focused Clippy diagnostics, and Windows debug/release linking. Linux/macOS checks cover the core only; releases contain a Windows binary only. See [remediation status](docs/REMEDIATION_STATUS.md) for source changes, remaining review items, the Windows native acceptance matrix, and the distinction between compilation and manual/live verification.
 
 ## Architecture
 
@@ -112,7 +156,8 @@ The codebase is split into **platform-independent core** and **platform backends
 | `markdown.rs` | Minimal markdown parser to styled text runs |
 | `theme.rs` | Color scheme, spacing tokens, layout constants, Settings |
 | `input.rs` | Platform-independent keyboard input mapping and text editing |
-| `interaction.rs` | Mouse click handling, hover tracking, layout computation |
+| `interaction.rs` | Stable pointer commands, hover tracking, keyboard focus and sidebar geometry |
+| `layout.rs` | Shared DPI-scaled adaptive panel and header-launcher geometry |
 | `text.rs` | Date/time helpers, message previews (platform-independent text logic) |
 | `ui.rs` | UI element state enums (PressedElement, FocusedElement, Toast) |
 
@@ -129,7 +174,9 @@ The codebase is split into **platform-independent core** and **platform backends
 | Module | Responsibility |
 |--------|---------------|
 | `ffi.rs` | All Win32/GDI FFI declarations (types, constants, extern fns) |
-| `window.rs` | Window class, WndProc, all WM_* message handling, window creation |
+| `window.rs` | Window class, WndProc, native effect dispatch and window creation |
+| `native.rs` | UI-thread native editors/primary controls, snapshot synchronization and resource lifetime |
+| `accessibility.rs` | Native-control MSAA names/descriptions and discrete status notifications |
 | `render/` | GDI double-buffered painting (sidebar, messages, input, header, settings, toast) |
 | `fonts.rs` | Font management (normal/bold/italic/code/label) |
 | `gfx.rs` | GDI+ anti-aliased rounded rectangles (loaded dynamically) |

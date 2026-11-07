@@ -29,15 +29,19 @@ pub enum PressedElement {
 /// Identifies which element has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusedElement {
+    History,
+    ModeRadio(SessionMode),
     NewChat,
     NewProject,
     ProjectHeader(usize),
     SidebarItem(usize),
     SettingsBtn,
     Input,
+    Rename,
     SendButton,
     SettingsClose,
     SettingsToggle(usize),
+    SettingsScrollbar,
     Reconnect,
 }
 

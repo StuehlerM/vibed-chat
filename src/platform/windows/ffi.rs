@@ -43,6 +43,7 @@ pub type HPEN = *mut c_void;
 pub type HRGN = *mut c_void;
 pub type HMONITOR = *mut c_void;
 pub type HKL = *mut c_void;
+pub type HIMC = *mut c_void;
 pub type HGLOBAL = *mut c_void;
 pub type LPVOID = *mut c_void;
 pub type LPCVOID = *const c_void;
@@ -76,6 +77,7 @@ pub const WS_OVERLAPPEDWINDOW: DWORD =
     WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
 pub const WS_VISIBLE: DWORD = 0x1000_0000;
 pub const WS_CHILD: DWORD = 0x4000_0000;
+pub const WS_TABSTOP: DWORD = 0x0001_0000;
 pub const WS_CLIPSIBLINGS: DWORD = 0x0400_0000;
 pub const WS_CLIPCHILDREN: DWORD = 0x0200_0000;
 
@@ -97,6 +99,13 @@ pub const WM_DESTROY: UINT = 0x0002;
 pub const WM_PAINT: UINT = 0x000F;
 pub const WM_CLOSE: UINT = 0x0010;
 pub const WM_SIZE: UINT = 0x0005;
+pub const WM_NCDESTROY: UINT = 0x0082;
+pub const WM_COMMAND: UINT = 0x0111;
+pub const WM_NOTIFY: UINT = 0x004e;
+pub const WM_DRAWITEM: UINT = 0x002b;
+pub const WM_SETFONT: UINT = 0x0030;
+pub const WM_CTLCOLOREDIT: UINT = 0x0133;
+pub const WM_CTLCOLORSTATIC: UINT = 0x0138;
 pub const WM_KEYDOWN: UINT = 0x0100;
 pub const WM_KEYUP: UINT = 0x0101;
 pub const WM_CHAR: UINT = 0x0102;
@@ -429,6 +438,10 @@ extern "system" {
         hInstance: HINSTANCE,
         lpParam: LPVOID,
     ) -> HWND;
+    pub fn GetParent(hWnd: HWND) -> HWND;
+    pub fn IsChild(hWndParent: HWND, hWnd: HWND) -> BOOL;
+    pub fn IsWindow(hWnd: HWND) -> BOOL;
+    pub fn IsWindowVisible(hWnd: HWND) -> BOOL;
     pub fn DestroyWindow(hWnd: HWND) -> BOOL;
     pub fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> BOOL;
     pub fn UpdateWindow(hWnd: HWND) -> BOOL;
@@ -475,6 +488,7 @@ extern "system" {
     pub fn GetWindowTextW(hWnd: HWND, lpString: LPWSTR, nMaxCount: i32) -> i32;
     pub fn SetFocus(hWnd: HWND) -> HWND;
     pub fn GetFocus() -> HWND;
+    pub fn GetForegroundWindow() -> HWND;
     pub fn LoadCursorW(hInstance: HINSTANCE, lpCursorName: LPCWSTR) -> HCURSOR;
     pub fn SetCursor(hCursor: HCURSOR) -> HCURSOR;
     pub fn GetCursorPos(lpPoint: LPPOINT) -> BOOL;
@@ -502,6 +516,8 @@ extern "system" {
     pub fn GetClipboardData(uFormat: UINT) -> HANDLE;
     pub fn IsClipboardFormatAvailable(format: UINT) -> BOOL;
     pub fn GetSystemMetrics(nIndex: i32) -> i32;
+    pub fn GetSystemMetricsForDpi(nIndex: i32, dpi: UINT) -> i32;
+    pub fn GetDoubleClickTime() -> UINT;
     pub fn AdjustWindowRectEx(
         lpRect: LPRECT,
         dwStyle: DWORD,
@@ -569,6 +585,10 @@ extern "system" {
 // ── gdi32.dll ────────────────────────────────────────────────
 #[link(name = "gdi32")]
 extern "system" {
+    pub fn SaveDC(hdc: HDC) -> i32;
+    pub fn RestoreDC(hdc: HDC, saved: i32) -> BOOL;
+    pub fn IntersectClipRect(hdc: HDC, left: i32, top: i32, right: i32, bottom: i32) -> i32;
+    pub fn SetViewportOrgEx(hdc: HDC, x: i32, y: i32, previous: LPPOINT) -> BOOL;
     pub fn GetStockObject(i: i32) -> HGDIOBJ;
     pub fn CreateCompatibleDC(hdc: HDC) -> HDC;
     pub fn CreateCompatibleBitmap(hdc: HDC, cx: i32, cy: i32) -> HBITMAP;
@@ -636,6 +656,7 @@ pub struct DRAWTEXTPARAMS {
 #[link(name = "kernel32")]
 extern "system" {
     pub fn GetModuleHandleW(lpModuleName: LPCWSTR) -> HMODULE;
+    pub fn LoadLibraryExW(name: LPCWSTR, file: HANDLE, flags: DWORD) -> HMODULE;
     pub fn FreeLibrary(hLibModule: HMODULE) -> BOOL;
     pub fn GlobalAlloc(uFlags: UINT, dwBytes: SIZE_T) -> HGLOBAL;
     pub fn GlobalLock(hMem: HGLOBAL) -> LPVOID;
@@ -1051,4 +1072,151 @@ extern "system" {
         bytes_to_read: DWORD,
         bytes_read: *mut DWORD,
     ) -> BOOL;
+}
+
+#[link(name = "imm32")]
+extern "system" {
+    pub fn ImmGetContext(hwnd: HWND) -> HIMC;
+    pub fn ImmReleaseContext(hwnd: HWND, context: HIMC) -> BOOL;
+    pub fn ImmNotifyIME(context: HIMC, action: DWORD, index: DWORD, value: DWORD) -> BOOL;
+}
+
+// Native Unicode controls and accessibility annotations.
+pub type SUBCLASSPROC =
+    Option<unsafe extern "system" fn(HWND, UINT, WPARAM, LPARAM, usize, usize) -> LRESULT>;
+#[link(name = "comctl32")]
+extern "system" {
+    pub fn SetWindowSubclass(hwnd: HWND, proc: SUBCLASSPROC, id: usize, data: usize) -> BOOL;
+    pub fn RemoveWindowSubclass(hwnd: HWND, proc: SUBCLASSPROC, id: usize) -> BOOL;
+    pub fn DefSubclassProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) -> LRESULT;
+}
+#[repr(C)]
+pub struct CHARRANGE {
+    pub cpMin: i32,
+    pub cpMax: i32,
+}
+#[repr(C)]
+pub struct NMHDR {
+    pub hwndFrom: HWND,
+    pub idFrom: UINT_PTR,
+    pub code: UINT,
+}
+#[repr(C)]
+pub struct REQRESIZE {
+    pub nmhdr: NMHDR,
+    pub rc: RECT,
+}
+#[repr(C)]
+pub struct DRAWITEMSTRUCT {
+    pub CtlType: UINT,
+    pub CtlID: UINT,
+    pub itemID: UINT,
+    pub itemAction: UINT,
+    pub itemState: UINT,
+    pub hwndItem: HWND,
+    pub hDC: HDC,
+    pub rcItem: RECT,
+    pub itemData: usize,
+}
+#[repr(C)]
+pub struct CHARFORMATW {
+    pub cbSize: UINT,
+    pub dwMask: DWORD,
+    pub dwEffects: DWORD,
+    pub yHeight: LONG,
+    pub yOffset: LONG,
+    pub crTextColor: DWORD,
+    pub bCharSet: BYTE,
+    pub bPitchAndFamily: BYTE,
+    pub szFaceName: [u16; 32],
+}
+#[repr(C)]
+pub struct GETTEXTEX {
+    pub cb: DWORD,
+    pub flags: DWORD,
+    pub codepage: UINT,
+    pub lpDefaultChar: LPCSTR,
+    pub lpUsedDefChar: *mut BOOL,
+}
+#[repr(C)]
+pub struct GETTEXTLENGTHEX {
+    pub flags: DWORD,
+    pub codepage: UINT,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GUID {
+    pub data1: u32,
+    pub data2: u16,
+    pub data3: u16,
+    pub data4: [u8; 8],
+}
+#[repr(C)]
+pub struct ACC_PROP_SERVICES {
+    pub vtable: *const ACC_PROP_VTABLE,
+}
+#[repr(C)]
+pub struct ACC_PROP_VTABLE {
+    pub query:
+        unsafe extern "system" fn(*mut ACC_PROP_SERVICES, *const GUID, *mut *mut c_void) -> i32,
+    pub add_ref: unsafe extern "system" fn(*mut ACC_PROP_SERVICES) -> u32,
+    pub release: unsafe extern "system" fn(*mut ACC_PROP_SERVICES) -> u32,
+    // Unused methods occupy pointer-sized ABI slots; they are never called.
+    pub set_prop_value: *const c_void,
+    pub set_prop_server: *const c_void,
+    pub clear_props: *const c_void,
+    pub set_hwnd_prop: *const c_void,
+    pub set_hwnd_prop_str:
+        unsafe extern "system" fn(*mut ACC_PROP_SERVICES, HWND, DWORD, DWORD, GUID, LPCWSTR) -> i32,
+    pub set_hwnd_prop_server: *const c_void,
+    pub clear_hwnd_props: unsafe extern "system" fn(
+        *mut ACC_PROP_SERVICES,
+        HWND,
+        DWORD,
+        DWORD,
+        *const GUID,
+        i32,
+    ) -> i32,
+}
+#[link(name = "ole32")]
+extern "system" {
+    pub fn CoCreateInstance(
+        clsid: *const GUID,
+        outer: *mut c_void,
+        context: DWORD,
+        iid: *const GUID,
+        object: *mut *mut c_void,
+    ) -> i32;
+}
+#[link(name = "user32")]
+extern "system" {
+    pub fn NotifyWinEvent(event: DWORD, hwnd: HWND, object: LONG, child: LONG);
+}
+
+#[cfg(test)]
+mod native_abi_tests {
+    use super::*;
+    #[test]
+    fn native_control_struct_layouts_match_windows_abi() {
+        assert_eq!(std::mem::size_of::<GUID>(), 16);
+        assert_eq!(std::mem::size_of::<CHARRANGE>(), 8);
+        assert_eq!(std::mem::size_of::<CHARFORMATW>(), 92);
+        assert_eq!(std::mem::offset_of!(CHARFORMATW, szFaceName), 26);
+        assert_eq!(
+            std::mem::size_of::<ACC_PROP_VTABLE>(),
+            10 * std::mem::size_of::<usize>()
+        );
+        assert_eq!(
+            std::mem::offset_of!(REQRESIZE, rc),
+            std::mem::size_of::<NMHDR>()
+        );
+        assert_eq!(
+            std::mem::size_of::<DRAWITEMSTRUCT>(),
+            if cfg!(target_pointer_width = "64") {
+                64
+            } else {
+                48
+            }
+        );
+    }
 }

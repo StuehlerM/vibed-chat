@@ -29,6 +29,25 @@ pub unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // Native synchronization can dispatch messages. Never keep an application
+    // borrow across it; the dispatcher and each sync resolve HWND state anew.
+    if matches!(msg, WM_LBUTTONDOWN | WM_LBUTTONDBLCLK) {
+        super::native::checkpoint_selection(hwnd);
+    }
+    if msg == WM_PAINT {
+        super::native::sync(hwnd);
+    }
+    let result = dispatch(hwnd, msg, wparam, lparam);
+    if matches!(
+        msg,
+        WM_COMMAND | WM_KEYDOWN | WM_LBUTTONUP | WM_SETFOCUS | WM_SIZE | WM_DPICHANGED
+    ) {
+        super::native::sync(hwnd);
+    }
+    result
+}
+
+unsafe fn dispatch(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // Modal effects allow paint/timer re-entry, but not nested UI commands.
     let pointer = get_app_state(hwnd);
     if !pointer.is_null()
@@ -41,6 +60,32 @@ pub unsafe extern "system" fn wnd_proc(
         return 0;
     }
     match msg {
+        WM_DRAWITEM => {
+            if super::native::draw_button(lparam) {
+                return 1;
+            }
+        }
+        WM_NOTIFY => {
+            // RichEdit supplies its actual formatted text height.
+            if super::native::notify(wparam, lparam) {
+                return 0;
+            }
+        }
+        WM_COMMAND => {
+            if super::native::command(hwnd, wparam, lparam) {
+                return 0;
+            }
+        }
+        WM_VSCROLL => {
+            if super::native::scroll(hwnd, wparam, lparam) {
+                return 0;
+            }
+        }
+        WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
+            if let Some(brush) = super::native::control_color(wparam as HDC) {
+                return brush as LRESULT;
+            }
+        }
         WM_GETMINMAXINFO => {
             let app_state = get_app_state(hwnd);
             if !app_state.is_null() {
@@ -97,6 +142,9 @@ pub unsafe extern "system" fn wnd_proc(
                 (*app_state).client_width = (lparam & 0xFFFF) as i32;
                 (*app_state).client_height = ((lparam >> 16) & 0xFFFF) as i32;
                 (*app_state).invalidate_sidebar_cache();
+                (*app_state).settings_scroll = (*app_state)
+                    .settings_scroll
+                    .min((*app_state).settings_max_scroll());
 
                 // Save window size to state (only when not minimized and has real size)
                 let state = &mut *app_state;
@@ -149,16 +197,22 @@ pub unsafe extern "system" fn wnd_proc(
                     // Cursor blink
                     let now = std::time::Instant::now();
                     let blink_ms = (*app_state).caret_blink_ms as u128;
-                    if now
-                        .duration_since((*app_state).last_cursor_blink)
-                        .as_millis()
-                        > blink_ms
+                    if !(*app_state).native_editor_active
+                        && now
+                            .duration_since((*app_state).last_cursor_blink)
+                            .as_millis()
+                            > blink_ms
                     {
                         (*app_state).cursor_visible = !(*app_state).cursor_visible;
                         (*app_state).last_cursor_blink = now;
                         if (*app_state).window_focused
-                            && (*app_state).focused_element
-                                == Some(crate::ui::FocusedElement::Input)
+                            && matches!(
+                                (*app_state).focused_element,
+                                Some(
+                                    crate::ui::FocusedElement::Input
+                                        | crate::ui::FocusedElement::Rename
+                                )
+                            )
                         {
                             (*app_state).repaint_needed = true;
                         }
@@ -236,6 +290,14 @@ pub unsafe extern "system" fn wnd_proc(
                     match wparam as u8 {
                         VK_RETURN => {
                             state.commit_rename();
+                            InvalidateRect(hwnd, std::ptr::null(), 0);
+                            return 0;
+                        }
+                        VK_TAB => {
+                            state.cancel_rename();
+                            state.cycle_focus(
+                                (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0,
+                            );
                             InvalidateRect(hwnd, std::ptr::null(), 0);
                             return 0;
                         }
@@ -332,9 +394,16 @@ pub unsafe extern "system" fn wnd_proc(
                     return 0;
                 }
 
-                // Escape to close settings
-                if wparam as u8 == VK_ESCAPE && state.show_settings {
-                    state.show_settings = false;
+                // Escape closes transient panels before cancelling a turn.
+                if wparam as u8 == VK_ESCAPE && (state.show_settings || state.sidebar_drawer_open) {
+                    if state.show_settings {
+                        state.show_settings = false;
+                        state.focused_element = Some(crate::ui::FocusedElement::SettingsBtn);
+                    } else {
+                        state.sidebar_drawer_open = false;
+                        state.focused_element = Some(crate::ui::FocusedElement::History);
+                    }
+                    state.invalidate_sidebar_cache();
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                     return 0;
                 }
@@ -427,7 +496,8 @@ pub unsafe extern "system" fn wnd_proc(
             }
             let pointer = get_app_state(hwnd);
             if !pointer.is_null() {
-                (*pointer).window_focused = msg == WM_SETFOCUS;
+                (*pointer).window_focused =
+                    msg == WM_SETFOCUS || IsChild(hwnd, wparam as HWND) != 0;
                 (*pointer).pending_high_surrogate = None;
                 (*pointer).cursor_visible = true;
                 (*pointer).last_cursor_blink = std::time::Instant::now();
@@ -600,9 +670,14 @@ pub unsafe extern "system" fn wnd_proc(
                     return 0;
                 }
                 state.wheel_remainder = 0;
-                let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
                 let x = point.x;
 
+                if state.show_settings && state.layout().settings.contains(point.x, point.y) {
+                    state.scroll_settings(-scroll_amount);
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                    return 0;
+                }
+                let sidebar_w = state.layout().sidebar.width();
                 // Sidebar scroll
                 if x < sidebar_w {
                     let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
@@ -641,6 +716,11 @@ pub unsafe extern "system" fn wnd_proc(
             return 0;
         }
         WM_SETCURSOR => {
+            // Let native child classes choose their own cursor (especially the
+            // RichEdit I-beam); a parent arrow must not override editor behavior.
+            if wparam as HWND != hwnd && IsChild(hwnd, wparam as HWND) != 0 {
+                return 0;
+            }
             if (lparam & 0xffff) != 1 {
                 return DefWindowProcW(hwnd, msg, wparam, lparam);
             }
@@ -698,6 +778,8 @@ pub unsafe extern "system" fn wnd_proc(
                 }
             }
             let is_input = !app_state.is_null()
+                && !(*app_state).native_editor_active
+                && (*app_state).layout().content_visible
                 && point.x >= (*app_state).chat_left()
                 && point.x < (*app_state).chat_right()
                 && point.y >= (*app_state).input_box_top();
@@ -721,6 +803,7 @@ pub unsafe extern "system" fn wnd_proc(
             return 0;
         }
         WM_DESTROY => {
+            super::native::destroy();
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             render::release_backbuffer();
             PostQuitMessage(0);
@@ -800,7 +883,7 @@ fn route_character(state: &mut AppState, c: char) {
     state.last_cursor_blink = std::time::Instant::now();
 }
 
-fn get_app_state(hwnd: HWND) -> *mut AppState {
+pub(super) fn get_app_state(hwnd: HWND) -> *mut AppState {
     // SAFETY: GWLP_USERDATA was set in WM_CREATE to the `*mut AppState` passed
     // via CREATESTRUCTW::lpCreateParams, and the AppState outlives the window
     // (it is owned by the message loop in `app_entry`). The pointer is only
@@ -831,6 +914,19 @@ enum NativeEffect {
         mode: crate::session::SessionMode,
     },
     Permission(crate::app::PendingPermission),
+}
+
+pub(super) fn run_requested_effect(hwnd: HWND) {
+    let pointer = get_app_state(hwnd);
+    // SAFETY: UI-thread-only, effect owns all data before any native operation.
+    let effect = if pointer.is_null() {
+        None
+    } else {
+        unsafe { take_requested_effect(&mut *pointer) }
+    };
+    if let Some(effect) = effect {
+        execute_effect(hwnd, effect);
+    }
 }
 
 fn take_requested_effect(state: &mut AppState) -> Option<NativeEffect> {
@@ -953,6 +1049,8 @@ fn execute_effect(hwnd: HWND, effect: NativeEffect) {
                 if !pointer.is_null() {
                     if let Some(path) = result {
                         (*pointer).new_chat_in_dir(&path);
+                        (*pointer).sidebar_drawer_open = false;
+                        (*pointer).focused_element = Some(crate::ui::FocusedElement::Input);
                     }
                 }
             }
@@ -1135,7 +1233,7 @@ pub fn create_window(
             0,
             class_name.as_ptr(),
             title.as_ptr(),
-            WS_OVERLAPPEDWINDOW,
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             pos_x,
             pos_y,
             rect.right - rect.left,
@@ -1184,6 +1282,12 @@ pub fn create_window(
         (*app_state).client_width = client_rect.width();
         (*app_state).client_height = client_rect.height();
 
+        if !super::native::create(hwnd) {
+            (*app_state).show_toast(
+                "Native Unicode editor unavailable; using basic input",
+                crate::ui::ToastKind::Error,
+            );
+        }
         SetTimer(hwnd, TIMER_ID_REPAINT, TIMER_INTERVAL_MS, None);
 
         ShowWindow(hwnd, SW_SHOW);

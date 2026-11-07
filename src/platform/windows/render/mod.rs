@@ -116,8 +116,12 @@ pub fn paint(screen: HDC, ctx: &mut PaintContext) {
             }
             SetBkMode(dc, TRANSPARENT);
         }
-        sidebar::draw_sidebar(dc, ctx, scale);
-        chat_area::draw_chat_area(dc, ctx, scale);
+        if ctx.app.layout().content_visible {
+            chat_area::draw_chat_area(dc, ctx, scale);
+        }
+        if ctx.app.layout().sidebar.width() > 0 && !ctx.app.layout().settings_sheet {
+            sidebar::draw_sidebar(dc, ctx, scale);
+        }
         if ctx.app.show_settings {
             settings::draw_settings_panel(dc, ctx, scale);
         }

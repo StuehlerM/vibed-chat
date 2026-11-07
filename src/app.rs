@@ -96,6 +96,10 @@ pub struct AppState {
     pub sessions: Vec<Session>,
     pub active_session: usize,
     pub show_settings: bool,
+    pub sidebar_drawer_open: bool,
+    pub settings_scroll: i32,
+    /// Native editor supplies its measured visual-line height on Windows.
+    pub native_editor_active: bool,
     pub settings: Settings,
     pub fonts: Option<FontsHandle>,
     pub dpi: u32,
@@ -188,6 +192,9 @@ impl AppState {
             sessions: Vec::new(),
             active_session: 0,
             show_settings: false,
+            sidebar_drawer_open: false,
+            settings_scroll: 0,
+            native_editor_active: false,
             settings: Settings::default(),
             fonts: None,
             dpi: 96,
@@ -296,19 +303,61 @@ impl AppState {
         Some(&mut self.sessions[idx].chat)
     }
 
-    /// Left edge of the chat area (right edge of the sidebar), DPI-scaled.
-    pub fn chat_left(&self) -> i32 {
-        (crate::theme::SIDEBAR_WIDTH as f32 * self.dpi as f32 / 96.0) as i32
+    pub fn layout(&self) -> crate::layout::AppLayout {
+        crate::layout::AppLayout::new(
+            self.client_width,
+            self.client_height,
+            self.dpi,
+            self.show_settings,
+            self.sidebar_drawer_open,
+        )
     }
 
-    /// Right edge of the chat area - shrinks when the settings panel is open.
+    pub fn chat_left(&self) -> i32 {
+        self.layout().chat.left
+    }
     pub fn chat_right(&self) -> i32 {
-        if self.show_settings {
-            let scale = self.dpi as f32 / 96.0;
-            self.client_width - (crate::theme::SETTINGS_PANEL_WIDTH as f32 * scale) as i32
+        self.layout().chat.right
+    }
+
+    pub fn settings_max_scroll(&self) -> i32 {
+        let scale = self.dpi as f32 / 96.0;
+        let body = crate::theme::compute_settings_layout(scale);
+        (body.reconnect_y + body.reconnect_btn_h + (24.0 * scale) as i32 - self.client_height)
+            .max(0)
+    }
+
+    pub fn scroll_settings(&mut self, delta: i32) {
+        self.cancel_pointer_press();
+        self.settings_scroll = self
+            .settings_scroll
+            .saturating_add(delta)
+            .clamp(0, self.settings_max_scroll());
+        self.repaint_needed = true;
+    }
+
+    pub fn reveal_settings_focus(&mut self) {
+        let scale = self.dpi as f32 / 96.0;
+        let layout = crate::theme::compute_settings_layout(scale);
+        let (top, bottom) = match self.focused_element {
+            Some(FocusedElement::SettingsToggle(i)) if i < 4 => (
+                layout.toggle_tops[i],
+                layout.toggle_tops[i] + layout.toggle_row_h,
+            ),
+            Some(FocusedElement::Reconnect) => (
+                layout.reconnect_y,
+                layout.reconnect_y + layout.reconnect_btn_h,
+            ),
+            _ => return,
+        };
+        let body_top = (76.0 * scale) as i32;
+        let bottom_edge = self.client_height - (8.0 * scale) as i32;
+        let delta = if top - self.settings_scroll < body_top {
+            top - self.settings_scroll - body_top
         } else {
-            self.client_width
-        }
+            (bottom - self.settings_scroll - bottom_edge).max(0)
+        };
+        self.scroll_settings(delta);
     }
 
     // ── Project management ──────────────────────────────────────────────────
@@ -453,6 +502,9 @@ impl AppState {
 
     /// Commit the rename buffer to the target's name.
     pub fn commit_rename(&mut self) {
+        if self.focused_element == Some(FocusedElement::Rename) {
+            self.focused_element = Some(FocusedElement::Input);
+        }
         if let Some(target) = self.rename_target.take() {
             let name = self.rename_buffer.trim().to_string();
             if !name.is_empty() {
@@ -478,6 +530,9 @@ impl AppState {
 
     /// Cancel the inline rename.
     pub fn cancel_rename(&mut self) {
+        if self.focused_element == Some(FocusedElement::Rename) {
+            self.focused_element = Some(FocusedElement::Input);
+        }
         self.rename_target = None;
         self.rename_buffer.clear();
         self.rename_cursor = 0;

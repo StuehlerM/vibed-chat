@@ -18,6 +18,7 @@ mod http;
 mod input;
 mod interaction;
 mod json;
+mod layout;
 mod markdown;
 mod persistence;
 mod platform;
@@ -152,7 +153,7 @@ pub fn app_entry() {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
 
-            let state_ptr = GetWindowLongPtrW(msg.hwnd, window::GWLP_USERDATA) as *mut AppState;
+            let state_ptr = GetWindowLongPtrW(hwnd, window::GWLP_USERDATA) as *mut AppState;
             if !state_ptr.is_null() && (*state_ptr).should_quit {
                 break;
             }
@@ -162,6 +163,7 @@ pub fn app_entry() {
         if GetWindowLongPtrW(hwnd, window::GWLP_USERDATA) != 0 {
             DestroyWindow(hwnd);
         }
+        crate::platform::windows::native::finish_resources();
         // Cancel independently of queue order, release backpressure, and wait
         // only after native callbacks can no longer borrow application state.
         let direct_shutdown = app_state

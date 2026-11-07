@@ -59,14 +59,18 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             .app
             .active_session
             .min(ctx.app.sessions.len().saturating_sub(1));
-        let logical_input_h = compute_input_height(
-            hdc,
-            ctx.fonts,
-            &ctx.app.sessions[idx].chat,
-            chat_w,
-            line_height,
-            scale,
-        );
+        let logical_input_h = if ctx.app.native_editor_active {
+            ctx.app.sessions[idx].chat.input_height
+        } else {
+            compute_input_height(
+                hdc,
+                ctx.fonts,
+                &ctx.app.sessions[idx].chat,
+                chat_w,
+                line_height,
+                scale,
+            )
+        };
         ctx.app.sessions[idx].chat.input_height = logical_input_h;
         let input_h = (logical_input_h as f32 * scale) as i32;
 
@@ -156,9 +160,14 @@ pub fn draw_chat_area(hdc: HDC, ctx: &mut PaintContext, scale: f32) {
             line_height,
             scale,
             ctx.app.cursor_visible && ctx.app.window_focused,
-            ctx.app.focused_element,
+            if ctx.app.window_focused {
+                ctx.app.focused_element
+            } else {
+                None
+            },
             ctx.app.hover.send_btn,
             ctx.app.pressed_element,
+            ctx.app.native_editor_active,
         );
 
         // Draw hint row below input

@@ -139,6 +139,14 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
         DeleteObject(div_brush as HGDIOBJ);
         y += (SPACE_4 as f32 * scale) as i32;
 
+        // Keep the title/close area fixed; only the body scrolls.
+        let saved = SaveDC(hdc);
+        if saved == 0 {
+            return;
+        }
+        IntersectClipRect(hdc, panel_left, y, width, height);
+        SetViewportOrgEx(hdc, 0, -ctx.app.settings_scroll, std::ptr::null_mut());
+
         // From here on, the vertical layout is driven by the shared
         // SettingsLayout so hit-testing (interaction.rs) matches exactly.
         let layout = compute_settings_layout(scale);
@@ -430,6 +438,7 @@ pub fn draw_settings_panel(hdc: HDC, ctx: &PaintContext, scale: f32) {
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
         );
         SelectObject(hdc, old_font as HGDIOBJ);
+        RestoreDC(hdc, saved);
     }
 }
 

@@ -105,6 +105,7 @@ pub fn draw_input_box(
     focused_element: Option<FocusedElement>,
     hover_send_btn: bool,
     pressed_element: Option<PressedElement>,
+    native_editor: bool,
 ) {
     let input_margin = (INPUT_MARGIN as f32 * scale) as i32;
     let height = input_top + input_h + input_margin;
@@ -183,6 +184,10 @@ pub fn draw_input_box(
             scale,
         );
 
+        // Native RichEdit owns glyphs, selection, caret and internal scrolling.
+        if native_editor {
+            return;
+        }
         // Text area
         let h_pad = (SPACE_4 as f32 * scale) as i32;
         let v_pad = (INPUT_LINE_PADDING as f32 * scale) as i32;

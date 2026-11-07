@@ -11,9 +11,9 @@ use crate::theme::{
     compute_mode_radio_layout, compute_settings_layout, HINT_ROW_HEIGHT, INPUT_MARGIN,
     MESSAGE_INNER_PADDING, MESSAGE_MAX_WIDTH_RATIO, MESSAGE_PADDING, MODE_RADIO_OPTION_W,
     PROJECT_HEADER_HEIGHT, PROJECT_MENU_BTN_SIZE, SEND_BTN_MARGIN, SEND_BTN_SIZE,
-    SESSION_ACTION_BTN_GAP, SESSION_ACTION_BTN_SIZE, SESSION_HEADER_HEIGHT, SETTINGS_PANEL_WIDTH,
-    SIDEBAR_FOOTER_HEIGHT, SIDEBAR_HEADER_HEIGHT, SIDEBAR_ITEM_HEIGHT, SIDEBAR_ITEM_MARGIN,
-    SIDEBAR_PADDING, SIDEBAR_WIDTH, SPACE_1, SPACE_4, SPACE_5, THINKING_HEADER_HEIGHT,
+    SESSION_ACTION_BTN_GAP, SESSION_ACTION_BTN_SIZE, SESSION_HEADER_HEIGHT, SIDEBAR_FOOTER_HEIGHT,
+    SIDEBAR_HEADER_HEIGHT, SIDEBAR_ITEM_HEIGHT, SIDEBAR_ITEM_MARGIN, SIDEBAR_PADDING, SPACE_1,
+    SPACE_4, SPACE_5, THINKING_HEADER_HEIGHT,
 };
 use crate::ui::{FocusedElement, PressedElement, RenameTarget};
 
@@ -66,6 +66,7 @@ enum HoverHit {
 /// Stable command identity captured on pointer down, never a mutable row index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PointerAction {
+    History,
     NewChat,
     NewProject,
     ProjectHeader(String),
@@ -75,6 +76,7 @@ pub enum PointerAction {
     SessionArchive(String),
     SessionDelete(String),
     SettingsBtn,
+    DrawerClose,
     SettingsClose,
     SettingsToggle(usize),
     BackendSettings {
@@ -128,24 +130,46 @@ impl AppState {
 
     pub fn cycle_focus(&mut self, shift: bool) {
         let mut order: Vec<FocusedElement> = Vec::new();
-        order.push(FocusedElement::NewChat);
-        order.push(FocusedElement::NewProject);
-        self.with_sidebar_layout(|_, _, entries| {
-            for entry in entries {
-                match *entry {
-                    SidebarEntry::ProjectHeader { project_idx, .. } => {
-                        order.push(FocusedElement::ProjectHeader(project_idx))
-                    }
-                    SidebarEntry::SessionItem { session_idx, .. } => {
-                        order.push(FocusedElement::SidebarItem(session_idx))
-                    }
-                    SidebarEntry::NewProjectBtn { .. } => {}
-                }
+        let panels = self.layout();
+        if panels.sidebar.width() > 0 && !panels.settings_sheet {
+            if panels.sidebar_collapsed {
+                order.push(FocusedElement::History);
             }
-        });
-        order.push(FocusedElement::SettingsBtn);
-        order.push(FocusedElement::Input);
-        order.push(FocusedElement::SendButton);
+            order.push(FocusedElement::NewChat);
+            order.push(FocusedElement::NewProject);
+            self.with_sidebar_layout(|_, _, entries| {
+                for entry in entries {
+                    match *entry {
+                        SidebarEntry::ProjectHeader { project_idx, .. } => {
+                            order.push(FocusedElement::ProjectHeader(project_idx))
+                        }
+                        SidebarEntry::SessionItem { session_idx, .. } => {
+                            order.push(FocusedElement::SidebarItem(session_idx))
+                        }
+                        SidebarEntry::NewProjectBtn { .. } => {}
+                    }
+                }
+            });
+            order.push(FocusedElement::SettingsBtn);
+        }
+        if panels.content_visible {
+            if panels.sidebar_collapsed {
+                order.push(FocusedElement::History);
+            }
+            order.push(FocusedElement::ModeRadio(SessionMode::Direct));
+            order.push(FocusedElement::ModeRadio(SessionMode::Code));
+            if panels.sidebar_collapsed {
+                order.push(FocusedElement::SettingsBtn);
+            }
+            order.push(FocusedElement::Input);
+            if self.sessions.get(self.active_session).is_some_and(|s| {
+                s.active_turn
+                    .as_ref()
+                    .map_or(!s.chat.input_buffer.trim().is_empty(), |t| !t.cancelling)
+            }) {
+                order.push(FocusedElement::SendButton);
+            }
+        }
         if self.show_settings {
             order.push(FocusedElement::SettingsClose);
             order.push(FocusedElement::SettingsToggle(1));
@@ -183,6 +207,56 @@ impl AppState {
         );
 
         self.focused_element = Some(order[next]);
+        self.reveal_settings_focus();
+        self.reveal_history_focus();
+    }
+
+    fn reveal_history_focus(&mut self) {
+        let focus = self.focused_element;
+        let offset = self.sidebar_scroll_offset;
+        let scale = self.dpi as f32 / 96.0;
+        let bottom =
+            self.client_height - ((SIDEBAR_FOOTER_HEIGHT + SIDEBAR_PADDING) as f32 * scale) as i32;
+        let next = self.with_sidebar_layout(|list_top, total, entries| {
+            entries.iter().find_map(|entry| {
+                let (matches, top, end) = match *entry {
+                    SidebarEntry::SessionItem {
+                        session_idx,
+                        top,
+                        bottom,
+                        ..
+                    } => (
+                        focus == Some(FocusedElement::SidebarItem(session_idx)),
+                        top,
+                        bottom,
+                    ),
+                    SidebarEntry::ProjectHeader {
+                        project_idx,
+                        top,
+                        bottom,
+                    } => (
+                        focus == Some(FocusedElement::ProjectHeader(project_idx)),
+                        top,
+                        bottom,
+                    ),
+                    _ => return None,
+                };
+                if !matches {
+                    return None;
+                }
+                let target = if top - offset < list_top {
+                    top - list_top
+                } else if end - offset > bottom {
+                    end - bottom
+                } else {
+                    offset
+                };
+                Some(target.clamp(0, (total - (bottom - list_top)).max(0)))
+            })
+        });
+        if let Some(next) = next {
+            self.sidebar_scroll_offset = next;
+        }
     }
 
     /// Activate the currently focused element (Enter/Space).
@@ -191,9 +265,25 @@ impl AppState {
     /// deferred via request flags that the platform backend handles.
     pub fn activate_focused_element(&mut self) -> bool {
         match self.focused_element {
+            Some(FocusedElement::History) => {
+                self.sidebar_drawer_open = !self.sidebar_drawer_open;
+                self.invalidate_sidebar_cache();
+                self.focused_element = Some(if self.sidebar_drawer_open {
+                    FocusedElement::NewChat
+                } else {
+                    FocusedElement::Input
+                });
+                true
+            }
+            Some(FocusedElement::ModeRadio(mode)) => {
+                self.set_session_mode(mode);
+                true
+            }
             Some(FocusedElement::NewChat) => {
                 self.pressed_element = Some(PressedElement::NewChat);
                 self.new_chat();
+                self.sidebar_drawer_open = false;
+                self.focused_element = Some(FocusedElement::Input);
                 true
             }
             Some(FocusedElement::NewProject) => {
@@ -212,16 +302,28 @@ impl AppState {
                 if i < self.sessions.len() {
                     self.pressed_element = Some(PressedElement::SidebarItem(i));
                     self.switch_session(i);
+                    if self.layout().sidebar_collapsed {
+                        self.focused_element = Some(FocusedElement::Input);
+                    }
+                    self.sidebar_drawer_open = false;
                 }
                 true
             }
             Some(FocusedElement::SettingsBtn) => {
                 self.pressed_element = Some(PressedElement::SettingsBtn);
                 self.show_settings = !self.show_settings;
+                self.invalidate_sidebar_cache();
+                self.focused_element = Some(if self.show_settings {
+                    FocusedElement::SettingsClose
+                } else {
+                    FocusedElement::SettingsBtn
+                });
                 true
             }
             Some(FocusedElement::SettingsClose) => {
                 self.show_settings = false;
+                self.invalidate_sidebar_cache();
+                self.focused_element = Some(FocusedElement::SettingsBtn);
                 true
             }
             Some(FocusedElement::SettingsToggle(idx)) => {
@@ -249,7 +351,10 @@ impl AppState {
                 }
                 true
             }
-            Some(FocusedElement::Input) | None => false,
+            Some(
+                FocusedElement::Input | FocusedElement::Rename | FocusedElement::SettingsScrollbar,
+            )
+            | None => false,
         }
     }
 
@@ -381,13 +486,14 @@ impl AppState {
             return None;
         }
         let scale = self.dpi as f32 / 96.0;
-        let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
         let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
         let header_h = (SIDEBAR_HEADER_HEIGHT as f32 * scale) as i32;
 
+        let panels = self.layout();
+        let sidebar_w = panels.sidebar.width();
         // Settings panel interactions
         if self.show_settings {
-            let panel_left = self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32;
+            let panel_left = panels.settings.left;
             let spad = (SPACE_5 as f32 * scale) as i32;
             let close_size = (SPACE_5 as f32 * scale) as i32;
             if x >= self.client_width - spad - close_size
@@ -402,8 +508,9 @@ impl AppState {
                 let layout = compute_settings_layout(scale);
                 if x >= panel_left + spad
                     && x < self.client_width - spad
-                    && y >= layout.reconnect_y
-                    && y < layout.reconnect_y + layout.reconnect_btn_h
+                    && y >= (76.0 * scale) as i32
+                    && y + self.settings_scroll >= layout.reconnect_y
+                    && y + self.settings_scroll < layout.reconnect_y + layout.reconnect_btn_h
                 {
                     return self.sessions.get(self.active_session).map(|session| {
                         PointerAction::BackendSettings {
@@ -574,10 +681,23 @@ impl AppState {
             return None;
         }
 
+        if !panels.content_visible {
+            return if panels.sidebar_collapsed && self.sidebar_drawer_open {
+                Some(PointerAction::DrawerClose)
+            } else {
+                None
+            };
+        }
+        if panels.sidebar_collapsed && panels.history_button(self.dpi).contains(x, y) {
+            return Some(PointerAction::History);
+        }
+        if panels.settings_button(self.dpi).contains(x, y) {
+            return Some(PointerAction::SettingsBtn);
+        }
         // Mode radio (header): Chat | Code
         {
             let header_h = (SESSION_HEADER_HEIGHT as f32 * scale) as i32;
-            let sidebar_w_scaled = sidebar_w;
+            let sidebar_w_scaled = self.chat_left();
             let layout =
                 compute_mode_radio_layout(sidebar_w_scaled, self.chat_right(), header_h, scale);
             if y >= layout.top && y <= layout.top + layout.h {
@@ -689,7 +809,9 @@ impl AppState {
             }
             _ => false,
         };
-        if on_rename {
+        // Native child fields consume clicks inside their own bounds. A parent
+        // click elsewhere in the row is therefore a genuine click-away.
+        if on_rename && !self.native_editor_active {
             return false;
         }
         self.cancel_rename(); // Existing click-away policy: cancel, never silently commit.
@@ -780,8 +902,15 @@ impl AppState {
         y: i32,
     ) -> Option<PointerEffect> {
         match action {
+            PointerAction::History => {
+                self.sidebar_drawer_open = true;
+                self.invalidate_sidebar_cache();
+                self.focused_element = Some(FocusedElement::NewChat);
+            }
             PointerAction::NewChat => {
                 self.new_chat();
+                self.sidebar_drawer_open = false;
+                self.focused_element = Some(FocusedElement::Input);
             }
             PointerAction::NewProject => {
                 self.focused_element = Some(FocusedElement::NewProject);
@@ -798,6 +927,10 @@ impl AppState {
             PointerAction::SessionItem(id) => {
                 if let Some(idx) = self.sessions.iter().position(|s| s.local_id == id) {
                     self.switch_session(idx);
+                    if self.layout().sidebar_collapsed {
+                        self.focused_element = Some(FocusedElement::Input);
+                    }
+                    self.sidebar_drawer_open = false;
                     self.last_pointer_session = Some(id);
                 }
             }
@@ -815,10 +948,22 @@ impl AppState {
             PointerAction::SettingsBtn => {
                 self.focused_element = Some(FocusedElement::SettingsBtn);
                 self.show_settings = !self.show_settings;
+                self.focused_element = Some(if self.show_settings {
+                    FocusedElement::SettingsClose
+                } else {
+                    FocusedElement::SettingsBtn
+                });
                 self.invalidate_sidebar_cache();
+            }
+            PointerAction::DrawerClose => {
+                self.sidebar_drawer_open = false;
+                self.invalidate_sidebar_cache();
+                self.focused_element = Some(FocusedElement::History);
             }
             PointerAction::SettingsClose => {
                 self.show_settings = false;
+                self.invalidate_sidebar_cache();
+                self.focused_element = Some(FocusedElement::SettingsBtn);
             }
             PointerAction::SettingsToggle(idx) => {
                 self.focused_element = Some(FocusedElement::SettingsToggle(idx));
@@ -835,9 +980,11 @@ impl AppState {
                     chat.take_input();
                 }
                 self.send_message(&draft);
+                self.focused_element = Some(FocusedElement::Input);
             }
             PointerAction::Stop(_) => {
                 self.cancel_turn();
+                self.focused_element = Some(FocusedElement::Input);
             }
             PointerAction::Scrollbar(_) => {
                 self.jump_to_scrollbar_position(x, y);
@@ -873,7 +1020,8 @@ impl AppState {
 
     /// Check if a click landed on a code block copy button. Returns the code text if so.
     fn in_transcript(&self, x: i32, y: i32) -> bool {
-        x >= self.chat_left()
+        self.layout().content_visible
+            && x >= self.chat_left()
             && x < self.chat_right()
             && y >= self.messages_viewport_top()
             && y < self.messages_viewport_bottom()
@@ -913,7 +1061,8 @@ impl AppState {
     #[allow(clippy::too_many_lines)]
     pub fn update_hover(&mut self, x: i32, y: i32) {
         let scale = self.dpi as f32 / 96.0;
-        let sidebar_w = (SIDEBAR_WIDTH as f32 * scale) as i32;
+        let panels = self.layout();
+        let sidebar_w = panels.sidebar.width();
         let pad = (SIDEBAR_PADDING as f32 * scale) as i32;
         let header_h = (SIDEBAR_HEADER_HEIGHT as f32 * scale) as i32;
         let footer_h = (SIDEBAR_FOOTER_HEIGHT as f32 * scale) as i32;
@@ -937,13 +1086,17 @@ impl AppState {
                 return;
             }
             let layout = compute_settings_layout(scale);
-            let panel_left = self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32;
+            let panel_left = panels.settings.left;
             if x >= panel_left
                 && x <= self.client_width
-                && y >= layout.reconnect_y
-                && y <= layout.reconnect_y + layout.reconnect_btn_h
+                && y >= (76.0 * scale) as i32
+                && y + self.settings_scroll >= layout.reconnect_y
+                && y + self.settings_scroll < layout.reconnect_y + layout.reconnect_btn_h
             {
                 self.hover.reconnect = true;
+                return;
+            }
+            if x >= panel_left {
                 return;
             }
         }
@@ -1122,6 +1275,9 @@ impl AppState {
                 self.hover.settings_btn = true;
             }
         } else {
+            if !panels.content_visible {
+                return;
+            }
             // Send/Stop button hover
             if let Some((btn_left, btn_top, btn_right, btn_bottom)) = self.send_btn_rect() {
                 if x >= btn_left
@@ -1334,7 +1490,11 @@ impl AppState {
 
     fn settings_toggle_at(&self, x: i32, y: i32) -> Option<usize> {
         let scale = self.dpi as f32 / 96.0;
-        let panel_left = self.client_width - (SETTINGS_PANEL_WIDTH as f32 * scale) as i32;
+        if y < (76.0 * scale) as i32 {
+            return None;
+        }
+        let y = y + self.settings_scroll;
+        let panel_left = self.layout().settings.left;
         let spad = (SPACE_5 as f32 * scale) as i32;
         let layout = compute_settings_layout(scale);
 
@@ -1439,6 +1599,7 @@ pub const fn point_in_rect(x: i32, y: i32, left: i32, top: i32, right: i32, bott
 mod tests {
     use super::*;
     use crate::session::{ActiveTurn, Session};
+    use crate::theme::SIDEBAR_WIDTH;
 
     // In-memory only: never load/save real data or start provider/agent workers.
     fn app() -> AppState {
@@ -1641,6 +1802,183 @@ mod tests {
             .sessions
             .iter()
             .all(|session| session.active_turn.is_none()));
+    }
+
+    #[test]
+    fn adaptive_mode_geometry_matches_hit_testing() {
+        for width in [640, 720, 1100, 1600] {
+            for settings in [false, true] {
+                let mut state = app();
+                state.client_width = width;
+                state.show_settings = settings;
+                let panels = state.layout();
+                let mode = compute_mode_radio_layout(
+                    state.chat_left(),
+                    state.chat_right(),
+                    panels.header_height,
+                    1.0,
+                );
+                let hit = state.pointer_action_at(mode.direct_left + 1, mode.top + 1);
+                assert_eq!(
+                    matches!(
+                        hit,
+                        Some(PointerAction::Mode {
+                            mode: SessionMode::Direct,
+                            ..
+                        })
+                    ),
+                    panels.content_visible
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn settings_sheet_hides_chat_and_history_tab_stops() {
+        let mut state = app();
+        state.client_width = 720;
+        state.client_height = 440;
+        state.show_settings = true;
+        for _ in 0..12 {
+            state.cycle_focus(false);
+            assert!(matches!(
+                state.focused_element,
+                Some(
+                    FocusedElement::SettingsClose
+                        | FocusedElement::SettingsToggle(1 | 3)
+                        | FocusedElement::Reconnect
+                )
+            ));
+        }
+        let (x, y) = button_center(&state);
+        assert!(!matches!(
+            state.pointer_action_at(x, y),
+            Some(PointerAction::Send { .. } | PointerAction::Stop(_))
+        ));
+    }
+
+    #[test]
+    fn settings_focus_reveals_last_action_and_shared_hit_target() {
+        let mut state = app();
+        state.client_width = 720;
+        state.client_height = 300;
+        state.show_settings = true;
+        state.focused_element = Some(FocusedElement::Reconnect);
+        state.reveal_settings_focus();
+        let layout = compute_settings_layout(1.0);
+        let top = layout.reconnect_y - state.settings_scroll;
+        assert!(top >= 76);
+        assert!(top + layout.reconnect_btn_h <= state.client_height);
+        assert!(matches!(
+            state.pointer_action_at(50, top + 1),
+            Some(PointerAction::BackendSettings { .. })
+        ));
+        state.scroll_settings(i32::MAX / 2);
+        assert_eq!(state.settings_scroll, state.settings_max_scroll());
+        state.scroll_settings(-i32::MAX / 2);
+        assert_eq!(state.settings_scroll, 0);
+    }
+
+    #[test]
+    fn closing_drawer_does_not_lose_draft_or_activate_on_down() {
+        let mut state = app();
+        state.client_width = 640;
+        state.sidebar_drawer_open = true;
+        state.sessions[0].chat.insert_str("Keep this draft");
+        state.begin_pointer_press(500, 200, false);
+        assert!(state.sidebar_drawer_open);
+        state.finish_pointer_press(500, 200);
+        assert!(!state.sidebar_drawer_open);
+        assert_eq!(state.focused_element, Some(FocusedElement::History));
+        assert_eq!(state.sessions[0].chat.input_buffer, "Keep this draft");
+    }
+
+    #[test]
+    fn scrolling_settings_cancels_in_flight_toggle_press() {
+        let mut state = app();
+        state.show_settings = true;
+        state.client_height = 400;
+        let top = compute_settings_layout(1.0).toggle_tops[1];
+        let x = state.layout().settings.left + 30;
+        assert!(state.begin_pointer_press(x, top + 1, false));
+        state.scroll_settings(12);
+        state.finish_pointer_press(x, top + 1);
+        assert!(state.settings.auto_scroll);
+    }
+
+    #[test]
+    fn empty_send_is_not_a_tab_stop() {
+        let mut state = app();
+        for _ in 0..32 {
+            state.cycle_focus(false);
+            assert_ne!(state.focused_element, Some(FocusedElement::SendButton));
+        }
+    }
+
+    #[test]
+    fn keyboard_history_focus_scrolls_row_into_view() {
+        let mut state = app();
+        state.client_height = 320;
+        for i in 0..12 {
+            state
+                .sessions
+                .push(Session::new("", &format!("Chat {i}"), "."));
+        }
+        state.invalidate_sidebar_cache();
+        let target = state.sessions.len() - 1;
+        for _ in 0..32 {
+            state.cycle_focus(false);
+            if state.focused_element == Some(FocusedElement::SidebarItem(target)) {
+                break;
+            }
+        }
+        assert_eq!(
+            state.focused_element,
+            Some(FocusedElement::SidebarItem(target))
+        );
+        let offset = state.sidebar_scroll_offset;
+        state.with_sidebar_layout(|list_top, _, entries| {
+            let (top, bottom) = entries
+                .iter()
+                .find_map(|e| match e {
+                    SidebarEntry::SessionItem {
+                        session_idx,
+                        top,
+                        bottom,
+                        ..
+                    } if *session_idx == target => Some((*top, *bottom)),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(top - offset >= list_top);
+            assert!(bottom - offset <= 320 - SIDEBAR_FOOTER_HEIGHT - SIDEBAR_PADDING);
+        });
+    }
+
+    #[test]
+    fn native_rename_has_its_own_focus_and_cancel_restores_input() {
+        let mut state = app();
+        state.native_editor_active = true;
+        state.start_rename(0);
+        state.focused_element = Some(FocusedElement::Rename);
+        state.rename_buffer.push_str(" edited");
+        let title = state.sessions[0].name.clone();
+        state.cancel_rename();
+        assert_eq!(state.focused_element, Some(FocusedElement::Input));
+        assert_eq!(state.sessions[0].name, title);
+        assert!(state.rename_target.is_none());
+    }
+
+    #[test]
+    fn clicking_outside_native_rename_field_cancels_even_in_same_row() {
+        let mut state = app();
+        state.native_editor_active = true;
+        state.start_rename(0);
+        state.focused_element = Some(FocusedElement::Rename);
+        let (x, y) = row_center(&mut state, 0);
+        state.begin_pointer_press(x, y, false);
+        assert!(state.rename_target.is_none());
+        assert_eq!(state.focused_element, Some(FocusedElement::Input));
     }
 
     #[test]

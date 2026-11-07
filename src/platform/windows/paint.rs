@@ -22,7 +22,7 @@ impl<'a> PaintContext<'a> {
     }
 
     pub fn settings_w(&self) -> i32 {
-        (SETTINGS_PANEL_WIDTH as f32 * self.app.dpi as f32 / 96.0) as i32
+        self.app.layout().settings.width()
     }
 
     pub fn chat_left(&self) -> i32 {

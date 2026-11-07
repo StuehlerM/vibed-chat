@@ -2,12 +2,14 @@
 // Implements the Platform trait using Win32/GDI.
 // All Win32-specific code lives in this module and its submodules.
 
+pub mod accessibility;
 pub mod clipboard;
 pub mod dialogs;
 pub mod ffi;
 pub mod fonts;
 pub mod gfx;
 pub mod http;
+pub mod native;
 pub mod paint;
 pub mod render;
 pub mod text;

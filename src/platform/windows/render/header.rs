@@ -59,6 +59,36 @@ pub fn draw_session_header(
             FillRect(hdc, &stripe, brush);
             DeleteObject(brush as HGDIOBJ);
         }
+        if !ctx.app.native_editor_active {
+            // Keep panel launchers discoverable if native-control creation failed.
+            let panels = ctx.app.layout();
+            let mut buttons = vec![(panels.settings_button(ctx.app.dpi), "Settings")];
+            if panels.sidebar_collapsed {
+                buttons.push((panels.history_button(ctx.app.dpi), "History"));
+            }
+            let font = SelectObject(hdc, ctx.fonts.caption);
+            for (bounds, label) in buttons {
+                let mut rect = RECT {
+                    left: bounds.left,
+                    top: bounds.top,
+                    right: bounds.right,
+                    bottom: bounds.bottom,
+                };
+                let brush = CreateSolidBrush(SURFACE_2);
+                FillRect(hdc, &rect, brush);
+                DeleteObject(brush);
+                SetTextColor(hdc, TEXT_PRIMARY);
+                let label = to_wide(label);
+                DrawTextW(
+                    hdc,
+                    label.as_ptr(),
+                    label.len() as i32 - 1,
+                    &mut rect,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                );
+            }
+            SelectObject(hdc, font);
+        }
         let Some(session) = ctx.app.sessions.get(ctx.app.active_session) else {
             return;
         };
@@ -70,10 +100,16 @@ pub fn draw_session_header(
         let old_font = SelectObject(hdc, ctx.fonts.session_header_name as HGDIOBJ);
         SetTextColor(hdc, SESSION_NAME_TEXT);
         let mut name_rect = RECT {
-            left: chat_left + pad,
+            left: chat_left
+                + pad
+                + if ctx.app.layout().sidebar_collapsed {
+                    (96.0 * scale) as i32
+                } else {
+                    0
+                },
             top: stripe_h,
-            right: (layout.direct_left - gap).max(chat_left + pad),
-            bottom: header_h,
+            right: chat_right - (100.0 * scale) as i32,
+            bottom: (40.0 * scale) as i32,
         };
         if name_rect.right > name_rect.left {
             let title = to_wide(title);
@@ -135,9 +171,9 @@ pub fn draw_session_header(
         );
         let mut rect = RECT {
             left: layout.code_left + option_w + gap,
-            top: stripe_h,
+            top: layout.top,
             right: chat_right - pad,
-            bottom: header_h,
+            bottom: layout.top + layout.h,
         };
         if rect.right > rect.left {
             let text = to_wide(status);
